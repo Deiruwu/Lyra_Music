@@ -79,6 +79,8 @@ impl TrackManager {
                             // volverá a entrar a este if, volverá a bloquear el Mutex de la cola,
                             // y volverá a fallar. Crearías contención de locks por la eternidad.
                             supervisor_state.status.store(0, Ordering::Relaxed);
+
+                            let _ = event_tx_supervisor.send(TrackEvent::Stopped);
                         }
                     }
                 }
