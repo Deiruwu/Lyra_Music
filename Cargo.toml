@@ -6,20 +6,22 @@ edition = "2024"
 [dependencies]
 symphonia = { version = "0.5", features = ["aac", "isomp4", "mp3", "alac"] }
 symphonia-adapter-libopus = "0.2"
+cpal = "0.15"
 rubato = "0.14"
+
 thiserror = "2.0.18"
-chrono = { version = "0.4.44", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde_json = "1.0.150"
 crossbeam-channel = "0.5.15"
 
-cpal = "0.15"
-rtrb = "0.3"
-mpris-server = "0.8"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
+rtrb = "0.3.4"
+mpris-server = "0.10.0"
+tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
 iced = { version = "0.14.0", features = ["tokio", "canvas", "image"] }
-reqwest = { version = "0.13.4" }
+reqwest = "0.13.4"
 discord-rich-presence = "1.1.0"
 itertools = "0.14.0"
 futures = "0.3.32"
 dotenvy = "0.15.7"
+image = "0.25.10"
