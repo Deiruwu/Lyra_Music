@@ -65,7 +65,7 @@ impl PlaybackControls {
             PlaybackMessage::BackendEvent(event) => match event {
                 TrackEvent::TrackChanged(track) => {
                     self.current_thumbnail = None;
-                    let url = track.track.thumbnail_url.clone();
+                    let url = track.track.thumbnail_small.clone();
                     self.current_track = Some(track);
 
                     if let Some(url) = url {
@@ -79,6 +79,11 @@ impl PlaybackControls {
                     }
                     Task::none()
                 }
+                TrackEvent::Stopped => {
+                    self.current_track = None;
+                    self.current_thumbnail = None;
+                    Task::none()
+                },
                 _ => Task::none(),
             },
 
