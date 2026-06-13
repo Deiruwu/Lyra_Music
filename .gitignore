@@ -1,0 +1,13 @@
+# Rust
+/target
+
+# Entorno
+.env
+
+# IDEs
+.idea/
+*.iml
+
+# SQLx
+.sqlx/
+EOF
