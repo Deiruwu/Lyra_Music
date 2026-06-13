@@ -235,7 +235,7 @@ fn build_metadata(track: &PlayableTrack) -> Metadata {
         meta.set_album(Some(album.name.clone()));
     }
 
-    if let Some(thumbnail) = &track.track.thumbnail_url {
+    if let Some(thumbnail) = &track.track.thumbnail_large {
         meta.set_art_url(Some(thumbnail.clone()));
     }
 
