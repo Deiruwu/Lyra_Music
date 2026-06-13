@@ -9,7 +9,8 @@ pub struct Track {
     pub id: String,                      // uuid TEXT PRIMARY KEY
     pub title: String,                   // title TEXT NOT NULL
     pub duration_seconds: i32,           // duration_seconds INTEGER NOT NULL
-    pub thumbnail_url: Option<String>,   // thumbnail_url TEXT
+    pub thumbnail_small: Option<String>,   // thumbnail_url TEXT
+    pub thumbnail_large: Option<String>,
     pub bpm: Option<i32>,                // bpm INTEGER
     pub camelot_key: Option<String>,     // camelot_key TEXT
     pub file_path: Option<String>,       // file_path TEXT
