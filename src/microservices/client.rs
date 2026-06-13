@@ -44,11 +44,12 @@ impl MicroserviceClient {
     }
 
     /// Busca tracks en YouTube (Exploración).
-    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<Track>, MicroserviceError> {
+    pub async fn search(&self, query: &str, limit: usize, filter: Option<&str>) -> Result<Vec<Track>, MicroserviceError> {
         let payload = json!({
             "action": "search",
             "query": query,
-            "limit": limit
+            "limit": limit,
+            "filter": filter.unwrap_or("songs")
         }).to_string() + "\n";
 
         let raw = self.send_raw(&payload).await?;
