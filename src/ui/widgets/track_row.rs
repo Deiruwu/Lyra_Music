@@ -8,6 +8,8 @@ pub fn _track<'a, Message>(track: &'a Track, thumbnail: Option<&'a Handle>) -> E
 where
     Message: Clone + 'a,
 {
+    let is_downloaded = track.file_path.as_ref().map_or(false, |p| !p.is_empty());
+
     let thumbnail_widget: Element<_> = match thumbnail {
         Some(handle) => image(handle.clone())
             .width(Length::Fixed(50.0))
@@ -26,9 +28,15 @@ where
 
     let artists = track.format_artists();
 
+    let (title_color, artist_color) = if is_downloaded {
+        (iced::Color::WHITE, iced::Color::from_rgb(0.6, 0.6, 0.6))
+    } else {
+        (iced::Color::from_rgb(0.4, 0.4, 0.4), iced::Color::from_rgb(0.3, 0.3, 0.3))
+    };
+
     let info = column![
-        text(&track.title).size(14),
-        text(artists).size(12),
+        text(&track.title).size(14).color(title_color),
+        text(artists).size(12).color(artist_color),
     ]
         .spacing(4);
 
