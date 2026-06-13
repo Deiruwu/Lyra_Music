@@ -1,0 +1,8 @@
+pub mod decoder;
+pub mod errors;
+pub mod engine;
+pub mod engine_state;
+pub mod manager;
+pub mod mpris;
+pub mod track_event;
+pub mod discord;
