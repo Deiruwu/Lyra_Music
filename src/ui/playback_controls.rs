@@ -214,7 +214,7 @@ impl PlaybackControls {
     }
 
     fn get_volume_slider(&self, volume: f32) -> Element<'_, PlaybackMessage> {
-        let volume_icon = if volume < 0.2 { "" } else if volume > 0.8 { "" } else { "" };
+        let volume_icon = if volume < 0.2 { "󰕿" } else if volume > 0.6 { "󰕾" } else { "󰖀" };
 
         column![
             row![
