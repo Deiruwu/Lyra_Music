@@ -116,9 +116,13 @@ impl App {
         let backend_sub = self.playback.subscription()
             .map(AppMessage::Playback);
 
+        let search_sub = self.search_bar.subscription()
+            .map(AppMessage::Search);
+
         iced::Subscription::batch(vec![
             progress_sub,
             backend_sub,
+            search_sub,
         ])
     }
 }

@@ -8,6 +8,7 @@ use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
 use crate::ui::styles::styles::transparent_button;
 use crate::ui::utils::image::download_thumbnail;
+use crate::ui::widgets::icon_toggle::IconToggle;
 use crate::ui::widgets::track_row::track_row;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +35,7 @@ pub enum SearchMessage {
     DownloadFinished(Result<PlayableTrack, String>),
     ThumbnailLoaded(String, Vec<u8>),
     FilterChanged(SearchFilter),
+    Tick,
 }
 
 pub struct SearchInput {
@@ -43,6 +45,7 @@ pub struct SearchInput {
     pub is_searching: bool,
     pub thumbnails: HashMap<String, Handle>,
     pub filter: SearchFilter,
+    pub thumb_offset: f32,
 }
 
 impl SearchInput {
@@ -60,11 +63,37 @@ impl SearchInput {
             is_searching: false,
             thumbnails: HashMap::new(),
             filter: SearchFilter::Songs,
+            thumb_offset: 0.0,
+        }
+    }
+
+    pub fn subscription(&self) -> iced::Subscription<SearchMessage> {
+        let target = if self.filter == SearchFilter::Videos { 32.0 } else { 0.0 };
+        if (self.thumb_offset - target).abs() > 0.5 {
+            iced::window::frames().map(|_| SearchMessage::Tick)
+        } else {
+            iced::Subscription::none()
         }
     }
 
     pub fn update(&mut self, msg: SearchMessage) -> iced::Task<SearchMessage> {
         match msg {
+            SearchMessage::Tick => {
+                // Definimos a dónde debe ir la bola según el filtro actual
+                let target = if self.filter == SearchFilter::Videos { 32.0 } else { 0.0 };
+                let diff = target - self.thumb_offset;
+
+                // Si la distancia es mayor a medio píxel, la movemos un 30% del camino (Ease-out)
+                if diff.abs() > 0.5 {
+                    self.thumb_offset += diff * 0.3;
+                } else {
+                    // Si ya está muy cerca, la anclamos para evitar micro-cálculos infinitos
+                    self.thumb_offset = target;
+                }
+
+                iced::Task::none()
+            }
+
             SearchMessage::InputChanged(value) => {
                 if self.input_value.is_empty() {
                     self.results.clear();
@@ -95,13 +124,13 @@ impl SearchInput {
                 let client = self.micro_service.clone();
 
                 let filter = match &self.filter {
-                    SearchFilter::Songs => "songs",
-                    SearchFilter::Videos => "videos",
+                    SearchFilter::Songs => Some("songs"),
+                    SearchFilter::Videos => Some("videos"),
                 };
 
                 iced::Task::perform(
                     async move {
-                        client.search(&query, 5, Some(filter)).await.map_err(|e| e.to_string())
+                        client.search(&query, 5, filter).await.map_err(|e| e.to_string())
                     },
                     SearchMessage::SearchCompleted,
                 )
@@ -265,6 +294,7 @@ impl SearchInput {
     }
 
     pub fn view(&self) -> Element<'_, SearchMessage> {
+        let is_videos = self.filter == SearchFilter::Videos;
         let search_bar = row![
             text_input("Buscar canción, álbum, artista...", &self.input_value)
                 .on_input(SearchMessage::InputChanged)
@@ -272,7 +302,22 @@ impl SearchInput {
                 .padding(10)
                 .width(Length::Fill),
 
-            self.custom_icon_toggle(),
+            IconToggle::new(
+                        is_videos,
+                        self.thumb_offset,
+                        |next_state| {
+                            // El closure recibe el nuevo estado booleano tras el clic
+                            SearchMessage::FilterChanged(if next_state {
+                                SearchFilter::Videos
+                            } else {
+                                SearchFilter::Songs
+                            })
+                        }
+                    )
+                    // Puedes encadenar builders opcionales si cambias de opinión con la estética:
+                    // .icons("", "")
+                    // .width(70.0)
+                    .build(),
 
             button("Buscar")
                 .on_press(SearchMessage::SubmitSearch)
