@@ -8,3 +8,8 @@ pub enum TrackEvent {
     Resumed,
     Stopped,
 }
+
+#[derive(Debug, Clone)]
+pub enum QueueEvent {
+    QueueChanged,
+}

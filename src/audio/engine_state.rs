@@ -52,7 +52,6 @@ impl EngineState {
         Duration::from_millis(self.position_ms.load(Ordering::Relaxed) as u64)
     }
 
-    /// Comprueba si el estado actual es exactamente "Reproduciendo"
     pub fn is_playing(&self) -> bool {
         self.status.load(Ordering::Relaxed) == 1
     }

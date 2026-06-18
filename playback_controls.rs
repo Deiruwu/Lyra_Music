@@ -57,7 +57,7 @@ impl PlaybackControls {
         TX.set(self.audio_engine.event_tx.clone()).ok();
         Subscription::run(backend_events)
     }
-    
+
     pub fn update(&mut self, msg: PlaybackMessage) -> Task<PlaybackMessage> {
         match msg {
             PlaybackMessage::Tick => Task::none(),
@@ -98,6 +98,7 @@ impl PlaybackControls {
                 self.audio_engine.enqueue(track);
                 Task::none()
             }
+
             PlaybackMessage::TogglePlayback => {
                 if self.is_playing() {
                     self.audio_engine.pause();
@@ -133,7 +134,7 @@ impl PlaybackControls {
         let has_track = self.current_track.is_some();
 
         let current_track_widget: Element<_> = match &self.current_track {
-            Some(track) => currently_playing_row(&track.track, self.current_thumbnail.as_ref()),
+            Some(track) => currently_playing_row(&track.track, self.current_thumbnail),
             None => space().into(),
         };
 

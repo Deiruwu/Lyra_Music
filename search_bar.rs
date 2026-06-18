@@ -2,11 +2,9 @@ use std::collections::HashMap;
 use iced::{border, Color, Element, Length, Padding, Theme};
 use iced::widget::{button, column, container, row, space, text, text_input};
 use iced::widget::image::Handle;
-use crate::JETBRAINS_MONO;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
-use crate::ui::styles::styles::transparent_button;
 use crate::ui::utils::image::download_thumbnail;
 use crate::ui::widgets::icon_toggle::IconToggle;
 use crate::ui::widgets::track_row::track_row;
@@ -15,15 +13,6 @@ use crate::ui::widgets::track_row::track_row;
 pub enum SearchFilter {
     Songs,
     Videos,
-}
-
-impl SearchFilter {
-    fn as_str(&self) -> &'static str {
-        match self {
-            SearchFilter::Songs => "songs",
-            SearchFilter::Videos => "videos",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -79,15 +68,12 @@ impl SearchInput {
     pub fn update(&mut self, msg: SearchMessage) -> iced::Task<SearchMessage> {
         match msg {
             SearchMessage::Tick => {
-                // Definimos a dónde debe ir la bola según el filtro actual
                 let target = if self.filter == SearchFilter::Videos { 32.0 } else { 0.0 };
                 let diff = target - self.thumb_offset;
 
-                // Si la distancia es mayor a medio píxel, la movemos un 30% del camino (Ease-out)
                 if diff.abs() > 0.5 {
                     self.thumb_offset += diff * 0.3;
                 } else {
-                    // Si ya está muy cerca, la anclamos para evitar micro-cálculos infinitos
                     self.thumb_offset = target;
                 }
 
@@ -230,69 +216,6 @@ impl SearchInput {
         }
     }
 
-
-    fn custom_icon_toggle(&self) -> Element<'_, SearchMessage> {
-        let is_videos = self.filter == SearchFilter::Videos;
-
-        // 1. Definimos el "Thumb" (la bolita que se mueve)
-        // Usamos un container vacío con un tamaño fijo y borde completamente redondo
-        let thumb = container(space().width(20).height(20))
-            .style(|_theme| container::Style {
-                background: Some(Color::WHITE.into()), // Color de la bolita
-                border: border::rounded(10), // Radio = mitad del ancho para que sea un círculo perfecto
-                ..Default::default()
-            });
-
-        // 2. Construimos el contenido de la pista dependiendo del estado
-        let track_content = if is_videos {
-            // Estado Videos: El pulgar está a la derecha. Ponemos el icono de Songs a la izquierda.
-            row![
-                space().width(4),
-                text("").font(JETBRAINS_MONO).size(14).style(|_theme| text::Style {
-                    color: Option::from(Color::from_rgb(0.6, 0.6, 0.6)),
-                ..Default::default()
-                }),
-                space().width(Length::Fill),
-                thumb,
-            ]
-                .align_y(iced::Alignment::Center)
-        } else {
-            // Estado Songs: El pulgar está a la izquierda. Ponemos el icono de Videos a la derecha.
-            row![
-                thumb,
-                space().width(Length::Fill),
-                text("").font(JETBRAINS_MONO).size(14).style(|_theme| text::Style {
-                    color: Option::from(Color::from_rgb(0.6, 0.6, 0.6)),
-                ..Default::default()
-                }),
-                space().width(11),
-            ]
-                .align_y(iced::Alignment::Center)
-        };
-
-        // 3. Definimos la pista (Track)
-        let track = container(track_content)
-            .width(60) // Ancho total fijo del toggle
-            .padding(4) // Espacio entre el borde de la pista y la bolita
-            .style(move |_theme| container::Style {
-                // Color de fondo de la pista (puedes hacerlo dinámico según el estado si quieres)
-                background: Some(Color::from_rgb(0.2, 0.2, 0.2).into()),
-                border: border::rounded(20), // Forma de píldora
-                ..Default::default()
-            });
-
-        // 4. Envolvemos la pista en un botón transparente para que reaccione al clic
-        button(track)
-            .padding(0) // Quitamos el padding del botón para que el container defina el tamaño
-            .style(transparent_button) // Tu estilo ya existente para que el botón no dibuje fondo
-            .on_press(SearchMessage::FilterChanged(if is_videos {
-                SearchFilter::Songs
-            } else {
-                SearchFilter::Videos
-            }))
-            .into()
-    }
-
     pub fn view(&self) -> Element<'_, SearchMessage> {
         let is_videos = self.filter == SearchFilter::Videos;
         let search_bar = row![
@@ -306,7 +229,6 @@ impl SearchInput {
                         is_videos,
                         self.thumb_offset,
                         |next_state| {
-                            // El closure recibe el nuevo estado booleano tras el clic
                             SearchMessage::FilterChanged(if next_state {
                                 SearchFilter::Videos
                             } else {
@@ -314,9 +236,6 @@ impl SearchInput {
                             })
                         }
                     )
-                    // Puedes encadenar builders opcionales si cambias de opinión con la estética:
-                    // .icons("", "")
-                    // .width(70.0)
                     .build(),
 
             button("Buscar")
@@ -345,7 +264,7 @@ impl SearchInput {
             results_column = results_column.push(text("Buscando...").size(16));
         } else {
             for track in &self.results {
-                let thumbnail = self.thumbnails.get(&track.id);
+                let thumbnail = self.thumbnails.get(&track.id).;
                 results_column = results_column.push(
                     track_row(track, thumbnail, SearchMessage::TrackSelected(track.clone()))
                 );
@@ -353,7 +272,7 @@ impl SearchInput {
         }
 
         column![
-        space().height(70), // altura del search bar + padding
+        space().height(70),
         container(results_column)
             .padding(18)
             .width(Length::Fill)

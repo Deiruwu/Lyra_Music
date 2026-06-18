@@ -181,7 +181,9 @@ impl PlayerInterface for MprisPlayer {
     async fn set_shuffle(&self, _: bool)           -> zbus::Result<()>          { Ok(()) }
 
     async fn metadata(&self) -> fdo::Result<Metadata> {
-        Ok(match self.manager.get_current_track() {
+        let arc_current_track = self.manager.get_current_track();
+        let current_track  = arc_current_track.lock().unwrap();
+        Ok(match &*current_track {
             Some(track) => build_metadata(&track),
             None        => Metadata::new(),
         })

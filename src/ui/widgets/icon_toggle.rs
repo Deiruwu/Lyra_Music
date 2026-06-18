@@ -42,7 +42,6 @@ where
         self
     }
 
-    /// Transforma la configuración del Builder en un Elemento renderizable de iced.
     pub fn build(self) -> Element<'a, Message> {
         let thumb = container(space().width(20).height(20))
             .style(|_theme| container::Style {
@@ -51,7 +50,6 @@ where
                 ..Default::default()
             });
 
-        // Capa de fondo (iconos fijos)
         let background_icons = row![
             space().width(2),
             text(self.icon_active).font(JETBRAINS_MONO).size(14).style(|_theme| text::Style {
@@ -68,14 +66,12 @@ where
             .align_y(Alignment::Center)
             .padding([0.0, 4.0]);
 
-        // Capa dinámica (animación del pulgar)
         let animated_thumb = row![
             space().width(Length::Fixed(self.thumb_offset)),
             thumb
         ]
             .align_y(Alignment::Center);
 
-        // Apilamos usando Z-index
         let track_content = stack![
             background_icons,
             animated_thumb,

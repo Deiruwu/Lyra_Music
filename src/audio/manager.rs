@@ -10,7 +10,7 @@ use crate::model::audio_tech::PlayableTrack;
 use crate::audio::decoder::ChannelMode;
 use crate::audio::engine_state::{AudioCommand, EngineState};
 use crate::audio::engine::AudioEngine;
-use crate::audio::track_event::TrackEvent;
+use crate::audio::track_event::{QueueEvent, TrackEvent};
 
 pub struct TrackManager {
     engine_tx: Sender<AudioCommand>,
@@ -25,6 +25,7 @@ pub struct TrackManager {
     auto_advance: Arc<Mutex<bool>>,
 
     pub event_tx: broadcast::Sender<TrackEvent>,
+    pub queue_tx: broadcast::Sender<QueueEvent>,
 }
 
 impl TrackManager {
@@ -47,7 +48,9 @@ impl TrackManager {
         let supervisor_advance = Arc::clone(&auto_advance);
 
         let (event_tx, _) = broadcast::channel(16);
+        let (queue_tx, _) = broadcast::channel(16);
         let event_tx_supervisor = event_tx.clone();
+        let queue_tx_supervisor = queue_tx.clone();
 
         thread::Builder::new()
             .name("trackmanager_supervisor".into())
@@ -66,6 +69,7 @@ impl TrackManager {
                         if let Some(next_track) = q.pop_front() {
                             *supervisor_current.lock().unwrap() = Some(next_track.clone());
                             let _ = event_tx_supervisor.send(TrackEvent::TrackChanged(next_track.clone()));
+                            let _ = queue_tx_supervisor.send(QueueEvent::QueueChanged);
                             let _ = supervisor_tx.send(AudioCommand::Play {
                                 track: next_track,
                                 mode: ChannelMode::Stereo,
@@ -94,16 +98,21 @@ impl TrackManager {
             current_track,
             auto_advance,
             event_tx,
+            queue_tx,
         };
 
         Ok((manager, engine))
+    }
+
+    fn broadcast_queue_update(&self) {
+        let _ = self.queue_tx.send(QueueEvent::QueueChanged);
     }
 
     // --- API PÚBLICA PARA TU UI / MAIN ---
 
     /// Pone una pista inmediatamente, borrando lo que esté sonando.
     pub fn play_now(&self, track: PlayableTrack) {
-        let track = Arc::new(track); // <- envuelves aquí, una sola vez
+        let track = Arc::new(track);
         *self.auto_advance.lock().unwrap() = true;
         *self.current_track.lock().unwrap() = Some(Arc::clone(&track));
         let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&track)));
@@ -114,8 +123,14 @@ impl TrackManager {
     }
 
     pub fn enqueue(&self, track: PlayableTrack) {
-        let track = Arc::new(track); // <- envuelves aquí
-        self.queue.lock().unwrap().push_back(track);
+        let arc_track = Arc::new(track);
+
+        {
+            let mut q = self.queue.lock().unwrap();
+            q.push_back(arc_track);
+        }
+
+        self.broadcast_queue_update();
 
         if self.state.status.load(Ordering::Relaxed) == 0 {
             self.skip_next();
@@ -123,18 +138,86 @@ impl TrackManager {
     }
 
     pub fn skip_next(&self) {
-        let mut q = self.queue.lock().unwrap();
-        if let Some(next_track) = q.pop_front() { // next_track ya es Arc<PlayableTrack>
+        let next_track = {
+            let mut q = self.queue.lock().unwrap();
+            q.pop_front()
+        };
+
+        if let Some(track) = next_track {
             *self.auto_advance.lock().unwrap() = true;
-            *self.current_track.lock().unwrap() = Some(Arc::clone(&next_track));
-            let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&next_track)));
+            *self.current_track.lock().unwrap() = Some(Arc::clone(&track));
+
+            let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&track)));
+
+            self.broadcast_queue_update();
+
             let _ = self.engine_tx.send(AudioCommand::Play {
-                track: next_track, // AudioCommand espera PlayableTrack, desenvuelves
+                track,
                 mode: ChannelMode::Stereo,
             });
         } else {
             self.stop();
         }
+    }
+
+    pub fn skip_to_index(&self, index: usize) -> Result<(), String> {
+        let mut q = self.queue.lock().unwrap();
+
+        if index >= q.len() {
+            return Err(format!(
+                "Índice de cola inválido: intentó saltar al elemento {}, pero la cola solo tiene longitud {}",
+                index,
+                q.len()
+            ));
+        }
+
+        q.drain(0..index);
+
+        if let Some(next_track) = q.pop_front() {
+            *self.auto_advance.lock().unwrap() = true;
+            *self.current_track.lock().unwrap() = Some(Arc::clone(&next_track));
+
+            let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&next_track)));
+
+            drop(q);
+
+            self.broadcast_queue_update();
+
+            let _ = self.engine_tx.send(AudioCommand::Play {
+                track: next_track,
+                mode: ChannelMode::Stereo,
+            });
+
+            Ok(())
+        } else {
+            Err("La cola se vació inesperadamente durante la extracción".to_string())
+        }
+    }
+
+    pub fn move_in_queue(&self, from: usize, to: usize) -> Result<(), String> {
+        let mut q = self.queue.lock().unwrap();
+        if from >= q.len() || to >= q.len() {
+            return Err("Índice fuera de rango".into());
+        }
+        let track = q.remove(from).unwrap();
+        q.insert(to, track);
+        drop(q);
+        self.broadcast_queue_update();
+        Ok(())
+    }
+
+    pub fn remove_from_queue(&self, index: usize) -> Result<(), String> {
+        let mut q = self.queue.lock().unwrap();
+
+        if index >= q.len() {
+            return Err("Índice fuera de rango al intentar eliminar de la cola".into());
+        }
+
+        q.remove(index);
+        drop(q); // Liberamos el candado antes del broadcast
+
+        self.broadcast_queue_update();
+        Ok(())
     }
 
     pub fn pause(&self) {
@@ -172,11 +255,10 @@ impl TrackManager {
     }
 
     /// Útil para que la UI sepa qué dibujar
-    pub fn get_current_track(&self) -> Option<Arc<PlayableTrack>> {
-        self.current_track.lock().unwrap().clone()
+    pub fn get_current_track(&self) -> Arc<Mutex<Option<Arc<PlayableTrack>>>> {
+        Arc::clone(&self.current_track)
     }
-
-    pub fn get_queue(&self) -> Vec<Arc<PlayableTrack>> {
+    pub fn get_queue_snapshot(&self) -> Vec<Arc<PlayableTrack>> {
         self.queue.lock().unwrap().iter().cloned().collect()
     }
 }
