@@ -130,7 +130,17 @@ impl PlaybackFeature {
                         else { self.manager.resume(); }
                     }
                     PlayerOutMessage::RequestNext => self.manager.skip_next(),
-                    PlayerOutMessage::RequestPrev => { /* TODO: Implementar prev en core */ },
+                    PlayerOutMessage::RequestPrev => {
+                        let is_added = self.manager.skip_prev();
+
+                        match is_added {
+                            Ok(_) => {
+                            }
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                            }
+                        }
+                    },
                     PlayerOutMessage::RequestSeek(pos) => self.manager.seek(Duration::from_secs_f32(pos)),
                     PlayerOutMessage::Idle => {}
                 }
@@ -155,11 +165,14 @@ impl PlaybackFeature {
         let current_position = self.manager.get_position().as_secs_f32();
         let vol = self.manager.get_volume();
 
+        let has_track = self.player.has_track();
+        let has_history = self.manager.history_len() != 0;
+
         let current_thumbnail = self.player.current_track.as_ref()
             .and_then(|t| thumbnails.peek(&t.track.id));
 
         let current_track = self.player.view_current_play(current_thumbnail).map(PlaybackFeatureMessage::Player);
-        let play_center = self.player.view(self.manager.state.is_playing(), self.player.has_track()).map(PlaybackFeatureMessage::Player);
+        let play_center = self.player.view(self.manager.state.is_playing(), has_track, has_history).map(PlaybackFeatureMessage::Player);
         let seek_bar = self.player.view_seek_bar(current_position).map(PlaybackFeatureMessage::Player);
         let vol_view = self.volume.view(vol).map(PlaybackFeatureMessage::Volume);
         let queue_toggle = self.queue.view_toggle_button().map(PlaybackFeatureMessage::Queue);

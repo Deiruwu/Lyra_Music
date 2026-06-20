@@ -60,7 +60,7 @@ impl Player {
         }
     }
 
-    pub fn view(&self, is_playing: bool, has_track: bool) -> Element<'_, PlayerMessage> {
+    pub fn view(&self, is_playing: bool, has_track: bool, has_history: bool) -> Element<'_, PlayerMessage> {
         let play_icon = if is_playing {
             text("").font(JETBRAINS_MONO)
         } else {
@@ -70,7 +70,7 @@ impl Player {
         let prev_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
                 button(text("󰒮").font(JETBRAINS_MONO).size(18)).style(transparent_button);
-            if has_track { b.on_press(PlayerMessage::UiPrev) } else { b }
+            if has_history { b.on_press(PlayerMessage::UiPrev) } else { b }
         };
 
         let play_button = {

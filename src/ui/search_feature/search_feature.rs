@@ -51,7 +51,6 @@ impl SearchFeature {
         }
     }
 
-    // INYECCIÓN: Recibimos el ThumbnailCache mutable
     pub fn update(
         &mut self,
         msg: SearchFeatureMessage,
@@ -119,7 +118,6 @@ impl SearchFeature {
                 self.is_searching = false;
                 self.results = tracks.clone();
 
-                // Usamos el caché inyectado para pedir las imágenes
                 let tasks: Vec<Task<_>> = tracks.into_iter().filter_map(|t| {
                     let id = t.id.clone();
                     let url = t.thumbnail_small.clone()?;
@@ -139,12 +137,10 @@ impl SearchFeature {
             }
 
             SearchFeatureMessage::ThumbnailLoaded { track_id, bytes } => {
-                // 1. Buscamos si la pista ya estaba descargada
                 let is_downloaded = self.results.iter()
                     .find(|t| t.id == track_id)
                     .map_or(false, |t| t.file_path.is_some());
 
-                // 2. Inyectamos al caché con el método correcto
                 if is_downloaded {
                     thumbnails.insert(track_id, bytes);
                 } else {
