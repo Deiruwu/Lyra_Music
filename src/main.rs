@@ -4,7 +4,7 @@ mod audio;
 mod ui;
 
 use std::sync::Arc;
-use iced::{border, Background, Border, Color, Element, Font, Length, Theme};
+use iced::{border, Background, Border, Color, Element, Font, Length, Padding, Theme};
 use iced::theme::Style;
 use iced::widget::{column, container, row, space, stack};
 use crate::audio::discord::DiscordPresence;
@@ -92,7 +92,14 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(iced::alignment::Horizontal::Right)
-            .padding(10);
+            .padding(
+                Padding {
+                    top: 10.0,
+                    right: 20.00,
+                    bottom: 10.0,
+                    left: 0.0,
+                }
+            );
 
         let content_layer = row![
             space().width(15),
