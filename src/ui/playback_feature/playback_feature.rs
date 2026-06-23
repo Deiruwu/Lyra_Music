@@ -62,7 +62,7 @@ impl PlaybackFeature {
     ) -> Task<PlaybackFeatureMessage> {
         match msg {
             PlaybackFeatureMessage::Play(track) => {
-                self.manager.enqueue(track);
+                self.manager.enqueue(track.track);
                 Task::none()
             }
 
@@ -72,8 +72,8 @@ impl PlaybackFeature {
 
                 // Usamos el caché inyectado
                 let tasks: Vec<Task<_>> = tracks.into_iter().filter_map(|t| {
-                    let id = t.track.id.clone();
-                    let url = t.track.thumbnail_small.clone()?;
+                    let id = t.id.clone();
+                    let url = t.thumbnail_small.clone()?;
                     thumbnails.request_download(id, url, |id, bytes| {
                         PlaybackFeatureMessage::ThumbnailLoaded { track_id: id, bytes }
                     })

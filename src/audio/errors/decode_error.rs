@@ -10,4 +10,9 @@ pub enum DecodeError {
     Resample(String),
     #[error("El archivo no contiene un flujo de audio legible")]
     NoAudioStream,
+    #[error("No se encontró la ruta para la canción con ID {0}")]
+    MissingFilePath(String),
+    
+    #[error("El archivo {0} no existe")]
+    FileNotFound(std::path::PathBuf),
 }

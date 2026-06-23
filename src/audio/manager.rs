@@ -20,11 +20,8 @@ pub struct TrackManager {
     pub state: Arc<EngineState>,
 
     current_track: Arc<Mutex<Option<Arc<PlayableTrack>>>>,
-    queue: Arc<Mutex<VecDeque<Arc<PlayableTrack>>>>,
+    queue: Arc<Mutex<VecDeque<Arc<Track>>>>,
 
-    /// Historial de reproducción. El último elemento es el track más reciente.
-    /// Guardamos solo `Track` para mantener el footprint de RAM bajo.
-    /// Cap: HISTORY_CAP. Cuando se llena, se descarta el más viejo (front).
     history: Arc<Mutex<VecDeque<Track>>>,
 
     auto_advance: Arc<Mutex<bool>>,
@@ -40,7 +37,7 @@ impl TrackManager {
         let engine_tx = engine.controller_tx.clone();
         let state = Arc::clone(&engine.state);
 
-        let queue = Arc::new(Mutex::new(VecDeque::<Arc<PlayableTrack>>::new()));
+        let queue = Arc::new(Mutex::new(VecDeque::<Arc<Track>>::new()));
         let current_track: Arc<Mutex<Option<Arc<PlayableTrack>>>> = Arc::new(Mutex::new(None));
         let history = Arc::new(Mutex::new(VecDeque::<Track>::new()));
         let auto_advance = Arc::new(Mutex::new(true));
@@ -70,15 +67,25 @@ impl TrackManager {
                         let mut q = supervisor_queue.lock().unwrap();
 
                         if let Some(next_track) = q.pop_front() {
+                            drop(q);
+
+                            let playable = match PlayableTrack::new((*next_track).clone()) {
+                                Ok(p) => Arc::new(p),
+                                Err(e) => {
+                                    eprintln!("[SUPERVISOR] No se pudo probear '{}': {:?}", next_track.id, e);
+                                    continue;
+                                }
+                            };
+
                             if let Some(current) = supervisor_current.lock().unwrap().as_ref() {
                                 push_to_history(&supervisor_history, current.track.clone());
                             }
 
-                            *supervisor_current.lock().unwrap() = Some(next_track.clone());
-                            let _ = event_tx_supervisor.send(TrackEvent::TrackChanged(next_track.clone()));
+                            *supervisor_current.lock().unwrap() = Some(Arc::clone(&playable));
+                            let _ = event_tx_supervisor.send(TrackEvent::TrackChanged(Arc::clone(&playable)));
                             let _ = queue_tx_supervisor.send(QueueEvent::QueueChanged);
                             let _ = supervisor_tx.send(AudioCommand::Play {
-                                track: next_track,
+                                track: playable,
                                 mode: ChannelMode::Stereo,
                             });
                         } else {
@@ -117,10 +124,6 @@ impl TrackManager {
 
     // ── Historial ─────────────────────────────────────────────────────────────
 
-    /// Retrocede al track anterior en el historial.
-    /// El current pasa al frente de la cola (para que next te regrese donde estabas).
-    /// Re-probea el archivo del historial para reconstruir el `PlayableTrack`.
-    /// Devuelve `Err` si el historial está vacío o el archivo ya no es accesible.
     pub fn skip_prev(&self) -> Result<(), String> {
         let prev_track = {
             let mut h = self.history.lock().unwrap();
@@ -139,7 +142,7 @@ impl TrackManager {
                     let current_guard = self.current_track.lock().unwrap();
                     if let Some(current) = current_guard.as_ref() {
                         let mut q = self.queue.lock().unwrap();
-                        q.push_front(Arc::clone(current));
+                        q.push_front(Arc::new(current.track.clone()));
                     }
                 }
 
@@ -159,17 +162,14 @@ impl TrackManager {
         }
     }
 
-    /// Snapshot del historial para la UI (orden cronológico, el último es el más reciente).
     pub fn get_history_snapshot(&self) -> Vec<Track> {
         self.history.lock().unwrap().iter().cloned().collect()
     }
 
-    /// Cuántos tracks hay en el historial actualmente.
     pub fn history_len(&self) -> usize {
         self.history.lock().unwrap().len()
     }
 
-    /// Borra el historial completo.
     pub fn clear_history(&self) {
         self.history.lock().unwrap().clear();
     }
@@ -177,30 +177,33 @@ impl TrackManager {
     // ── Cola ──────────────────────────────────────────────────────────────────
 
     /// Pone una pista inmediatamente, borrando lo que esté sonando.
-    /// Empuja el track actual al historial antes de reemplazarlo.
-    pub fn play_now(&self, track: PlayableTrack) {
-        // Guardamos el current en historial antes de pisarlo
+    pub fn play_now(&self, track: Track) {
         if let Some(current) = self.current_track.lock().unwrap().as_ref() {
             push_to_history(&self.history, current.track.clone());
         }
 
-        let track = Arc::new(track);
+        let playable = match PlayableTrack::new(track) {
+            Ok(p) => Arc::new(p),
+            Err(e) => {
+                eprintln!("[MANAGER] No se pudo probear track en play_now: {:?}", e);
+                return;
+            }
+        };
+
         *self.auto_advance.lock().unwrap() = true;
-        *self.current_track.lock().unwrap() = Some(Arc::clone(&track));
-        let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&track)));
+        *self.current_track.lock().unwrap() = Some(Arc::clone(&playable));
+        let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&playable)));
         let _ = self.engine_tx.send(AudioCommand::Play {
-            track,
+            track: playable,
             mode: ChannelMode::Stereo,
         });
     }
 
     /// Encola un track. Si el reproductor está parado, arranca inmediatamente.
-    pub fn enqueue(&self, track: PlayableTrack) {
-        let arc_track = Arc::new(track);
-
+    pub fn enqueue(&self, track: Track) {
         {
             let mut q = self.queue.lock().unwrap();
-            q.push_back(arc_track);
+            q.push_back(Arc::new(track));
         }
 
         self.broadcast_queue_update();
@@ -210,9 +213,8 @@ impl TrackManager {
         }
     }
 
-    /// Encola un track al frente de la cola (será el siguiente en sonar).
-    /// Si el reproductor está parado, arranca inmediatamente.
-    pub fn enqueue_front(&self, track: PlayableTrack) {
+    /// Encola un track al frente de la cola.
+    pub fn enqueue_front(&self, track: Track) {
         {
             let mut q = self.queue.lock().unwrap();
             q.push_front(Arc::new(track));
@@ -225,27 +227,22 @@ impl TrackManager {
         }
     }
 
-    /// Encola un track solo si su ID no aparece en: el current, la cola, ni el historial.
-    /// Útil para listas de radio donde no quieres repetir canciones nunca.
-    /// Devuelve `true` si se encoló, `false` si ya estaba presente en alguno de los tres.
-    pub fn enqueue_deduplicated(&self, track: PlayableTrack) -> bool {
+    /// Encola solo si el ID no aparece en current, cola ni historial.
+    pub fn enqueue_deduplicated(&self, track: Track) -> bool {
         {
-            // ¿Está sonando ahora mismo?
             if let Some(current) = self.current_track.lock().unwrap().as_ref() {
-                if current.track.id == track.track.id {
+                if current.track.id == track.id {
                     return false;
                 }
             }
 
-            // ¿Ya está en la cola?
             let q = self.queue.lock().unwrap();
-            if q.iter().any(|t| t.track.id == track.track.id) {
+            if q.iter().any(|t| t.id == track.id) {
                 return false;
             }
 
-            // ¿Ya se escuchó en esta sesión?
             let h = self.history.lock().unwrap();
-            if h.iter().any(|t| t.id == track.track.id) {
+            if h.iter().any(|t| t.id == track.id) {
                 return false;
             }
         }
@@ -261,19 +258,26 @@ impl TrackManager {
         };
 
         if let Some(track) = next_track {
+            let playable = match PlayableTrack::new((*track).clone()) {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    eprintln!("[MANAGER] No se pudo probear track en skip_next: {:?}", e);
+                    return;
+                }
+            };
+
             if let Some(current) = self.current_track.lock().unwrap().as_ref() {
                 push_to_history(&self.history, current.track.clone());
             }
 
             *self.auto_advance.lock().unwrap() = true;
-            *self.current_track.lock().unwrap() = Some(Arc::clone(&track));
+            *self.current_track.lock().unwrap() = Some(Arc::clone(&playable));
 
-            let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&track)));
-
+            let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&playable)));
             self.broadcast_queue_update();
 
             let _ = self.engine_tx.send(AudioCommand::Play {
-                track,
+                track: playable,
                 mode: ChannelMode::Stereo,
             });
         } else {
@@ -295,31 +299,33 @@ impl TrackManager {
         {
             let mut h = self.history.lock().unwrap();
 
-            // Primero el current
             if let Some(current) = self.current_track.lock().unwrap().as_ref() {
                 push_to_history_inner(&mut h, current.track.clone());
             }
 
-            // Luego los tracks que se saltean (0..index)
             for skipped in q.iter().take(index) {
-                push_to_history_inner(&mut h, skipped.track.clone());
+                push_to_history_inner(&mut h, (**skipped).clone());
             }
         }
 
         q.drain(0..index);
 
         if let Some(next_track) = q.pop_front() {
-            *self.auto_advance.lock().unwrap() = true;
-            *self.current_track.lock().unwrap() = Some(Arc::clone(&next_track));
-
-            let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&next_track)));
-
             drop(q);
 
+            let playable = match PlayableTrack::new((*next_track).clone()) {
+                Ok(p) => Arc::new(p),
+                Err(e) => return Err(format!("No se pudo probear el track destino: {:?}", e)),
+            };
+
+            *self.auto_advance.lock().unwrap() = true;
+            *self.current_track.lock().unwrap() = Some(Arc::clone(&playable));
+
+            let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&playable)));
             self.broadcast_queue_update();
 
             let _ = self.engine_tx.send(AudioCommand::Play {
-                track: next_track,
+                track: playable,
                 mode: ChannelMode::Stereo,
             });
 
@@ -350,7 +356,6 @@ impl TrackManager {
 
         q.remove(index);
         drop(q);
-
         self.broadcast_queue_update();
         Ok(())
     }
@@ -366,7 +371,6 @@ impl TrackManager {
     }
 
     pub fn stop(&self) {
-        // Al parar manualmente también guardamos en historial
         if let Some(current) = self.current_track.lock().unwrap().as_ref() {
             push_to_history(&self.history, current.track.clone());
         }
@@ -398,24 +402,21 @@ impl TrackManager {
         Arc::clone(&self.current_track)
     }
 
-    pub fn get_queue_snapshot(&self) -> Vec<Arc<PlayableTrack>> {
+    pub fn get_queue_snapshot(&self) -> Vec<Arc<Track>> {
         self.queue.lock().unwrap().iter().cloned().collect()
     }
 }
 
 // ── Helpers privados ──────────────────────────────────────────────────────────
 
-/// Empuja un track al historial respetando el cap.
-/// Recibe el Arc<Mutex<>> para poder usarse desde el hilo supervisor.
 fn push_to_history(history: &Arc<Mutex<VecDeque<Track>>>, track: Track) {
     let mut h = history.lock().unwrap();
     push_to_history_inner(&mut h, track);
 }
 
-/// Versión que trabaja sobre un guard ya bloqueado, para evitar doble lock.
 fn push_to_history_inner(h: &mut VecDeque<Track>, track: Track) {
     if h.len() >= HISTORY_CAP {
-        h.pop_front(); // Descartamos el más viejo
+        h.pop_front();
     }
     h.push_back(track);
 }

@@ -7,6 +7,7 @@ pub enum TrackEvent {
     Paused,
     Resumed,
     Stopped,
+    Buffering,
 }
 
 #[derive(Debug, Clone)]

@@ -11,6 +11,8 @@ use crate::audio::discord::DiscordPresence;
 use crate::audio::engine::AudioEngine;
 use crate::audio::manager::TrackManager;
 use crate::audio::mpris::MprisServer;
+use crate::audio::radio_daemon::RadioWorker;
+use crate::microservices::client::MicroserviceClient;
 use crate::ui::playback_feature::playback_feature::{PlaybackFeature, PlaybackFeatureMessage};
 use crate::ui::search_feature::search_feature::{SearchFeature, SearchFeatureMessage, SearchFeatureOutMessage};
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
@@ -28,23 +30,39 @@ struct App {
     search_feature: SearchFeature,
     playback_feature: PlaybackFeature,
     thumbnails: ThumbnailCache,
+    radio: Arc<RadioWorker>,
 }
 
 impl App {
     pub fn init() -> (Self, iced::Task<AppMessage>) {
+
+
         let (manager, engine) = TrackManager::new()
             .expect("Fallo fatal al inicializar el hardware de audio");
 
         let manager = Arc::new(manager);
 
+        let client = Arc::new(MicroserviceClient::new(
+            &std::env::var("TRACK_MANAGER_HOST").unwrap_or("127.0.0.1".into()),
+            std::env::var("TRACK_MANAGER_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(7878),
+        ));
+
         MprisServer::spawn(Arc::clone(&manager));
         DiscordPresence::spawn(Arc::clone(&manager));
+
+        let radio = RadioWorker::new(Arc::clone(&manager), client).spawn();
+        radio.set_enabled(true);
+        radio.set_queue_target(15);
 
         let app = Self {
             _engine: engine,
             search_feature: SearchFeature::new(),
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
             thumbnails: ThumbnailCache::new(100),
+            radio,
         };
 
         (app, iced::Task::none())

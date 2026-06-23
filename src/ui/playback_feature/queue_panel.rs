@@ -3,6 +3,7 @@ use iced::{Element, Length, Task};
 use iced::widget::{button, column, container, scrollable, space, text};
 use crate::JETBRAINS_MONO;
 use crate::model::audio_tech::PlayableTrack;
+use crate::model::Track;
 use crate::ui::styles::styles::transparent_button;
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::widgets::track_row::queue_track_row;
@@ -29,7 +30,7 @@ pub enum QueueOutMessage {
 
 pub struct QueuePanel {
     pub show: bool,
-    queue: Vec<Arc<PlayableTrack>>,
+    queue: Vec<Arc<Track>>,
     hovered_row: Option<usize>,
     hovered_delete: Option<usize>,
 }
@@ -86,7 +87,7 @@ impl QueuePanel {
                 .iter()
                 .enumerate()
                 .map(|(index, track)| {
-                    let thumbnail = cache.peek(&track.track.id);
+                    let thumbnail = cache.peek(&track.id);
                     queue_track_row(
                         track.as_ref(),
                         thumbnail,
@@ -130,7 +131,7 @@ impl QueuePanel {
         }.into()
     }
 
-    pub fn queue_update(&mut self, queue: Vec<Arc<PlayableTrack>>) {
+    pub fn queue_update(&mut self, queue: Vec<Arc<Track>>) {
         self.queue = queue;
         if self.queue.is_empty() {
             self.show = false;

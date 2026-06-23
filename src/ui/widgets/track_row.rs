@@ -137,7 +137,7 @@ where
 }
 
 pub fn queue_track_row<'a, Message>(
-    track: &'a PlayableTrack,
+    track: &'a Track,
     thumbnail: Option<Handle>,
     on_play: Message,
     on_delete: Message,
@@ -152,7 +152,7 @@ where
     Message: Clone + 'a,
 {
     let thumb = thumbnail_with_play_hover(thumbnail, on_play, row_hovered);
-    let info = track_info(&track.track);
+    let info = track_info(&track);
 
     let delete_button = mouse_area(
         button(

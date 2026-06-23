@@ -66,6 +66,7 @@ async fn run_server(manager: Arc<TrackManager>) -> Result<(), Box<dyn std::error
                             Property::PlaybackStatus(PlaybackStatus::Stopped),
                         ]).await;
                     }
+                    _ => {}
                 }
             }
 
