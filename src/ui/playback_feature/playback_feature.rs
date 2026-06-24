@@ -4,7 +4,7 @@ use futures::SinkExt;
 use iced::{stream, Alignment, Color, Element, Length, Subscription, Task, Theme};
 use iced::widget::{container, column, row};
 use tokio::sync::broadcast;
-
+use tokio::sync::broadcast::error::RecvError;
 use crate::model::audio_tech::PlayableTrack;
 use crate::audio::manager::TrackManager;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
@@ -230,6 +230,7 @@ fn queue_events() -> impl futures::Stream<Item = PlaybackFeatureMessage> {
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,
+                _ => {}
             }
         }
     })

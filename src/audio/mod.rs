@@ -7,3 +7,4 @@ pub mod mpris;
 pub mod track_event;
 pub mod discord;
 pub mod radio_daemon;
+pub mod download_daemon;

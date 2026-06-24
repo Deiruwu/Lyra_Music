@@ -8,6 +8,7 @@ use iced::{border, Background, Border, Color, Element, Font, Length, Padding, Th
 use iced::theme::Style;
 use iced::widget::{column, container, row, space, stack};
 use crate::audio::discord::DiscordPresence;
+use crate::audio::download_daemon::DownloadWorker;
 use crate::audio::engine::AudioEngine;
 use crate::audio::manager::TrackManager;
 use crate::audio::mpris::MprisServer;
@@ -52,6 +53,8 @@ impl App {
 
         MprisServer::spawn(Arc::clone(&manager));
         DiscordPresence::spawn(Arc::clone(&manager));
+
+        DownloadWorker::new(Arc::clone(&manager), Arc::clone(&client)).spawn();
 
         let radio = RadioWorker::new(Arc::clone(&manager), client).spawn();
         radio.set_enabled(true);

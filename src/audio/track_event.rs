@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use crate::model::audio_tech::PlayableTrack;
+use crate::model::Track;
 
 #[derive(Debug, Clone)]
 pub enum TrackEvent {
@@ -7,10 +8,10 @@ pub enum TrackEvent {
     Paused,
     Resumed,
     Stopped,
-    Buffering,
 }
 
 #[derive(Debug, Clone)]
 pub enum QueueEvent {
     QueueChanged,
+    DownloadRequired(Arc<Track>),
 }

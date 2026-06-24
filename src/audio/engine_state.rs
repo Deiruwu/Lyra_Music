@@ -18,8 +18,19 @@ pub enum AudioCommand {
 }
 
 // --- ESTADO COMPARTIDO LOCK-FREE ---
+//
+// Tabla de estados del motor:
+//
+//   0 = Stopped   — sin pista, silencio.
+//   1 = Playing   — decodificando y enviando audio al hardware.
+//   2 = Paused    — pista cargada pero el hardware emite silencio.
+//   3 = Finished  — el decoder llegó al final; el supervisor leerá este
+//                   valor y avanzará a la próxima pista de la cola.
+//   4 = Downloading — la siguiente pista no tiene archivo local todavía;
+//                   el DownloadWorker está resolviendo la descarga.
+//                   El supervisor espera hasta que vuelva a estado 3.
+//
 pub struct EngineState {
-    // 0 = Stopped, 1 = Playing, 2 = Paused
     pub status: AtomicU8,
     // Volumen almacenado como bits (u32) para poder usar operaciones atómicas
     pub volume_bits: AtomicU32,
@@ -33,8 +44,8 @@ impl EngineState {
     /// Detenido, con volumen al 100% (1.0) y en la posición cero.
     pub fn new() -> Self {
         Self {
-            status: AtomicU8::new(0), // 0 = Stopped
-            volume_bits: AtomicU32::new(1.0f32.to_bits()), // 1.0 en representación binaria f32
+            status: AtomicU8::new(0),
+            volume_bits: AtomicU32::new(1.0f32.to_bits()),
             position_ms: AtomicU32::new(0),
             flush_flag: AtomicBool::new(false),
         }
@@ -54,5 +65,11 @@ impl EngineState {
 
     pub fn is_playing(&self) -> bool {
         self.status.load(Ordering::Relaxed) == 1
+    }
+
+    /// True cuando el motor está esperando a que el DownloadWorker termine
+    /// de bajar la siguiente pista antes de poder reproducirla.
+    pub fn is_downloading(&self) -> bool {
+        self.status.load(Ordering::Relaxed) == 4
     }
 }

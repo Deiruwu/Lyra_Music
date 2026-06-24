@@ -27,7 +27,7 @@ impl RadioWorker {
         Self {
             manager,
             client,
-            enabled:      Arc::new(AtomicBool::new(false)),
+            enabled: Arc::new(AtomicBool::new(false)),
             queue_target: Arc::new(AtomicUsize::new(DEFAULT_QUEUE_TARGET)),
         }
     }
@@ -101,7 +101,7 @@ impl RadioWorker {
                         }
                         Err(RecvError::Closed)   => break,
                         Err(RecvError::Lagged(_)) => {}
-                    }
+                    _ => {}}
                 }
             }
         }
@@ -111,41 +111,106 @@ impl RadioWorker {
 
     // ── Lógica de relleno ─────────────────────────────────────────────────────
 
-    /// Si la cola está por debajo del target, pide tracks al microservicio y los encola.
-    async fn fill_queue(&self, seed_id: &str) {
-        let target      = self.queue_target();
-        let current_len = self.manager.get_queue_snapshot().len();
+    async fn fill_queue(&self, current_seed: &str) {
+        let target = self.queue_target();
+        let queue_snapshot = self.manager.get_queue_snapshot();
+        let current_len = queue_snapshot.len();
 
-        if current_len >= target {
+        // 1. PATRÓN LOW WATERMARK (Marca de agua baja al 20%)
+        // Calculamos el umbral crítico de pánico. Si target es 10, watermark es 2.
+        let watermark = (target * 20 / 100).max(1);
+
+        // CONDICIÓN DE CORTE ABSOLUTA: Si la cola está por encima del 20%,
+        // el daemon tiene estrictamente prohibido tocar el socket de red.
+        if current_len > watermark {
             return;
         }
 
-        let needed = target - current_len;
+        let needed = target.saturating_sub(current_len);
+        if needed == 0 {
+            return;
+        }
 
-        match self.client.radio(seed_id).await {
-            Ok(tracks) => {
-                let mut enqueued = 0;
+        // 2. RECOLECCIÓN DE ENTROPÍA (Seed Hopping)
+        // Construimos un radar de semillas candidatas ordenadas por lógica temporal:
+        //   1. La pista actual (current_seed).
+        //   2. Las pistas de la cola EN ORDEN INVERSO (de la última hacia atrás).
+        //   3. El historial reciente (por si el usuario vació la cola a mano).
+        let mut candidate_seeds = Vec::new();
 
-                for track in tracks {
-                    if enqueued >= needed {
+        if !current_seed.is_empty() {
+            candidate_seeds.push(current_seed.to_string());
+        }
+
+        // ¿Por qué .rev()? Porque la última canción de la cola define hacia
+        // dónde se dirige el mood de la sesión, no de dónde viene.
+        for track in queue_snapshot.iter().rev() {
+            if !candidate_seeds.contains(&track.id) {
+                candidate_seeds.push(track.id.clone());
+            }
+        }
+
+        // Si la cola era muy corta, rascamos el fondo del historial
+        if candidate_seeds.len() < 3 {
+            let history = self.manager.get_history_snapshot();
+            for track in history.iter().rev().take(5) {
+                if !candidate_seeds.contains(&track.id) {
+                    candidate_seeds.push(track.id.clone());
+                }
+            }
+        }
+
+        if candidate_seeds.is_empty() {
+            eprintln!("[RADIO] Inanición absoluta: No hay IDs en current, cola ni historial para usar de semilla.");
+            return;
+        }
+
+        // 3. BUCLE DE EXHAUSTIVIDAD CON CORTAFUEGOS (Máximo 3 semillas por ciclo)
+        let mut total_enqueued = 0;
+        let max_seeds_to_try = candidate_seeds.len().min(3);
+
+        for seed_id in candidate_seeds.iter().take(max_seeds_to_try) {
+            let still_needed = needed - total_enqueued;
+            if still_needed == 0 {
+                break;
+            }
+
+            match self.client.radio(seed_id).await {
+                Ok(tracks) => {
+                    let mut fresh_in_this_seed = 0;
+
+                    for track in tracks {
+                        if total_enqueued >= needed {
+                            break;
+                        }
+                        if self.manager.enqueue_deduplicated(track) {
+                            total_enqueued += 1;
+                            fresh_in_this_seed += 1;
+                        }
+                    }
+
+                    // CRÍTICO: Si esta semilla nos dio al menos UNA canción nueva,
+                    // asumimos que el filón es bueno y rompemos el hopping.
+                    if fresh_in_this_seed > 0 {
                         break;
-                    }
-
-                    if self.manager.enqueue_deduplicated(track) {
-                        enqueued += 1;
+                    } else {
+                        println!("[RADIO] Semilla '{}' agotada (100% duplicados). Saltando a la siguiente...", seed_id);
                     }
                 }
-
-                if enqueued < needed {
-                    eprintln!(
-                        "[RADIO] Solo se encolaron {enqueued}/{needed} tracks \
-                         (pocos resultados no duplicados del microservicio)."
-                    );
+                Err(e) => {
+                    eprintln!("[RADIO] Falló la red al pedir semilla '{}': {}", seed_id, e);
                 }
             }
-            Err(e) => {
-                eprintln!("[RADIO] Error al pedir radio: {e}");
-            }
+        }
+
+        // 4. FEEDBACK RIGUROSO Y SILENCIOSO
+        if total_enqueued < needed {
+            eprintln!(
+                "[RADIO] Librería hostil: Tras iterar {} semillas distintas, solo se obtuvieron {}/{} tracks limpios.",
+                max_seeds_to_try, total_enqueued, needed
+            );
+        } else {
+            println!("[RADIO] Batería recargada: +{} tracks (Cola al target de {}).", total_enqueued, target);
         }
     }
 }

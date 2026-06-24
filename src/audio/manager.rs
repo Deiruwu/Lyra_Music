@@ -42,12 +42,12 @@ impl TrackManager {
         let history = Arc::new(Mutex::new(VecDeque::<Track>::new()));
         let auto_advance = Arc::new(Mutex::new(true));
 
-        let supervisor_state = Arc::clone(&state);
-        let supervisor_tx = engine_tx.clone();
-        let supervisor_queue = Arc::clone(&queue);
-        let supervisor_current = Arc::clone(&current_track);
-        let supervisor_history = Arc::clone(&history);
-        let supervisor_advance = Arc::clone(&auto_advance);
+        let supervisor_state    = Arc::clone(&state);
+        let supervisor_tx       = engine_tx.clone();
+        let supervisor_queue    = Arc::clone(&queue);
+        let supervisor_current  = Arc::clone(&current_track);
+        let supervisor_history  = Arc::clone(&history);
+        let supervisor_advance  = Arc::clone(&auto_advance);
 
         let (event_tx, _) = broadcast::channel(16);
         let (queue_tx, _) = broadcast::channel(16);
@@ -60,19 +60,41 @@ impl TrackManager {
                 loop {
                     thread::sleep(Duration::from_millis(500));
 
-                    let status = supervisor_state.status.load(Ordering::Relaxed);
+                    let status      = supervisor_state.status.load(Ordering::Relaxed);
                     let can_advance = *supervisor_advance.lock().unwrap();
 
+                    // Estado 4 = esperando descarga; el DownloadWorker reactivará
+                    // el ciclo cuando termine (vuelve a estado 3).
                     if status == 3 && can_advance {
                         let mut q = supervisor_queue.lock().unwrap();
 
                         if let Some(next_track) = q.pop_front() {
                             drop(q);
 
+                            // ── ¿El track tiene archivo local? ────────────────────────────────
+                            if next_track.file_path.is_none() {
+                                // Devolver al frente y señalizar descarga de emergencia.
+                                // El DownloadWorker lo descargará y luego restaurará estado 3.
+                                supervisor_queue.lock().unwrap().push_front(Arc::clone(&next_track));
+                                supervisor_state.status.store(4, Ordering::Relaxed);
+
+                                eprintln!(
+                                    "[SUPERVISOR] \"{}\" sin archivo local, solicitando descarga de emergencia.",
+                                    next_track.title
+                                );
+
+                                let _ = queue_tx_supervisor.send(QueueEvent::DownloadRequired(next_track));
+                                continue;
+                            }
+                            // ─────────────────────────────────────────────────────────────────
+
                             let playable = match PlayableTrack::new((*next_track).clone()) {
                                 Ok(p) => Arc::new(p),
                                 Err(e) => {
-                                    eprintln!("[SUPERVISOR] No se pudo probear '{}': {:?}", next_track.id, e);
+                                    eprintln!(
+                                        "[SUPERVISOR] No se pudo probear '{}': {:?}",
+                                        next_track.id, e
+                                    );
                                     continue;
                                 }
                             };
@@ -258,6 +280,32 @@ impl TrackManager {
         };
 
         if let Some(track) = next_track {
+            // ── ¿El track tiene archivo local? ────────────────────────────────────
+            if track.file_path.is_none() {
+                // Devolver al frente, detener lo que esté sonando y señalizar
+                // descarga de emergencia. El DownloadWorker descargará el archivo
+                // y, cuando termine, restaurará el estado 3 para reanudar.
+                self.queue.lock().unwrap().push_front(Arc::clone(&track));
+
+                let _ = self.engine_tx.send(AudioCommand::Stop);
+
+                if let Some(current) = self.current_track.lock().unwrap().as_ref() {
+                    push_to_history(&self.history, current.track.clone());
+                }
+                *self.current_track.lock().unwrap() = None;
+                *self.auto_advance.lock().unwrap() = true;
+
+                eprintln!(
+                    "[MANAGER] \"{}\" sin archivo local, solicitando descarga de emergencia.",
+                    track.title
+                );
+
+                self.state.status.store(4, Ordering::Relaxed);
+                let _ = self.queue_tx.send(QueueEvent::DownloadRequired(track));
+                return;
+            }
+            // ─────────────────────────────────────────────────────────────────────
+
             let playable = match PlayableTrack::new((*track).clone()) {
                 Ok(p) => Arc::new(p),
                 Err(e) => {
@@ -313,6 +361,31 @@ impl TrackManager {
         if let Some(next_track) = q.pop_front() {
             drop(q);
 
+            // ── ¿El track tiene archivo local? ────────────────────────────────
+            if next_track.file_path.is_none() {
+                // Devolver al frente y delegar al DownloadWorker.
+                // El supervisor retomará la reproducción cuando la descarga termine.
+                self.queue.lock().unwrap().push_front(Arc::clone(&next_track));
+
+                let _ = self.engine_tx.send(AudioCommand::Stop);
+
+                if let Some(current) = self.current_track.lock().unwrap().as_ref() {
+                    push_to_history(&self.history, current.track.clone());
+                }
+                *self.current_track.lock().unwrap() = None;
+                *self.auto_advance.lock().unwrap() = true;
+
+                eprintln!(
+                    "[MANAGER] \"{}\" sin archivo local en skip_to_index, solicitando descarga.",
+                    next_track.title
+                );
+
+                self.state.status.store(4, Ordering::Relaxed);
+                let _ = self.queue_tx.send(QueueEvent::DownloadRequired(next_track));
+                return Ok(());
+            }
+            // ─────────────────────────────────────────────────────────────────
+
             let playable = match PlayableTrack::new((*next_track).clone()) {
                 Ok(p) => Arc::new(p),
                 Err(e) => return Err(format!("No se pudo probear el track destino: {:?}", e)),
@@ -359,6 +432,60 @@ impl TrackManager {
         self.broadcast_queue_update();
         Ok(())
     }
+
+    // ── Helpers para el DownloadWorker ────────────────────────────────────────
+
+    /// Reemplaza el track al frente de la cola por su versión descargada.
+    ///
+    /// Solo actúa si el track al frente tiene el mismo `id` que `new_track`
+    /// (para evitar reemplazos erróneos si la cola cambió mientras se descargaba).
+    ///
+    /// Si `resume_play` es `true`, restaura el estado "Finished" (3) para que
+    /// el supervisor retome la reproducción inmediatamente.
+    pub fn replace_queue_front(&self, new_track: Track, resume_play: bool) {
+        {
+            let mut q = self.queue.lock().unwrap();
+            match q.front_mut() {
+                Some(front) if front.id == new_track.id => {
+                    *front = Arc::new(new_track);
+                }
+                _ => {
+                    // El track ya no está al frente (fue removido o la cola cambió).
+                    return;
+                }
+            }
+        }
+
+        if resume_play {
+            *self.auto_advance.lock().unwrap() = true;
+            // Volver a estado "Finished" para que el supervisor avance.
+            self.state.status.store(3, Ordering::Relaxed);
+        }
+
+        self.broadcast_queue_update();
+    }
+
+    /// Elimina el track al frente de la cola (descarga fallida irrecuperable)
+    /// y reanuda el ciclo del supervisor para que intente con el siguiente.
+    ///
+    /// Solo actúa si el frente coincide con `track_id`.
+    pub fn remove_queue_front_and_resume(&self, track_id: &str) {
+        {
+            let mut q = self.queue.lock().unwrap();
+            if q.front().map_or(false, |t| t.id == track_id) {
+                q.pop_front();
+            } else {
+                return;
+            }
+        }
+
+        *self.auto_advance.lock().unwrap() = true;
+        // Devolver a "Finished" para que el supervisor pruebe con la siguiente pista.
+        self.state.status.store(3, Ordering::Relaxed);
+        self.broadcast_queue_update();
+    }
+
+    // ── Controles de reproducción ─────────────────────────────────────────────
 
     pub fn pause(&self) {
         let _ = self.engine_tx.send(AudioCommand::Pause);
