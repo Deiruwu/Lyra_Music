@@ -64,7 +64,7 @@ impl App {
             _engine: engine,
             search_feature: SearchFeature::new(),
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
-            thumbnails: ThumbnailCache::new(100),
+            thumbnails: ThumbnailCache::new(250, 50),
             radio,
         };
 

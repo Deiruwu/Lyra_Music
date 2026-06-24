@@ -1,15 +1,16 @@
 use iced::{Element, Subscription, Task};
 use crate::microservices::client::MicroserviceClient;
 use crate::model::audio_tech::PlayableTrack;
-use crate::model::Track;
+use crate::model::{Track, TrackState};
 use crate::ui::search_feature::search_bar::{SearchFilter, SearchInput, SearchMessage, SearchOutMessage};
-use crate::ui::utils::thumbnail_cache::ThumbnailCache;
+use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 
 #[derive(Debug, Clone)]
 pub enum SearchFeatureMessage {
     Ui(SearchMessage),
     SearchCompleted(Result<Vec<Track>, String>),
-    ThumbnailLoaded { track_id: String, bytes: Vec<u8> },
+    ThumbnailColorLoaded { key: String, bytes: Vec<u8> },
+    ThumbnailGrayLoaded  { track_id: String, bytes: Vec<u8> },
     DownloadFinished(Result<PlayableTrack, String>),
 }
 
@@ -54,12 +55,12 @@ impl SearchFeature {
     pub fn update(
         &mut self,
         msg: SearchFeatureMessage,
-        thumbnails: &mut ThumbnailCache
+        thumbnails: &mut ThumbnailCache,
     ) -> (Task<SearchFeatureMessage>, SearchFeatureOutMessage) {
         match msg {
             SearchFeatureMessage::Ui(ui_msg) => {
                 let (task, out_msg) = self.input.update(ui_msg);
-                let mut district_task = Task::none();
+                let mut extra_task = Task::none();
 
                 match out_msg {
                     SearchOutMessage::RequestSearch(query, filter) => {
@@ -72,11 +73,11 @@ impl SearchFeature {
 
                             let client = self.micro_service.clone();
                             let filter_str = match filter {
-                                SearchFilter::Songs => Some("songs"),
+                                SearchFilter::Songs  => Some("songs"),
                                 SearchFilter::Videos => Some("videos"),
                             };
 
-                            district_task = Task::perform(
+                            extra_task = Task::perform(
                                 async move {
                                     client.search(&query, 5, filter_str).await.map_err(|e| e.to_string())
                                 },
@@ -84,13 +85,14 @@ impl SearchFeature {
                             );
                         }
                     }
+
                     SearchOutMessage::RequestDownloadAndPlay(track) => {
                         self.results.clear();
                         let client = self.micro_service.clone();
                         let query = track.id.clone();
                         println!("Iniciando descarga de: {}", track.title);
 
-                        district_task = Task::perform(
+                        extra_task = Task::perform(
                             async move {
                                 let downloaded_track = client.download(&query)
                                     .await
@@ -108,23 +110,40 @@ impl SearchFeature {
                             SearchFeatureMessage::DownloadFinished,
                         );
                     }
+
                     SearchOutMessage::Idle => {}
                 }
 
-                (Task::batch(vec![task.map(SearchFeatureMessage::Ui), district_task]), SearchFeatureOutMessage::Idle)
+                (Task::batch(vec![task.map(SearchFeatureMessage::Ui), extra_task]), SearchFeatureOutMessage::Idle)
             }
+
+            // ── Resultados de búsqueda ────────────────────────────────────────
 
             SearchFeatureMessage::SearchCompleted(Ok(tracks)) => {
                 self.is_searching = false;
                 self.results = tracks.clone();
 
+                // Cada track recibe gris si es Partial, color si ya está Cached.
                 let tasks: Vec<Task<_>> = tracks.into_iter().filter_map(|t| {
-                    let id = t.id.clone();
-                    let url = t.thumbnail_small.clone()?;
-
-                    thumbnails.request_download(id, url, |id, bytes| {
-                        SearchFeatureMessage::ThumbnailLoaded { track_id: id, bytes }
-                    })
+                    match t.state {
+                        TrackState::Partial => {
+                            let url = t.thumbnail_small.clone()?;
+                            thumbnails.request_gray(
+                                t.id.clone(),
+                                url,
+                                |id, bytes| SearchFeatureMessage::ThumbnailGrayLoaded { track_id: id, bytes },
+                            )
+                        }
+                        TrackState::Cached => {
+                            let url = t.thumbnail_small.clone()?;
+                            let key = thumb_key(&t);
+                            thumbnails.request_color(
+                                key,
+                                url,
+                                |key, bytes| SearchFeatureMessage::ThumbnailColorLoaded { key, bytes },
+                            )
+                        }
+                    }
                 }).collect();
 
                 (Task::batch(tasks), SearchFeatureOutMessage::Idle)
@@ -136,23 +155,39 @@ impl SearchFeature {
                 (Task::none(), SearchFeatureOutMessage::Idle)
             }
 
-            SearchFeatureMessage::ThumbnailLoaded { track_id, bytes } => {
-                let is_downloaded = self.results.iter()
-                    .find(|t| t.id == track_id)
-                    .map_or(false, |t| t.file_path.is_some());
+            // ── Thumbnails recibidos ──────────────────────────────────────────
 
-                if is_downloaded {
-                    thumbnails.insert(track_id, bytes);
-                } else {
-                    thumbnails.insert_grayscale(track_id, bytes);
-                }
-
+            SearchFeatureMessage::ThumbnailGrayLoaded { track_id, bytes } => {
+                thumbnails.insert_gray(track_id, bytes);
                 (Task::none(), SearchFeatureOutMessage::Idle)
             }
 
+            SearchFeatureMessage::ThumbnailColorLoaded { key, bytes } => {
+                thumbnails.insert_color(key, bytes);
+                (Task::none(), SearchFeatureOutMessage::Idle)
+            }
+
+            // ── Descarga de canción completada ────────────────────────────────
+
             SearchFeatureMessage::DownloadFinished(Ok(playable)) => {
                 println!("Descarga completada y lista para sonar.");
-                (Task::none(), SearchFeatureOutMessage::TrackReadyToPlay(playable))
+
+                // La canción ahora es Cached → descargar thumbnail a color.
+                // Como usa thumb_key (album_id o track_id), no colisiona con el gris
+                // que usaba track_id directo. El caché de color lanza el Task sin
+                // necesidad de invalidar nada.
+                let task = playable.track.thumbnail_small.as_ref()
+                    .and_then(|url| {
+                        let key = thumb_key(&playable.track);
+                        thumbnails.request_color(
+                            key,
+                            url.clone(),
+                            |key, bytes| SearchFeatureMessage::ThumbnailColorLoaded { key, bytes },
+                        )
+                    })
+                    .unwrap_or(Task::none());
+
+                (task, SearchFeatureOutMessage::TrackReadyToPlay(playable))
             }
 
             SearchFeatureMessage::DownloadFinished(Err(e)) => {
@@ -165,11 +200,12 @@ impl SearchFeature {
     pub fn view(&self) -> Element<'_, SearchFeatureMessage> {
         self.input.view().map(SearchFeatureMessage::Ui)
     }
+
     pub fn view_dropdown<'a>(&'a self, thumbnails: &'a ThumbnailCache) -> Element<'a, SearchFeatureMessage> {
         self.input.view_dropdown(
             self.is_searching,
             &self.results,
-            thumbnails
+            thumbnails,
         ).map(SearchFeatureMessage::Ui)
     }
 }

@@ -273,6 +273,25 @@ impl TrackManager {
         true
     }
 
+    /// Encola un lote masivo de tracks con un solo lock y un solo broadcast.
+    pub fn enqueue_many(&self, tracks: Vec<Track>) {
+        if tracks.is_empty() {
+            return;
+        }
+
+        {
+            let mut q = self.queue.lock().unwrap();
+            q.extend(tracks.into_iter().map(Arc::new));
+        }
+
+        self.broadcast_queue_update();
+
+        // Si el motor estaba totalmente detenido, lo arrancamos
+        if self.state.status.load(Ordering::Relaxed) == 0 {
+            self.skip_next();
+        }
+    }
+
     pub fn skip_next(&self) {
         let next_track = {
             let mut q = self.queue.lock().unwrap();

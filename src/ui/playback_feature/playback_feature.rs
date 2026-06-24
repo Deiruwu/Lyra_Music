@@ -12,7 +12,7 @@ use crate::audio::track_event::{QueueEvent, TrackEvent};
 use crate::ui::playback_feature::player::{Player, PlayerMessage, PlayerOutMessage};
 use crate::ui::playback_feature::queue_panel::{QueueMessage, QueueOutMessage, QueuePanel};
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
-use crate::ui::utils::thumbnail_cache::ThumbnailCache;
+use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 
 #[derive(Debug, Clone)]
 pub enum PlaybackFeatureMessage {
@@ -20,7 +20,7 @@ pub enum PlaybackFeatureMessage {
     Volume(VolumeMessage),
     Queue(QueueMessage),
     QueueChanged,
-    ThumbnailLoaded { track_id: String, bytes: Vec<u8> },
+    ThumbnailColorLoaded { key: String, bytes: Vec<u8> },
     Play(PlayableTrack),
     Tick,
 }
@@ -58,7 +58,7 @@ impl PlaybackFeature {
     pub fn update(
         &mut self,
         msg: PlaybackFeatureMessage,
-        thumbnails: &mut ThumbnailCache
+        thumbnails: &mut ThumbnailCache,
     ) -> Task<PlaybackFeatureMessage> {
         match msg {
             PlaybackFeatureMessage::Play(track) => {
@@ -70,38 +70,32 @@ impl PlaybackFeature {
                 let tracks = self.manager.get_queue_snapshot();
                 self.queue.queue_update(tracks.clone());
 
-                // Usamos el caché inyectado
                 let tasks: Vec<Task<_>> = tracks.into_iter().filter_map(|t| {
-                    let id = t.id.clone();
                     let url = t.thumbnail_small.clone()?;
-                    thumbnails.request_download(id, url, |id, bytes| {
-                        PlaybackFeatureMessage::ThumbnailLoaded { track_id: id, bytes }
+                    let key = thumb_key(&t);
+                    thumbnails.request_color(key, url, |key, bytes| {
+                        PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes }
                     })
                 }).collect();
 
                 Task::batch(tasks)
             }
 
-            PlaybackFeatureMessage::ThumbnailLoaded { track_id, bytes } => {
-                thumbnails.insert(track_id, bytes);
+            PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes } => {
+                thumbnails.insert_color(key, bytes);
                 Task::none()
             }
 
-            PlaybackFeatureMessage::Tick => {
-            Task::none()
-            }
+            PlaybackFeatureMessage::Tick => Task::none(),
 
-            // ==========================================
-            // EVALUACIÓN DE OUT-MESSAGES
-            // ==========================================
             PlaybackFeatureMessage::Queue(msg) => {
                 let (task, out_msg) = self.queue.update(msg);
 
                 match out_msg {
-                    QueueOutMessage::RequestPlay(index) => self.manager.skip_to_index(index).unwrap(),
-                    QueueOutMessage::RequestRemove(index) => self.manager.remove_from_queue(index).unwrap(),
-                    QueueOutMessage::RequestMove(from, to) => self.manager.move_in_queue(from, to).unwrap(),
-                    QueueOutMessage::Idle => {}
+                    QueueOutMessage::RequestPlay(index)         => self.manager.skip_to_index(index).unwrap(),
+                    QueueOutMessage::RequestRemove(index)       => self.manager.remove_from_queue(index).unwrap(),
+                    QueueOutMessage::RequestMove(from, to)      => self.manager.move_in_queue(from, to).unwrap(),
+                    QueueOutMessage::Idle                       => {}
                 }
 
                 task.map(PlaybackFeatureMessage::Queue)
@@ -110,12 +104,12 @@ impl PlaybackFeature {
             PlaybackFeatureMessage::Player(msg) => {
                 let mut extra_task = Task::none();
 
-                if let PlayerMessage::BackendEvent(TrackEvent::TrackChanged(ref track)) = msg {
-                    let id = track.track.id.clone();
-                    if let Some(url) = track.track.thumbnail_small.clone() {
-                        // Usamos el caché inyectado
-                        if let Some(t) = thumbnails.request_download(id, url, |id, bytes| {
-                            PlaybackFeatureMessage::ThumbnailLoaded { track_id: id, bytes }
+                // Cuando cambia la pista activa, garantizar thumbnail a color.
+                if let PlayerMessage::BackendEvent(TrackEvent::TrackChanged(ref playable)) = msg {
+                    let key = thumb_key(&playable.track);
+                    if let Some(url) = playable.track.thumbnail_small.clone() {
+                        if let Some(t) = thumbnails.request_color(key, url, |key, bytes| {
+                            PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes }
                         }) {
                             extra_task = t;
                         }
@@ -129,20 +123,14 @@ impl PlaybackFeature {
                         if self.manager.state.is_playing() { self.manager.pause(); }
                         else { self.manager.resume(); }
                     }
-                    PlayerOutMessage::RequestNext => self.manager.skip_next(),
-                    PlayerOutMessage::RequestPrev => {
-                        let is_added = self.manager.skip_prev();
-
-                        match is_added {
-                            Ok(_) => {
-                            }
-                            Err(e) => {
-                                eprintln!("Error: {}", e);
-                            }
+                    PlayerOutMessage::RequestNext    => self.manager.skip_next(),
+                    PlayerOutMessage::RequestPrev    => {
+                        if let Err(e) = self.manager.skip_prev() {
+                            eprintln!("Error: {}", e);
                         }
-                    },
+                    }
                     PlayerOutMessage::RequestSeek(pos) => self.manager.seek(Duration::from_secs_f32(pos)),
-                    PlayerOutMessage::Idle => {}
+                    PlayerOutMessage::Idle             => {}
                 }
 
                 Task::batch(vec![task.map(PlaybackFeatureMessage::Player), extra_task])
@@ -153,7 +141,7 @@ impl PlaybackFeature {
 
                 match out_msg {
                     VolumeOutMessage::RequestVolumeChange(vol) => self.manager.set_volume(vol),
-                    VolumeOutMessage::Idle => {}
+                    VolumeOutMessage::Idle                     => {}
                 }
 
                 task.map(PlaybackFeatureMessage::Volume)
@@ -163,39 +151,35 @@ impl PlaybackFeature {
 
     pub fn view(&self, thumbnails: &ThumbnailCache) -> Element<'_, PlaybackFeatureMessage> {
         let current_position = self.manager.get_position().as_secs_f32();
-        let vol = self.manager.get_volume();
+        let vol              = self.manager.get_volume();
+        let has_track        = self.player.has_track();
+        let has_history      = self.manager.history_len() != 0;
 
-        let has_track = self.player.has_track();
-        let has_history = self.manager.history_len() != 0;
-
+        // El current track usa peek_color con thumb_key.
         let current_thumbnail = self.player.current_track.as_ref()
-            .and_then(|t| thumbnails.peek(&t.track.id));
+            .and_then(|p| thumbnails.peek_color(&thumb_key(&p.track)));
 
         let current_track = self.player.view_current_play(current_thumbnail).map(PlaybackFeatureMessage::Player);
-        let play_center = self.player.view(self.manager.state.is_playing(), has_track, has_history).map(PlaybackFeatureMessage::Player);
-        let seek_bar = self.player.view_seek_bar(current_position).map(PlaybackFeatureMessage::Player);
-        let vol_view = self.volume.view(vol).map(PlaybackFeatureMessage::Volume);
-        let queue_toggle = self.queue.view_toggle_button().map(PlaybackFeatureMessage::Queue);
+        let play_center   = self.player.view(self.manager.state.is_playing(), has_track, has_history).map(PlaybackFeatureMessage::Player);
+        let seek_bar      = self.player.view_seek_bar(current_position).map(PlaybackFeatureMessage::Player);
+        let vol_view      = self.volume.view(vol).map(PlaybackFeatureMessage::Volume);
+        let queue_toggle  = self.queue.view_toggle_button().map(PlaybackFeatureMessage::Queue);
 
-        let rigth_view = row![queue_toggle, vol_view]
-            .align_y(Alignment::Center);
+        let right_view = row![queue_toggle, vol_view].align_y(Alignment::Center);
 
         let play_controller = row![
             container(current_track).width(Length::FillPortion(1)),
             container(play_center)
                 .width(Length::FillPortion(4))
                 .align_x(Alignment::Center),
-            container(rigth_view)
+            container(right_view)
                 .width(Length::FillPortion(1))
                 .align_x(Alignment::End),
         ]
             .width(Length::Fill)
             .align_y(Alignment::Center);
 
-        let layout_final = column![
-            seek_bar,
-            play_controller,
-        ]
+        let layout_final = column![seek_bar, play_controller]
             .spacing(10)
             .align_x(Alignment::Center);
 
@@ -217,19 +201,17 @@ impl PlaybackFeature {
 }
 
 static QUEUE_TX: OnceLock<broadcast::Sender<QueueEvent>> = OnceLock::new();
-static TX: OnceLock<broadcast::Sender<TrackEvent>> = OnceLock::new();
+static TX:       OnceLock<broadcast::Sender<TrackEvent>> = OnceLock::new();
 
 fn queue_events() -> impl futures::Stream<Item = PlaybackFeatureMessage> {
     let tx = QUEUE_TX.get().unwrap().clone();
     stream::channel(100, async move |mut output| {
-        let mut receiver = tx.subscribe();
+        let mut rx = tx.subscribe();
         loop {
-            match receiver.recv().await {
-                Ok(QueueEvent::QueueChanged) => {
-                    let _ = output.send(PlaybackFeatureMessage::QueueChanged).await;
-                }
+            match rx.recv().await {
+                Ok(QueueEvent::QueueChanged)          => { let _ = output.send(PlaybackFeatureMessage::QueueChanged).await; }
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Closed)    => break,
                 _ => {}
             }
         }
@@ -239,14 +221,12 @@ fn queue_events() -> impl futures::Stream<Item = PlaybackFeatureMessage> {
 fn backend_events() -> impl futures::Stream<Item = PlayerMessage> {
     let tx = TX.get().unwrap().clone();
     stream::channel(100, async move |mut output| {
-        let mut receiver = tx.subscribe();
+        let mut rx = tx.subscribe();
         loop {
-            match receiver.recv().await {
-                Ok(event) => {
-                    let _ = output.send(PlayerMessage::BackendEvent(event)).await;
-                }
+            match rx.recv().await {
+                Ok(event) => { let _ = output.send(PlayerMessage::BackendEvent(event)).await; }
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Closed)    => break,
             }
         }
     })

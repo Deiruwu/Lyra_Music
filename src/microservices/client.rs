@@ -160,6 +160,59 @@ impl MicroserviceClient {
         }
     }
 
+    // ── STRESS TEST ENDPOINTS ─────────────────────────────────────────────────
+
+    /// Simula la obtención de todo el catálogo (devuelve lista de UUIDs/Strings).
+    pub async fn get_all_ids(&self) -> Result<Vec<String>, MicroserviceError> {
+        let payload = json!({
+            "action": "get_all_ids"
+        }).to_string() + "\n";
+
+        let raw = self.send_raw(&payload).await?;
+
+        let response: ApiResponse<Vec<String>> = serde_json::from_str(&raw).map_err(|e| {
+            MicroserviceError::InvalidResponse(format!("Fallo parseo get_all_ids: {}. Raw: {}", e, raw))
+        })?;
+
+        if response.status == "ok" {
+            response.data.ok_or_else(|| {
+                MicroserviceError::ServiceError("El microservicio devolvió ok pero 'data' es null en get_all_ids".into())
+            })
+        } else {
+            Err(MicroserviceError::ServiceError(
+                response.message.unwrap_or_else(|| "Error desconocido en get_all_ids".into()),
+            ))
+        }
+    }
+
+    /// Resuelve un lote de IDs en un solo viaje TCP.
+    pub async fn resolve_many(&self, ids: &[String]) -> Result<Vec<Track>, MicroserviceError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let payload = json!({
+            "action": "resolve_many",
+            "ids": ids
+        }).to_string() + "\n";
+
+        let raw = self.send_raw(&payload).await?;
+
+        let response: ApiResponse<Vec<Track>> = serde_json::from_str(&raw).map_err(|e| {
+            MicroserviceError::InvalidResponse(format!("Fallo parseo resolve_many: {}. Raw: {}", e, raw))
+        })?;
+
+        if response.status == "ok" {
+            response.data.ok_or_else(|| {
+                MicroserviceError::ServiceError("El microservicio devolvió ok pero 'data' es null en resolve_many".into())
+            })
+        } else {
+            Err(MicroserviceError::ServiceError(
+                response.message.unwrap_or_else(|| "Error al resolver lote en resolve_many".into()),
+            ))
+        }
+    }
+
     /// Abre conexión, envía payload, lee UNA SOLA LÍNEA de respuesta.
     async fn send_raw(&self, payload: &str) -> Result<String, MicroserviceError> {
         let mut stream = TcpStream::connect(&self.addr)

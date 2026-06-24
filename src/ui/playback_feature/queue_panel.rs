@@ -87,7 +87,7 @@ impl QueuePanel {
                 .iter()
                 .enumerate()
                 .map(|(index, track)| {
-                    let thumbnail = cache.peek(&track.id);
+                    let thumbnail = cache.peek_color(&crate::ui::utils::thumbnail_cache::thumb_key(track.as_ref()));
                     queue_track_row(
                         track.as_ref(),
                         thumbnail,

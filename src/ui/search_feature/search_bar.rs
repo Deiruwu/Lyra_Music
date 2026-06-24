@@ -143,7 +143,7 @@ impl SearchInput {
             results_column = results_column.push(text("Buscando...").size(16));
         } else {
             for track in results {
-                let thumbnail = thumbnails.peek(&track.id);
+                let thumbnail = thumbnails.peek_for_render(track);
                 results_column = results_column.push(
                     track_row(track, thumbnail, SearchMessage::TrackClicked(track.clone()))
                 );
