@@ -1,11 +1,20 @@
 use iced::{Alignment, Element, Length, Theme};
 use iced::widget::{button, column, container, image, row, space, text, stack, mouse_area};
 use iced::widget::image::Handle;
-use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 use crate::ui::styles::styles::transparent_button;
 use crate::JETBRAINS_MONO;
+
+const SPINNER: [&str; 6] = ["", "", "", "", "", ""];
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() > max {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}
 
 pub fn track_thumbnail<'a, Message>(thumbnail: Option<Handle>) -> Element<'a, Message>
 where
@@ -23,7 +32,9 @@ where
     Message: Clone + 'a,
 {
     let is_downloaded = track.file_path.as_ref().map_or(false, |p| !p.is_empty());
-    let artists = track.format_artists();
+    let title   = truncate(&track.title, 28);
+    let artists = truncate(&track.format_artists(), 28);
+
     let (title_color, artist_color) = if is_downloaded {
         (iced::Color::WHITE, iced::Color::from_rgb(0.6, 0.6, 0.6))
     } else {
@@ -31,7 +42,7 @@ where
     };
 
     column![
-        text(&track.title)
+        text(title)
             .size(14)
             .color(title_color)
             .width(Length::Fixed(180.0)),
@@ -46,15 +57,12 @@ where
 
 pub fn basic_track_view<'a, Message>(
     track: &'a Track,
-    thumbnail: Option<Handle>
+    thumbnail: Option<Handle>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
-    row![
-        track_thumbnail(thumbnail),
-        track_info(track)
-    ]
+    row![track_thumbnail(thumbnail), track_info(track)]
         .spacing(10)
         .align_y(Alignment::Center)
         .into()
@@ -63,7 +71,7 @@ where
 pub fn track_row<'a, Message>(
     track: &'a Track,
     thumbnail: Option<Handle>,
-    on_press: Message
+    on_press: Message,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -77,7 +85,7 @@ where
 
 pub fn currently_playing_row<'a, Message>(
     track: &'a Track,
-    thumbnail: Option<Handle>
+    thumbnail: Option<Handle>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -87,20 +95,62 @@ where
         .into()
 }
 
-fn thumbnail_with_play_hover<'a, Message>(
+// ── Thumbnail con overlay ─────────────────────────────────────────────────────
+
+/// Estado visual del thumbnail en la queue.
+pub enum QueueThumbnailState {
+    /// Reproduciendo o en pausa — muestra icono play al hover.
+    Normal,
+    /// El DownloadWorker está bajando este track — muestra spinner animado.
+    Downloading(u8),
+}
+
+fn thumbnail_with_overlay<'a, Message>(
     thumbnail: Option<Handle>,
     on_play: Message,
     hovered: bool,
+    state: QueueThumbnailState,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
-    match thumbnail {
-        Some(handle) => {
-            let img = image(handle)
-                .width(Length::Fixed(50.0))
-                .height(Length::Fixed(50.0));
+    let base: Element<'a, Message> = match thumbnail {
+        Some(handle) => image(handle)
+            .width(Length::Fixed(50.0))
+            .height(Length::Fixed(50.0))
+            .into(),
+        None => container(space().width(Length::Fixed(50.0)).height(Length::Fixed(50.0)))
+            .width(Length::Fixed(50.0))
+            .height(Length::Fixed(50.0))
+            .style(|_theme: &Theme| container::Style {
+                background: Some(iced::Color::from_rgb(0.2, 0.2, 0.2).into()),
+                border: iced::border::rounded(5),
+                ..Default::default()
+            })
+            .into(),
+    };
 
+    match state {
+        // Spinner de descarga — siempre visible, no clickeable.
+        QueueThumbnailState::Downloading(frame) => {
+            let spinner_char = SPINNER[frame as usize % 6];
+            let overlay = container(
+                text(spinner_char).font(JETBRAINS_MONO).size(20).color(iced::Color::WHITE)
+            )
+                .width(Length::Fixed(50.0))
+                .height(Length::Fixed(50.0))
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .style(|_: &Theme| container::Style {
+                    background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.55).into()),
+                    ..Default::default()
+                });
+
+            stack![base, overlay].into()
+        }
+
+        // Normal — play icon al hover.
+        QueueThumbnailState::Normal => {
             if hovered {
                 let play_btn = button(
                     container(
@@ -119,20 +169,12 @@ where
                         background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
                         ..Default::default()
                     });
-                stack![img, play_btn].into()
+
+                stack![base, play_btn].into()
             } else {
-                img.into()
+                base
             }
         }
-        None => container(space().width(Length::Fixed(50.0)).height(Length::Fixed(50.0)))
-            .width(Length::Fixed(50.0))
-            .height(Length::Fixed(50.0))
-            .style(|_theme: &Theme| container::Style {
-                background: Some(iced::Color::from_rgb(0.2, 0.2, 0.2).into()),
-                border: iced::border::rounded(5),
-                ..Default::default()
-            })
-            .into(),
     }
 }
 
@@ -147,17 +189,20 @@ pub fn queue_track_row<'a, Message>(
     delete_hovered: bool,
     on_delete_hover: Message,
     on_delete_leave: Message,
+    queue_state: QueueThumbnailState,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
-    let thumb = thumbnail_with_play_hover(thumbnail, on_play, row_hovered);
-    let info = track_info(&track);
+    let thumb = thumbnail_with_overlay(thumbnail, on_play, row_hovered, queue_state);
+    let info  = track_info(track);
 
     let delete_button = mouse_area(
         button(
             container(
-                text(if delete_hovered { "󰛌" } else { "󰆴" }).font(JETBRAINS_MONO).size(16)
+                text(if delete_hovered { "󰛌" } else { "󰆴" })
+                    .font(JETBRAINS_MONO)
+                    .size(16)
             )
                 .width(Length::Fixed(44.0))
                 .height(Length::Fixed(44.0))

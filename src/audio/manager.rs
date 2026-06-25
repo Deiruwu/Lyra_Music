@@ -401,6 +401,7 @@ impl TrackManager {
 
                 self.state.status.store(4, Ordering::Relaxed);
                 let _ = self.queue_tx.send(QueueEvent::DownloadRequired(next_track));
+                self.broadcast_queue_update();
                 return Ok(());
             }
             // ─────────────────────────────────────────────────────────────────

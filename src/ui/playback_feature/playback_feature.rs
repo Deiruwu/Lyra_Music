@@ -4,7 +4,6 @@ use futures::SinkExt;
 use iced::{stream, Alignment, Color, Element, Length, Subscription, Task, Theme};
 use iced::widget::{container, column, row};
 use tokio::sync::broadcast;
-use tokio::sync::broadcast::error::RecvError;
 use crate::model::audio_tech::PlayableTrack;
 use crate::audio::manager::TrackManager;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
@@ -20,6 +19,8 @@ pub enum PlaybackFeatureMessage {
     Volume(VolumeMessage),
     Queue(QueueMessage),
     QueueChanged,
+    DownloadingStarted,
+    DownloadingFinished,
     ThumbnailColorLoaded { key: String, bytes: Vec<u8> },
     Play(PlayableTrack),
     Tick,
@@ -30,6 +31,8 @@ pub struct PlaybackFeature {
     queue: QueuePanel,
     player: Player,
     volume: Volume,
+    spinner_frame: u8,
+    is_predownloading: bool,
 }
 
 impl PlaybackFeature {
@@ -41,11 +44,13 @@ impl PlaybackFeature {
             player: Player::default(),
             volume: Volume::default(),
             manager,
+            spinner_frame: 0,
+            is_predownloading: false,
         }
     }
 
     pub fn subscription(&self) -> Subscription<PlaybackFeatureMessage> {
-        let tick_sub = iced::time::every(Duration::from_millis(100))
+        let tick_sub = iced::time::every(Duration::from_millis(40))
             .map(|_| PlaybackFeatureMessage::Tick);
 
         Subscription::batch([
@@ -53,6 +58,12 @@ impl PlaybackFeature {
             Subscription::run(backend_events).map(PlaybackFeatureMessage::Player),
             tick_sub,
         ])
+    }
+
+    /// True si hay cualquier descarga activa: emergencia (status==4)
+    /// o pre-descarga proactiva del worker.
+    fn is_downloading(&self) -> bool {
+        self.manager.state.is_downloading() || self.is_predownloading
     }
 
     pub fn update(
@@ -81,21 +92,37 @@ impl PlaybackFeature {
                 Task::batch(tasks)
             }
 
+            PlaybackFeatureMessage::DownloadingStarted => {
+                self.is_predownloading = true;
+                Task::none()
+            }
+
+            PlaybackFeatureMessage::DownloadingFinished => {
+                self.is_predownloading = false;
+                Task::none()
+            }
+
             PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes } => {
                 thumbnails.insert_color(key, bytes);
                 Task::none()
             }
 
-            PlaybackFeatureMessage::Tick => Task::none(),
+            PlaybackFeatureMessage::Tick => {
+                if self.is_downloading() {
+                    self.spinner_frame = (self.spinner_frame + 1) % 6;
+                    let _ = self.queue.update(QueueMessage::Tick);
+                }
+                Task::none()
+            }
 
             PlaybackFeatureMessage::Queue(msg) => {
                 let (task, out_msg) = self.queue.update(msg);
 
                 match out_msg {
-                    QueueOutMessage::RequestPlay(index)         => self.manager.skip_to_index(index).unwrap(),
-                    QueueOutMessage::RequestRemove(index)       => self.manager.remove_from_queue(index).unwrap(),
-                    QueueOutMessage::RequestMove(from, to)      => self.manager.move_in_queue(from, to).unwrap(),
-                    QueueOutMessage::Idle                       => {}
+                    QueueOutMessage::RequestPlay(index)    => self.manager.skip_to_index(index).unwrap(),
+                    QueueOutMessage::RequestRemove(index)  => self.manager.remove_from_queue(index).unwrap(),
+                    QueueOutMessage::RequestMove(from, to) => self.manager.move_in_queue(from, to).unwrap(),
+                    QueueOutMessage::Idle                  => {}
                 }
 
                 task.map(PlaybackFeatureMessage::Queue)
@@ -104,7 +131,6 @@ impl PlaybackFeature {
             PlaybackFeatureMessage::Player(msg) => {
                 let mut extra_task = Task::none();
 
-                // Cuando cambia la pista activa, garantizar thumbnail a color.
                 if let PlayerMessage::BackendEvent(TrackEvent::TrackChanged(ref playable)) = msg {
                     let key = thumb_key(&playable.track);
                     if let Some(url) = playable.track.thumbnail_small.clone() {
@@ -123,8 +149,8 @@ impl PlaybackFeature {
                         if self.manager.state.is_playing() { self.manager.pause(); }
                         else { self.manager.resume(); }
                     }
-                    PlayerOutMessage::RequestNext    => self.manager.skip_next(),
-                    PlayerOutMessage::RequestPrev    => {
+                    PlayerOutMessage::RequestNext      => self.manager.skip_next(),
+                    PlayerOutMessage::RequestPrev      => {
                         if let Err(e) = self.manager.skip_prev() {
                             eprintln!("Error: {}", e);
                         }
@@ -154,16 +180,19 @@ impl PlaybackFeature {
         let vol              = self.manager.get_volume();
         let has_track        = self.player.has_track();
         let has_history      = self.manager.history_len() != 0;
+        let is_downloading   = self.is_downloading();
 
-        // El current track usa peek_color con thumb_key.
         let current_thumbnail = self.player.current_track.as_ref()
             .and_then(|p| thumbnails.peek_color(&thumb_key(&p.track)));
 
-        let current_track = self.player.view_current_play(current_thumbnail).map(PlaybackFeatureMessage::Player);
-        let play_center   = self.player.view(self.manager.state.is_playing(), has_track, has_history).map(PlaybackFeatureMessage::Player);
-        let seek_bar      = self.player.view_seek_bar(current_position).map(PlaybackFeatureMessage::Player);
-        let vol_view      = self.volume.view(vol).map(PlaybackFeatureMessage::Volume);
-        let queue_toggle  = self.queue.view_toggle_button().map(PlaybackFeatureMessage::Queue);
+        let current_track = self.player
+            .view_current_play(current_thumbnail, is_downloading, self.spinner_frame)
+            .map(PlaybackFeatureMessage::Player);
+
+        let play_center  = self.player.view(self.manager.state.is_playing(), has_track, has_history).map(PlaybackFeatureMessage::Player);
+        let seek_bar     = self.player.view_seek_bar(current_position).map(PlaybackFeatureMessage::Player);
+        let vol_view     = self.volume.view(vol).map(PlaybackFeatureMessage::Volume);
+        let queue_toggle = self.queue.view_toggle_button().map(PlaybackFeatureMessage::Queue);
 
         let right_view = row![queue_toggle, vol_view].align_y(Alignment::Center);
 
@@ -196,7 +225,7 @@ impl PlaybackFeature {
     }
 
     pub fn view_queue(&self, thumbnails: &ThumbnailCache) -> Element<'_, PlaybackFeatureMessage> {
-        self.queue.view(thumbnails).map(PlaybackFeatureMessage::Queue)
+        self.queue.view(thumbnails, self.is_downloading()).map(PlaybackFeatureMessage::Queue)
     }
 }
 
@@ -209,10 +238,19 @@ fn queue_events() -> impl futures::Stream<Item = PlaybackFeatureMessage> {
         let mut rx = tx.subscribe();
         loop {
             match rx.recv().await {
-                Ok(QueueEvent::QueueChanged)          => { let _ = output.send(PlaybackFeatureMessage::QueueChanged).await; }
+                Ok(QueueEvent::QueueChanged) => {
+                    let _ = output.send(PlaybackFeatureMessage::QueueChanged).await;
+                }
+                Ok(QueueEvent::DownloadStarted(_)) => {
+                    let _ = output.send(PlaybackFeatureMessage::DownloadingStarted).await;
+                }
+                Ok(QueueEvent::DownloadFinished(_)) => {
+                    let _ = output.send(PlaybackFeatureMessage::DownloadingFinished).await;
+                }
+                // DownloadRequired lo maneja el worker, la UI no necesita reaccionar.
+                Ok(QueueEvent::DownloadRequired(_))         => {}
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed)    => break,
-                _ => {}
             }
         }
     })

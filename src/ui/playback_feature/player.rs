@@ -1,12 +1,14 @@
 use std::sync::Arc;
 use iced::{Alignment, Element, Renderer, Task, Theme};
 use iced::widget::image::Handle;
-use iced::widget::{button, row, slider, space, text};
+use iced::widget::{button, container, row, slider, space, text};
 use crate::audio::track_event::TrackEvent;
 use crate::JETBRAINS_MONO;
 use crate::model::audio_tech::PlayableTrack;
 use crate::ui::styles::styles::transparent_button;
 use crate::ui::widgets::track_row::currently_playing_row;
+
+const SPINNER: [&str; 6] = ["\u{ee06}", "\u{ee07}", "\u{ee08}", "\u{ee09}", "\u{ee0a}", "\u{ee0b}"];
 
 #[derive(Debug, Clone)]
 pub enum PlayerMessage {
@@ -32,9 +34,7 @@ pub struct Player {
 
 impl Default for Player {
     fn default() -> Self {
-        Self {
-            current_track: None,
-        }
+        Self { current_track: None }
     }
 }
 
@@ -52,11 +52,10 @@ impl Player {
                 }
                 _ => (Task::none(), PlayerOutMessage::Idle),
             },
-
             PlayerMessage::UiTogglePlayback => (Task::none(), PlayerOutMessage::RequestTogglePlayback),
-            PlayerMessage::UiNext => (Task::none(), PlayerOutMessage::RequestNext),
-            PlayerMessage::UiPrev => (Task::none(), PlayerOutMessage::RequestPrev),
-            PlayerMessage::UiSeek(pos) => (Task::none(), PlayerOutMessage::RequestSeek(pos)),
+            PlayerMessage::UiNext           => (Task::none(), PlayerOutMessage::RequestNext),
+            PlayerMessage::UiPrev           => (Task::none(), PlayerOutMessage::RequestPrev),
+            PlayerMessage::UiSeek(pos)      => (Task::none(), PlayerOutMessage::RequestSeek(pos)),
         }
     }
 
@@ -90,9 +89,50 @@ impl Player {
             .into()
     }
 
-    pub fn view_current_play<'a>(&self, thumbnail: Option<Handle>) -> Element<'_, PlayerMessage> {
+    /// `spinner_frame` se usa solo cuando `is_downloading == true` y no hay
+    /// current track (el motor está esperando la descarga antes de sonar).
+    pub fn view_current_play(
+        &self,
+        thumbnail: Option<Handle>,
+        is_downloading: bool,
+        spinner_frame: u8,
+    ) -> Element<'_, PlayerMessage> {
         match &self.current_track {
             Some(track) => currently_playing_row(&track.track, thumbnail),
+
+            None if is_downloading => {
+                let spinner_char = SPINNER[spinner_frame as usize % 6];
+
+                // Placeholder de descarga: icono spinner centrado en un área
+                // del mismo tamaño que el current track normal.
+                container(
+                    row![
+                        container(
+                            text(spinner_char)
+                                .font(JETBRAINS_MONO)
+                                .size(20)
+                                .color(iced::Color::from_rgb(0.6, 0.6, 0.6))
+                        )
+                            .width(iced::Length::Fixed(50.0))
+                            .height(iced::Length::Fixed(50.0))
+                            .align_x(Alignment::Center)
+                            .align_y(Alignment::Center)
+                            .style(|_: &Theme| container::Style {
+                                background: Some(iced::Color::from_rgb(0.18, 0.18, 0.18).into()),
+                                border: iced::border::rounded(5),
+                                ..Default::default()
+                            }),
+                        text("Descargando…")
+                            .size(13)
+                            .color(iced::Color::from_rgb(0.5, 0.5, 0.5)),
+                    ]
+                        .spacing(10)
+                        .align_y(Alignment::Center)
+                )
+                    .padding(5)
+                    .into()
+            }
+
             None => space().into(),
         }
     }

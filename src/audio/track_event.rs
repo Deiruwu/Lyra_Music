@@ -14,4 +14,6 @@ pub enum TrackEvent {
 pub enum QueueEvent {
     QueueChanged,
     DownloadRequired(Arc<Track>),
+    DownloadStarted(Arc<Track>),
+    DownloadFinished(Arc<Track>),
 }

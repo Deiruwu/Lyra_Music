@@ -2,11 +2,10 @@ use std::sync::Arc;
 use iced::{Element, Length, Task};
 use iced::widget::{button, column, container, scrollable, space, text};
 use crate::JETBRAINS_MONO;
-use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
 use crate::ui::styles::styles::transparent_button;
-use crate::ui::utils::thumbnail_cache::ThumbnailCache;
-use crate::ui::widgets::track_row::queue_track_row;
+use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
+use crate::ui::widgets::track_row::{queue_track_row, QueueThumbnailState};
 
 #[derive(Debug, Clone)]
 pub enum QueueMessage {
@@ -18,6 +17,7 @@ pub enum QueueMessage {
     UiPlayClicked(usize),
     UiRemoveClicked(usize),
     UiMoveClicked(usize, usize),
+    Tick,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +33,7 @@ pub struct QueuePanel {
     queue: Vec<Arc<Track>>,
     hovered_row: Option<usize>,
     hovered_delete: Option<usize>,
+    spinner_frame: u8,
 }
 
 impl Default for QueuePanel {
@@ -42,6 +43,7 @@ impl Default for QueuePanel {
             queue: Vec::new(),
             hovered_row: None,
             hovered_delete: None,
+            spinner_frame: 0,
         }
     }
 }
@@ -61,7 +63,6 @@ impl QueuePanel {
                 self.hovered_row = None;
                 (Task::none(), QueueOutMessage::Idle)
             }
-
             QueueMessage::DeleteHovered(index) => {
                 self.hovered_delete = Some(index);
                 (Task::none(), QueueOutMessage::Idle)
@@ -70,14 +71,17 @@ impl QueuePanel {
                 self.hovered_delete = None;
                 (Task::none(), QueueOutMessage::Idle)
             }
-
+            QueueMessage::Tick => {
+                self.spinner_frame = (self.spinner_frame + 1) % 6;
+                (Task::none(), QueueOutMessage::Idle)
+            }
             QueueMessage::UiPlayClicked(index) => (Task::none(), QueueOutMessage::RequestPlay(index)),
             QueueMessage::UiRemoveClicked(index) => (Task::none(), QueueOutMessage::RequestRemove(index)),
             QueueMessage::UiMoveClicked(from, to) => (Task::none(), QueueOutMessage::RequestMove(from, to)),
         }
     }
 
-    pub fn view(&self, cache: &ThumbnailCache) -> Element<'_, QueueMessage> {
+    pub fn view(&self, cache: &ThumbnailCache, is_downloading: bool) -> Element<'_, QueueMessage> {
         if !self.show {
             return space().into();
         }
@@ -87,7 +91,15 @@ impl QueuePanel {
                 .iter()
                 .enumerate()
                 .map(|(index, track)| {
-                    let thumbnail = cache.peek_color(&crate::ui::utils::thumbnail_cache::thumb_key(track.as_ref()));
+                    let thumbnail = cache.peek_color(&thumb_key(track.as_ref()));
+
+                    // Solo el primer elemento puede estar en estado descarga.
+                    let state = if index == 0 && is_downloading {
+                        QueueThumbnailState::Downloading(self.spinner_frame)
+                    } else {
+                        QueueThumbnailState::Normal
+                    };
+
                     queue_track_row(
                         track.as_ref(),
                         thumbnail,
@@ -96,10 +108,10 @@ impl QueuePanel {
                         self.hovered_row == Some(index),
                         QueueMessage::Hovered(index),
                         QueueMessage::Unhovered,
-
                         self.hovered_delete == Some(index),
                         QueueMessage::DeleteHovered(index),
                         QueueMessage::DeleteUnhovered,
+                        state,
                     )
                 })
                 .collect::<Vec<_>>(),
