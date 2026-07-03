@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 
-use crate::audio::manager::TrackManager;
+use crate::audio::mananger::manager::TrackManager;
 use crate::audio::track_event::TrackEvent;
 use crate::model::audio_tech::PlayableTrack;
 
@@ -28,27 +28,23 @@ impl DiscordPresence {
                 println!("[DISCORD] Conectado");
 
                 let mut current_track: Option<Arc<PlayableTrack>> = None;
-                let mut is_paused = false;
 
                 let mut event_rx = manager.event_tx.subscribe();
 
                 loop {
                     match event_rx.blocking_recv() {
                         Ok(TrackEvent::TrackChanged(track)) => {
-                            is_paused = false;
                             current_track = Some(Arc::clone(&track));
                             set_activity(&mut client, &manager, &track, false);
                         }
 
                         Ok(TrackEvent::Paused) => {
-                            is_paused = true;
                             if let Some(ref track) = current_track {
                                 set_activity(&mut client, &manager, track, true);
                             }
                         }
 
                         Ok(TrackEvent::Resumed) => {
-                            is_paused = false;
                             if let Some(ref track) = current_track {
                                 set_activity(&mut client, &manager, track, false);
                             }
@@ -56,16 +52,11 @@ impl DiscordPresence {
 
                         Ok(TrackEvent::Stopped) => {
                             current_track = None;
-                            is_paused = false;
                             let _ = client.clear_activity();
                         }
 
-                        Ok(_) => {}
                         Err(_) => break,
                     }
-
-                    // Suprimir warning si is_paused no se usa en alguna rama futura
-                    let _ = is_paused;
                 }
             })
             .expect("Fallo al lanzar hilo Discord");

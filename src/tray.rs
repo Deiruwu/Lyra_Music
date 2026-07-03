@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use image::GenericImageView;
 use ksni::{MenuItem, Tray, TrayMethods};
-use crate::audio::manager::TrackManager;
+use crate::audio::mananger::manager::TrackManager;
 
 static ICON: LazyLock<ksni::Icon> = LazyLock::new(|| {
     let img = image::load_from_memory_with_format(

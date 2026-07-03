@@ -5,7 +5,7 @@ use iced::{stream, Alignment, Color, Element, Length, Subscription, Task, Theme}
 use iced::widget::{container, column, row};
 use tokio::sync::broadcast;
 use crate::model::audio_tech::PlayableTrack;
-use crate::audio::manager::TrackManager;
+use crate::audio::mananger::manager::TrackManager;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 
 use crate::ui::playback_feature::player::{Player, PlayerMessage, PlayerOutMessage};
@@ -167,7 +167,6 @@ impl PlaybackFeature {
 
                 match out_msg {
                     VolumeOutMessage::RequestVolumeChange(vol) => self.manager.set_volume(vol),
-                    VolumeOutMessage::Idle                     => {}
                 }
 
                 task.map(PlaybackFeatureMessage::Volume)

@@ -10,7 +10,6 @@ pub enum VolumeMessage {
 
 #[derive(Debug, Clone)]
 pub enum VolumeOutMessage {
-    Idle,
     RequestVolumeChange(f32),
 }
 

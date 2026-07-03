@@ -11,7 +11,7 @@ use iced::widget::{column, container, row, space, stack};
 use crate::audio::discord::DiscordPresence;
 use crate::audio::download_daemon::DownloadWorker;
 use crate::audio::engine::AudioEngine;
-use crate::audio::manager::TrackManager;
+use audio::mananger::manager::TrackManager;
 use crate::audio::mpris::MprisServer;
 use crate::audio::radio_daemon::RadioWorker;
 use crate::microservices::client::MicroserviceClient;
