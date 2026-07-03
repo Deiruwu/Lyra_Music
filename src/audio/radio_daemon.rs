@@ -2,9 +2,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::watch;
 use tokio::task;
 
 use crate::audio::mananger::manager::TrackManager;
+use crate::audio::music_utils::{shuffle_pool, sort_harmonic};
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 use crate::microservices::client::MicroserviceClient;
 
@@ -12,6 +14,8 @@ use crate::microservices::client::MicroserviceClient;
 
 /// Cuántas canciones mantener adelantadas en la cola.
 const DEFAULT_QUEUE_TARGET: usize = 8;
+const POOL_LIMIT: Option<usize> = Some(25);
+const SHUFFLE_TAKE: usize = 15;
 
 // ── Worker ────────────────────────────────────────────────────────────────────
 
@@ -20,15 +24,19 @@ pub struct RadioWorker {
     client:       Arc<MicroserviceClient>,
     enabled:      Arc<AtomicBool>,
     queue_target: Arc<AtomicUsize>,
+    seed_tx:      watch::Sender<String>,
 }
 
 impl RadioWorker {
     pub fn new(manager: Arc<TrackManager>, client: Arc<MicroserviceClient>) -> Self {
+        let (seed_tx, _) = watch::channel(String::new());
+
         Self {
             manager,
             client,
             enabled: Arc::new(AtomicBool::new(false)),
             queue_target: Arc::new(AtomicUsize::new(DEFAULT_QUEUE_TARGET)),
+            seed_tx,
         }
     }
 
@@ -52,9 +60,6 @@ impl RadioWorker {
 
     // ── Spawn ─────────────────────────────────────────────────────────────────
 
-    /// Lanza el daemon en el runtime de Tokio actual.
-    /// Devuelve `Arc<RadioWorker>` para que la UI pueda llamar
-    /// `set_enabled` / `set_queue_target` desde cualquier hilo.
     pub fn spawn(self) -> Arc<Self> {
         let worker = Arc::new(self);
         let w = Arc::clone(&worker);
@@ -67,24 +72,26 @@ impl RadioWorker {
     async fn run(&self) {
         let mut event_rx = self.manager.event_tx.subscribe();
         let mut queue_rx = self.manager.queue_tx.subscribe();
-
-        let mut current_seed = String::new();
+        let mut seed_rx = self.seed_tx.subscribe();
 
         loop {
             tokio::select! {
                 result = event_rx.recv() => {
                     match result {
                         Ok(TrackEvent::TrackChanged(track)) => {
-                            current_seed = track.track.id.clone();
+                            println!("[RADIO] Actualizando current: {}: {}", track.track.title, track.track.id);
 
-                            println!("[RADIO] Actualizando current: {}: {}",track.track.title ,track.track.id);
+                            // send() actualiza el valor de forma atómica; cualquiera
+                            // que lea seed_rx después de esto ve el valor nuevo, sin
+                            // importar el orden en que llegue el próximo QueueChanged.
+                            let _ = self.seed_tx.send(track.track.id.clone());
 
                             if self.is_enabled() {
-                                self.fill_queue(&current_seed).await;
+                                self.fill_queue().await;
                             }
                         }
                         Ok(TrackEvent::Stopped) => {
-                            current_seed.clear();
+                            let _ = self.seed_tx.send(String::new());
                         }
                         Ok(_) => {}
                         Err(RecvError::Closed)   => break,
@@ -96,32 +103,31 @@ impl RadioWorker {
                     match result {
                         Ok(QueueEvent::QueueChanged) => {
                             if self.is_enabled() {
-                                self.fill_queue(&current_seed).await;
+                                self.fill_queue().await;
                             }
                         }
                         Err(RecvError::Closed)   => break,
                         Err(RecvError::Lagged(_)) => {}
-                    _ => {}}
+                        _ => {}
+                    }
                 }
             }
         }
 
         eprintln!("[RADIO] Daemon detenido (canal cerrado).");
+        let _ = seed_rx.changed().await; // silencia warning de unused si aplica
     }
 
     // ── Lógica de relleno ─────────────────────────────────────────────────────
 
-    async fn fill_queue(&self, current_seed: &str) {
+    async fn fill_queue(&self) {
+        let current_seed = self.seed_tx.borrow().clone();
+
         let target = self.queue_target();
         let queue_snapshot = self.manager.get_queue_snapshot();
         let current_len = queue_snapshot.len();
 
-        // 1. PATRÓN LOW WATERMARK (Marca de agua baja al 20%)
-        // Calculamos el umbral crítico de pánico. Si target es 10, watermark es 2.
         let watermark = (target * 20 / 100).max(1);
-
-        // CONDICIÓN DE CORTE ABSOLUTA: Si la cola está por encima del 20%,
-        // el daemon tiene estrictamente prohibido tocar el socket de red.
         if current_len > watermark {
             return;
         }
@@ -131,26 +137,18 @@ impl RadioWorker {
             return;
         }
 
-        // 2. RECOLECCIÓN DE ENTROPÍA (Seed Hopping)
-        // Construimos un radar de semillas candidatas ordenadas por lógica temporal:
-        //   1. La pista actual (current_seed).
-        //   2. Las pistas de la cola EN ORDEN INVERSO (de la última hacia atrás).
-        //   3. El historial reciente (por si el usuario vació la cola a mano).
         let mut candidate_seeds = Vec::new();
 
         if !current_seed.is_empty() {
-            candidate_seeds.push(current_seed.to_string());
+            candidate_seeds.push(current_seed.clone());
         }
 
-        // ¿Por qué .rev()? Porque la última canción de la cola define hacia
-        // dónde se dirige el mood de la sesión, no de dónde viene.
         for track in queue_snapshot.iter().rev() {
             if !candidate_seeds.contains(&track.id) {
                 candidate_seeds.push(track.id.clone());
             }
         }
 
-        // Si la cola era muy corta, rascamos el fondo del historial
         if candidate_seeds.len() < 3 {
             let history = self.manager.get_history_snapshot();
             for track in history.iter().rev().take(5) {
@@ -165,7 +163,6 @@ impl RadioWorker {
             return;
         }
 
-        // 3. BUCLE DE EXHAUSTIVIDAD CON CORTAFUEGOS (Máximo 3 semillas por ciclo)
         let mut total_enqueued = 0;
         let max_seeds_to_try = candidate_seeds.len().min(3);
 
@@ -175,8 +172,13 @@ impl RadioWorker {
                 break;
             }
 
-            match self.client.radio(seed_id).await {
-                Ok(tracks) => {
+            match self.client.radio(seed_id, POOL_LIMIT).await {
+                Ok(pool) => {
+
+                    println!("[RADIO] Pedido semilla '{}': {} tracks.", seed_id, pool.len());
+                    let shuffled = shuffle_pool(pool, SHUFFLE_TAKE);
+                    let tracks = sort_harmonic(shuffled);
+
                     let mut fresh_in_this_seed = 0;
 
                     for track in tracks {
@@ -189,8 +191,6 @@ impl RadioWorker {
                         }
                     }
 
-                    // CRÍTICO: Si esta semilla nos dio al menos UNA canción nueva,
-                    // asumimos que el filón es bueno y rompemos el hopping.
                     if fresh_in_this_seed > 0 {
                         break;
                     } else {
@@ -203,7 +203,6 @@ impl RadioWorker {
             }
         }
 
-        // 4. FEEDBACK RIGUROSO Y SILENCIOSO
         if total_enqueued < needed {
             eprintln!(
                 "[RADIO] Librería hostil: Tras iterar {} semillas distintas, solo se obtuvieron {}/{} tracks limpios.",

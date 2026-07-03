@@ -1,237 +1,46 @@
 use crate::model::Track;
-use serde::Deserialize;
-use serde_json::json;
-use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
+use musichub_client::{MicroserviceClient as HubClient, Request};
+pub use musichub_client::MicroserviceError;
 
-/// Estructura transitoria para deserializar la respuesta del microservicio
-#[derive(Deserialize)]
-struct ApiResponse<T> {
-    status: String,
-    data: Option<T>,
-    message: Option<String>,
-}
 
-/// Errores posibles al hablar con el microservicio, generados limpios con thiserror.
-#[derive(Debug, Error)]
-pub enum MicroserviceError {
-    #[error("Conexión fallida: {0}")]
-    ConnectionFailed(std::io::Error),
-
-    #[error("Error de IO: {0}")]
-    IoError(std::io::Error),
-
-    #[error("Error del servicio: {0}")]
-    ServiceError(String),
-
-    #[error("Respuesta inválida: {0}")]
-    InvalidResponse(String),
-}
-
-/// Cliente TCP para el microservicio de música.
 #[derive(Clone)]
 pub struct MicroserviceClient {
-    addr: String,
+    inner: HubClient,
 }
 
 impl MicroserviceClient {
-    /// Inicializa el cliente directamente con el host y puerto
     pub fn new(host: &str, port: u16) -> Self {
-        Self {
-            addr: format!("{}:{}", host, port),
-        }
+        Self { inner: HubClient::new(host, port) }
     }
 
-    /// Busca tracks en YouTube (Exploración).
-    pub async fn search(&self, query: &str, limit: usize, filter: Option<&str>) -> Result<Vec<Track>, MicroserviceError> {
-        let payload = match filter {
-            Some(f) => json!({ "action": "search", "query": query, "limit": limit, "filter": f }),
-            None    => json!({ "action": "search", "query": query, "limit": limit }),
-        }.to_string() + "\n";
-
-        let raw = self.send_raw(&payload).await?;
-
-        let response: ApiResponse<Vec<Track>> = serde_json::from_str(&raw).map_err(|e| {
-            MicroserviceError::InvalidResponse(format!("Fallo parseo search: {}. Raw: {}", e, raw))
-        })?;
-
-        if response.status == "ok" {
-            response.data.ok_or_else(|| {
-                MicroserviceError::ServiceError("El microservicio devolvió ok pero 'data' es null en search".into())
-            })
-        } else {
-            Err(MicroserviceError::ServiceError(
-                response.message.unwrap_or_else(|| "Error desconocido en search".into()),
-            ))
-        }
+    pub async fn search(&self, query: &str, limit: Option<usize>, filter: Option<&str>) -> Result<Vec<Track>, MicroserviceError> {
+        self.inner.search(query, limit, filter).await
     }
 
-    /// Fuerza la descarga, guarda en Postgres e inicia análisis asíncrono.
     pub async fn download(&self, query: &str) -> Result<Track, MicroserviceError> {
-        let payload = json!({
-            "action": "download",
-            "query": query
-        }).to_string() + "\n";
-
-        let raw = self.send_raw(&payload).await?;
-
-        let response: ApiResponse<Track> = serde_json::from_str(&raw).map_err(|e| {
-            MicroserviceError::InvalidResponse(format!("Fallo parseo download: {}. Raw: {}", e, raw))
-        })?;
-
-        if response.status == "ok" {
-            response.data.ok_or_else(|| {
-                MicroserviceError::ServiceError("El microservicio devolvió ok pero 'data' es null en download".into())
-            })
-        } else {
-            Err(MicroserviceError::ServiceError(
-                response.message.unwrap_or_else(|| "Error desconocido en download".into()),
-            ))
-        }
+        self.inner.download(query).await
     }
 
-    /// Envia una acción `resolve` (Solo obtiene info, NO descarga).
     pub async fn resolve(&self, query: &str) -> Result<Track, MicroserviceError> {
-        let payload = json!({
-            "action": "resolve",
-            "query": query
-        }).to_string() + "\n";
-
-        let raw = self.send_raw(&payload).await?;
-
-        let response: ApiResponse<Track> = serde_json::from_str(&raw).map_err(|e| {
-            MicroserviceError::InvalidResponse(format!("Fallo parseo resolve: {}. Raw: {}", e, raw))
-        })?;
-
-        if response.status == "ok" {
-            response.data.ok_or_else(|| {
-                MicroserviceError::ServiceError("El microservicio devolvió ok pero 'data' es null".into())
-            })
-        } else {
-            Err(MicroserviceError::ServiceError(
-                response.message.unwrap_or_else(|| "Error desconocido del microservicio".into()),
-            ))
-        }
+        self.inner.resolve(query).await
     }
 
-    /// Envía una acción `radio` y devuelve una lista de Tracks.
-    pub async fn radio(&self, query: &str) -> Result<Vec<Track>, MicroserviceError> {
-        let payload = json!({
-            "action": "radio",
-            "query": query
-        }).to_string() + "\n";
-
-        let raw = self.send_raw(&payload).await?;
-
-        let response: ApiResponse<Vec<Track>> = serde_json::from_str(&raw).map_err(|e| {
-            MicroserviceError::InvalidResponse(format!("Fallo parseo radio: {}. Raw: {}", e, raw))
-        })?;
-
-        if response.status == "ok" {
-            response.data.ok_or_else(|| {
-                MicroserviceError::ServiceError("El microservicio devolvió ok pero 'data' es null".into())
-            })
-        } else {
-            Err(MicroserviceError::ServiceError(
-                response.message.unwrap_or_else(|| "Error al generar la radio desde el microservicio".into()),
-            ))
-        }
+    pub async fn radio(&self, query: &str, limit: Option<usize>) -> Result<Vec<Track>, MicroserviceError> {
+        self.inner.radio(query, limit).await
     }
 
     pub async fn mark_as_played(&self, track_id: &str) -> Result<(), MicroserviceError> {
-        let payload = json!({
-            "action": "played",
-            "query": track_id
-        }).to_string() + "\n";
-
-        let raw = self.send_raw(&payload).await?;
-
-        let response: ApiResponse<serde_json::Value> = serde_json::from_str(&raw).map_err(|e| {
-            MicroserviceError::InvalidResponse(format!("Fallo parseo en mark_as_played: {}", e))
-        })?;
-
-        if response.status == "ok" {
-            Ok(())
-        } else {
-            Err(MicroserviceError::ServiceError(
-                response.message.unwrap_or_else(|| "Error al registrar el play en el microservicio".into()),
-            ))
-        }
+        self.inner.mark_as_played(track_id).await
     }
 
-    // ── STRESS TEST ENDPOINTS ─────────────────────────────────────────────────
-
-    /// Simula la obtención de todo el catálogo (devuelve lista de UUIDs/Strings).
     pub async fn get_all_ids(&self) -> Result<Vec<String>, MicroserviceError> {
-        let payload = json!({
-            "action": "get_all_ids"
-        }).to_string() + "\n";
-
-        let raw = self.send_raw(&payload).await?;
-
-        let response: ApiResponse<Vec<String>> = serde_json::from_str(&raw).map_err(|e| {
-            MicroserviceError::InvalidResponse(format!("Fallo parseo get_all_ids: {}. Raw: {}", e, raw))
-        })?;
-
-        if response.status == "ok" {
-            response.data.ok_or_else(|| {
-                MicroserviceError::ServiceError("El microservicio devolvió ok pero 'data' es null en get_all_ids".into())
-            })
-        } else {
-            Err(MicroserviceError::ServiceError(
-                response.message.unwrap_or_else(|| "Error desconocido en get_all_ids".into()),
-            ))
-        }
+        self.inner.send(Request::new("get_all_ids")).await
     }
 
-    /// Resuelve un lote de IDs en un solo viaje TCP.
     pub async fn resolve_many(&self, ids: &[String]) -> Result<Vec<Track>, MicroserviceError> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-
-        let payload = json!({
-            "action": "resolve_many",
-            "ids": ids
-        }).to_string() + "\n";
-
-        let raw = self.send_raw(&payload).await?;
-
-        let response: ApiResponse<Vec<Track>> = serde_json::from_str(&raw).map_err(|e| {
-            MicroserviceError::InvalidResponse(format!("Fallo parseo resolve_many: {}. Raw: {}", e, raw))
-        })?;
-
-        if response.status == "ok" {
-            response.data.ok_or_else(|| {
-                MicroserviceError::ServiceError("El microservicio devolvió ok pero 'data' es null en resolve_many".into())
-            })
-        } else {
-            Err(MicroserviceError::ServiceError(
-                response.message.unwrap_or_else(|| "Error al resolver lote en resolve_many".into()),
-            ))
-        }
-    }
-
-    /// Abre conexión, envía payload, lee UNA SOLA LÍNEA de respuesta.
-    async fn send_raw(&self, payload: &str) -> Result<String, MicroserviceError> {
-        let mut stream = TcpStream::connect(&self.addr)
-            .await
-            .map_err(MicroserviceError::ConnectionFailed)?;
-
-        stream
-            .write_all(payload.as_bytes())
-            .await
-            .map_err(MicroserviceError::IoError)?;
-
-        let mut reader = BufReader::new(stream);
-        let mut response = String::new();
-
-        reader
-            .read_line(&mut response)
-            .await
-            .map_err(MicroserviceError::IoError)?;
-
-        Ok(response.trim().to_string())
+        self.inner.resolve_many(ids).await
     }
 }

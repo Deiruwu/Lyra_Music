@@ -79,7 +79,7 @@ impl SearchFeature {
 
                             extra_task = Task::perform(
                                 async move {
-                                    client.search(&query, 5, filter_str).await.map_err(|e| e.to_string())
+                                    client.search(&query, Some(5), filter_str).await.map_err(|e| e.to_string())
                                 },
                                 SearchFeatureMessage::SearchCompleted,
                             );

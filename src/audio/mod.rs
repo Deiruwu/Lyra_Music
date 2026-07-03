@@ -8,3 +8,4 @@ pub mod discord;
 pub mod radio_daemon;
 pub mod download_daemon;
 pub mod mananger;
+pub mod music_utils;
