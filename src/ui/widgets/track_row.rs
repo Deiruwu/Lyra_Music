@@ -193,7 +193,7 @@ where
     };
 
     let handle = container(
-        text("") 
+        text("")
             .font(JETBRAINS_MONO)
             .size(16)
             .color(icon_color)
