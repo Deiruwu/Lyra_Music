@@ -178,18 +178,49 @@ where
     }
 }
 
+fn drag_handle<'a, Message>(
+    on_drag_start: Message,
+    on_drag_release: Message,
+    is_dragging: bool,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    let icon_color = if is_dragging {
+        iced::Color::WHITE
+    } else {
+        iced::Color::from_rgb(0.45, 0.45, 0.45)
+    };
+
+    let handle = container(
+        text("") 
+            .font(JETBRAINS_MONO)
+            .size(16)
+            .color(icon_color)
+    )
+        .width(Length::Fixed(28.0))
+        .height(Length::Fixed(44.0))
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center);
+
+    mouse_area(handle)
+        .on_press(on_drag_start)
+        .on_release(on_drag_release)
+        .interaction(iced::mouse::Interaction::Grab)
+        .into()
+}
+
 pub fn queue_track_row<'a, Message>(
     track: &'a Track,
     thumbnail: Option<Handle>,
     on_play: Message,
     on_delete: Message,
     row_hovered: bool,
-    on_hover: Message,
-    on_leave: Message,
     delete_hovered: bool,
     on_delete_hover: Message,
     on_delete_leave: Message,
     queue_state: QueueThumbnailState,
+    drag: DragRowParams<Message>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -216,16 +247,39 @@ where
         .on_enter(on_delete_hover)
         .on_exit(on_delete_leave);
 
+    let handle = drag_handle(drag.on_drag_start, drag.on_drag_release, drag.is_dragging);
+
     let row_content = mouse_area(
-        row![thumb, info, space().width(Length::Fill)]
+        row![handle, thumb, info, space().width(Length::Fill)]
             .spacing(15)
             .align_y(Alignment::Center)
             .padding([8, 12])
-    )
-        .on_enter(on_hover)
-        .on_exit(on_leave);
+    );
 
-    row![row_content, delete_button]
-        .align_y(Alignment::Center)
+    let content = row![row_content, delete_button]
+        .align_y(Alignment::Center);
+
+    container(content)
+        .style(move |_theme: &Theme| {
+            if drag.is_dragging {
+                container::Style {
+                    background: Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
+                    border: iced::border::rounded(6)
+                        .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.15))
+                        .width(1.0),
+                    ..Default::default()
+                }
+            } else {
+                container::Style::default()
+            }
+        })
         .into()
+}
+
+/// Parámetros de drag para una fila de la cola. Se agrupan en un struct
+/// porque `queue_track_row` ya tenía demasiados argumentos posicionales.
+pub struct DragRowParams<Message> {
+    pub is_dragging: bool,
+    pub on_drag_start: Message,
+    pub on_drag_release: Message,
 }

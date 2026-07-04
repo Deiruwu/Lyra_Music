@@ -12,7 +12,6 @@ rubato = "0.14"
 thiserror = "2.0.18"
 chrono = { version = "0.4.45", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
 crossbeam-channel = "0.5.15"
 
 rtrb = "0.3.4"
@@ -26,7 +25,6 @@ futures = "0.3.32"
 dotenvy = "0.15.7"
 image = "0.25.10"
 lru = "0.18.0"
-dashmap = "7.0.0-rc2"
 ksni = { version = "0.3.5" , features = ["tokio"]}
 libc = "0.2.186"
 

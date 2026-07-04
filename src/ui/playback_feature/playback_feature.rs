@@ -9,7 +9,7 @@ use crate::audio::mananger::manager::TrackManager;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 
 use crate::ui::playback_feature::player::{Player, PlayerMessage, PlayerOutMessage};
-use crate::ui::playback_feature::queue_panel::{QueueMessage, QueueOutMessage, QueuePanel};
+use crate::ui::playback_feature::queue::queue_panel::{QueueMessage, QueueOutMessage, QueuePanel};
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 
@@ -19,8 +19,8 @@ pub enum PlaybackFeatureMessage {
     Volume(VolumeMessage),
     Queue(QueueMessage),
     QueueChanged,
-    DownloadingStarted,
-    DownloadingFinished,
+    DownloadingStarted(String),
+    DownloadingFinished(String),
     ThumbnailColorLoaded { key: String, bytes: Vec<u8> },
     Play(PlayableTrack),
     Tick,
@@ -33,6 +33,12 @@ pub struct PlaybackFeature {
     volume: Volume,
     spinner_frame: u8,
     is_predownloading: bool,
+    /// Id del track que el DownloadWorker está bajando ahora mismo, si
+    /// alguno. Antes se asumía "siempre es el índice 0 de la cola", pero
+    /// eso deja de ser cierto en cuanto el usuario reordena la cola con
+    /// drag & drop: el índice 0 visual ya no es necesariamente el track
+    /// real en descarga.
+    downloading_track_id: Option<String>,
 }
 
 impl PlaybackFeature {
@@ -46,6 +52,7 @@ impl PlaybackFeature {
             manager,
             spinner_frame: 0,
             is_predownloading: false,
+            downloading_track_id: None,
         }
     }
 
@@ -53,11 +60,36 @@ impl PlaybackFeature {
         let tick_sub = iced::time::every(Duration::from_millis(40))
             .map(|_| PlaybackFeatureMessage::Tick);
 
-        Subscription::batch([
+        // Suelta cualquier drag en curso sin importar dónde esté el
+        // cursor al momento del release — necesario porque el panel de
+        // cola es angosto y es normal que el mouse salga de su área
+        // mientras arrastras. Sin esto, self.queue.drag queda "pegado"
+        // y el ghost sigue las coordenadas del mouse para siempre.
+        let global_release = iced::event::listen_with(|event, _status, _id| match event {
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                Some(PlaybackFeatureMessage::Queue(QueueMessage::DragReleased))
+            }
+            _ => None,
+        });
+
+        let mut subs = vec![
             Subscription::run(queue_events),
             Subscription::run(backend_events).map(PlaybackFeatureMessage::Player),
             tick_sub,
-        ])
+            global_release,
+        ];
+
+        // Solo pedimos frames del compositor mientras alguna fila de la
+        // cola está a medio animar; si no, esta subscription desaparece
+        // sola y dejamos de gastar ciclos en cada refresh del monitor.
+        if self.queue.is_animating() {
+            subs.push(
+                iced::window::frames()
+                    .map(|instant| PlaybackFeatureMessage::Queue(QueueMessage::AnimationFrame(instant))),
+            );
+        }
+
+        Subscription::batch(subs)
     }
 
     /// True si hay cualquier descarga activa: emergencia (status==4)
@@ -92,13 +124,21 @@ impl PlaybackFeature {
                 Task::batch(tasks)
             }
 
-            PlaybackFeatureMessage::DownloadingStarted => {
+            PlaybackFeatureMessage::DownloadingStarted(track_id) => {
                 self.is_predownloading = true;
+                self.downloading_track_id = Some(track_id);
                 Task::none()
             }
 
-            PlaybackFeatureMessage::DownloadingFinished => {
+            PlaybackFeatureMessage::DownloadingFinished(track_id) => {
                 self.is_predownloading = false;
+                // Solo limpiamos si coincide con la que teníamos guardada;
+                // si por alguna condición de carrera llega un Finished de
+                // un id viejo después de que ya empezó otra descarga, no
+                // queremos borrar el id correcto por error.
+                if self.downloading_track_id.as_deref() == Some(track_id.as_str()) {
+                    self.downloading_track_id = None;
+                }
                 Task::none()
             }
 
@@ -224,7 +264,9 @@ impl PlaybackFeature {
     }
 
     pub fn view_queue(&self, thumbnails: &ThumbnailCache) -> Element<'_, PlaybackFeatureMessage> {
-        self.queue.view(thumbnails, self.is_downloading()).map(PlaybackFeatureMessage::Queue)
+        self.queue
+            .view(thumbnails, self.downloading_track_id.as_deref())
+            .map(PlaybackFeatureMessage::Queue)
     }
 }
 
@@ -240,11 +282,11 @@ fn queue_events() -> impl futures::Stream<Item = PlaybackFeatureMessage> {
                 Ok(QueueEvent::QueueChanged) => {
                     let _ = output.send(PlaybackFeatureMessage::QueueChanged).await;
                 }
-                Ok(QueueEvent::DownloadStarted(_)) => {
-                    let _ = output.send(PlaybackFeatureMessage::DownloadingStarted).await;
+                Ok(QueueEvent::DownloadStarted(track)) => {
+                    let _ = output.send(PlaybackFeatureMessage::DownloadingStarted(track.id.clone())).await;
                 }
-                Ok(QueueEvent::DownloadFinished(_)) => {
-                    let _ = output.send(PlaybackFeatureMessage::DownloadingFinished).await;
+                Ok(QueueEvent::DownloadFinished(track)) => {
+                    let _ = output.send(PlaybackFeatureMessage::DownloadingFinished(track.id.clone())).await;
                 }
                 // DownloadRequired lo maneja el worker, la UI no necesita reaccionar.
                 Ok(QueueEvent::DownloadRequired(_))         => {}
