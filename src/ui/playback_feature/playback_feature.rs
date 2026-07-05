@@ -8,6 +8,7 @@ use crate::model::audio_tech::PlayableTrack;
 use crate::audio::mananger::manager::TrackManager;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 
+use crate::ui::playback_feature::lyrics::lyrics_panel::{LyricsPanel, LyricsMessage, LyricsOutMessage};
 use crate::ui::playback_feature::player::{Player, PlayerMessage, PlayerOutMessage};
 use crate::ui::playback_feature::queue::queue_panel::{QueueMessage, QueueOutMessage, QueuePanel};
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
@@ -18,6 +19,7 @@ pub enum PlaybackFeatureMessage {
     Player(PlayerMessage),
     Volume(VolumeMessage),
     Queue(QueueMessage),
+    Lyrics(LyricsMessage),
     QueueChanged,
     DownloadingStarted(String),
     DownloadingFinished(String),
@@ -31,6 +33,7 @@ pub struct PlaybackFeature {
     queue: QueuePanel,
     player: Player,
     volume: Volume,
+    lyrics: LyricsPanel,
     spinner_frame: u8,
     is_predownloading: bool,
     /// Id del track que el DownloadWorker está bajando ahora mismo, si
@@ -49,6 +52,7 @@ impl PlaybackFeature {
             queue: QueuePanel::default(),
             player: Player::default(),
             volume: Volume::default(),
+            lyrics: LyricsPanel::default(),
             manager,
             spinner_frame: 0,
             is_predownloading: false,
@@ -86,6 +90,15 @@ impl PlaybackFeature {
             subs.push(
                 iced::window::frames()
                     .map(|instant| PlaybackFeatureMessage::Queue(QueueMessage::AnimationFrame(instant))),
+            );
+        }
+
+        // Igual que con la cola: solo pedimos frames del compositor
+        // mientras una línea de la letra está en transición de fade/slide.
+        if self.lyrics.is_animating(std::time::Instant::now()) {
+            subs.push(
+                iced::window::frames()
+                    .map(|instant| PlaybackFeatureMessage::Lyrics(LyricsMessage::AnimationFrame(instant))),
             );
         }
 
@@ -152,6 +165,10 @@ impl PlaybackFeature {
                     self.spinner_frame = (self.spinner_frame + 1) % 6;
                     let _ = self.queue.update(QueueMessage::Tick);
                 }
+
+                let position = self.manager.get_position();
+                let (_, _) = self.lyrics.update(LyricsMessage::PositionUpdated(position));
+
                 Task::none()
             }
 
@@ -170,6 +187,7 @@ impl PlaybackFeature {
 
             PlaybackFeatureMessage::Player(msg) => {
                 let mut extra_task = Task::none();
+                let mut lyrics_task = Task::none();
 
                 if let PlayerMessage::BackendEvent(TrackEvent::TrackChanged(ref playable)) = msg {
                     let key = thumb_key(&playable.track);
@@ -180,6 +198,11 @@ impl PlaybackFeature {
                             extra_task = t;
                         }
                     }
+
+                    // Nuevo track sonando: avisamos al panel de letras
+                    // para que busque y cargue su .lrc correspondiente.
+                    let (t, _out) = self.lyrics.update(LyricsMessage::TrackChanged(Arc::clone(playable)));
+                    lyrics_task = t.map(PlaybackFeatureMessage::Lyrics);
                 }
 
                 let (task, out_msg) = self.player.update(msg);
@@ -199,7 +222,11 @@ impl PlaybackFeature {
                     PlayerOutMessage::Idle             => {}
                 }
 
-                Task::batch(vec![task.map(PlaybackFeatureMessage::Player), extra_task])
+                Task::batch(vec![
+                    task.map(PlaybackFeatureMessage::Player),
+                    extra_task,
+                    lyrics_task,
+                ])
             }
 
             PlaybackFeatureMessage::Volume(msg) => {
@@ -210,6 +237,16 @@ impl PlaybackFeature {
                 }
 
                 task.map(PlaybackFeatureMessage::Volume)
+            }
+
+            PlaybackFeatureMessage::Lyrics(msg) => {
+                let (task, out_msg) = self.lyrics.update(msg);
+
+                if let LyricsOutMessage::RequestSeek(timestamp) = out_msg {
+                    self.manager.seek(timestamp);
+                }
+
+                task.map(PlaybackFeatureMessage::Lyrics)
             }
         }
     }
@@ -247,6 +284,8 @@ impl PlaybackFeature {
             .width(Length::Fill)
             .align_y(Alignment::Center);
 
+        // La letra ahora vive en su propio panel grande (ver view_lyrics),
+        // así que aquí solo queda la seek bar y los controles.
         let layout_final = column![seek_bar, play_controller]
             .spacing(10)
             .align_x(Alignment::Center);
@@ -267,6 +306,12 @@ impl PlaybackFeature {
         self.queue
             .view(thumbnails, self.downloading_track_id.as_deref())
             .map(PlaybackFeatureMessage::Queue)
+    }
+
+    /// Panel grande de letras, pensado para ocupar el espacio central
+    /// vacío del layout principal (antes un placeholder sin contenido).
+    pub fn view_lyrics(&self) -> Element<'_, PlaybackFeatureMessage> {
+        self.lyrics.view().map(PlaybackFeatureMessage::Lyrics)
     }
 }
 

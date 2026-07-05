@@ -67,7 +67,6 @@ impl AudioEngine {
     }
 }
 
-// --- EL HOT PATH (HILO DEL SISTEMA OPERATIVO) ---
 
 fn write_audio_to_hardware(output_buffer: &mut [f32], consumer: &mut Consumer<f32>, state: &EngineState) {
     if state.flush_flag.load(Ordering::Acquire) {
@@ -81,7 +80,7 @@ fn write_audio_to_hardware(output_buffer: &mut [f32], consumer: &mut Consumer<f3
     }
 
     let volume = f32::from_bits(state.volume_bits.load(Ordering::Relaxed));
-    let mut consumed = 0u32;
+    let mut consumed = 0u64; // Ahora es u64 para evitar desbordamientos y coincidir con el state
 
     for sample in output_buffer.iter_mut() {
         match consumer.pop() {
@@ -95,14 +94,9 @@ fn write_audio_to_hardware(output_buffer: &mut [f32], consumer: &mut Consumer<f3
         }
     }
 
-    // Actualizar posición basado en samples REALMENTE reproducidos por el hardware
-    // consumed / TARGET_CHANNELS = frames reales, a TARGET_SAMPLE_RATE
-
     if consumed > 0 {
-        let delta_ms = (consumed as u64 * 1000 / (TARGET_SAMPLE_RATE as u64 * TARGET_CHANNELS as u64)) as u32;
-        state.position_ms.fetch_add(delta_ms, Ordering::Relaxed);
+        state.add_consumed_samples(consumed);
     }
-
 }
 
 // --- EL HILO WORKER (SYMPHONIA) ---
@@ -141,7 +135,7 @@ fn run_worker_loop(
                         Some(path) => match SymphoniaDecoder::open(path, mode) {
                             Ok(dec) => {
                                 current_decoder = Some(dec);
-                                state.position_ms.store(0, Ordering::Relaxed);
+                                state.set_position_anchor(0);
                                 state.status.store(1, Ordering::Relaxed);
                             }
                             Err(e) => {
@@ -159,6 +153,8 @@ fn run_worker_loop(
                     state.status.store(2, Ordering::Relaxed);
                 }
                 AudioCommand::Resume => {
+                    let current_ms = state.get_position().as_millis() as u32;
+                    state.set_position_anchor(current_ms);
                     state.status.store(1, Ordering::Relaxed);
                 }
                 AudioCommand::Stop => {
@@ -179,7 +175,7 @@ fn run_worker_loop(
                             while state.flush_flag.load(Ordering::Acquire) {
                                 thread::yield_now();
                             }
-                            state.position_ms.store(target.as_millis() as u32, Ordering::Relaxed);
+                            state.set_position_anchor(target.as_millis() as u32);
                         }
                     }
                 }
@@ -212,7 +208,7 @@ fn run_worker_loop(
                                 }
                                 thread::sleep(std::time::Duration::from_millis(10));
                             }
-                            let real_duration_ms = state.position_ms.load(Ordering::Relaxed);
+                            let real_duration_ms = state.get_position().as_millis();
                             eprintln!("[WORKER] Duración real medida: {}ms", real_duration_ms);
                             current_decoder = None;
                             state.status.store(3, Ordering::Relaxed);
@@ -224,7 +220,6 @@ fn run_worker_loop(
                         }
                     }
                 } else {
-                    // Backpressure: el ring buffer está casi lleno, CPAL consumirá pronto.
                     thread::sleep(std::time::Duration::from_millis(5));
                 }
             }

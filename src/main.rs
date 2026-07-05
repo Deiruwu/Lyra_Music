@@ -155,9 +155,12 @@ impl App {
     }
 
     pub fn view(&self, _window: window::Id) -> Element<'_, AppMessage> {
-        let center_view = container(space())
+        let center_view = container(
+            self.playback_feature.view_lyrics().map(AppMessage::PlaybackFeature)
+        )
             .width(Length::Fill)
             .height(Length::Fill)
+            .padding(20)
             .style(|_theme| container::Style {
                 background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.20))),
                 border: Border {
