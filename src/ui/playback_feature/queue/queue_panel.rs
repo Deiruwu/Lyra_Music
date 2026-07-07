@@ -300,7 +300,7 @@ impl QueuePanel {
 
         container(scrollable(interactive_area).height(Length::Fill))
             .padding(16)
-            .width(Length::Fixed(350.0))
+            .width(Length::Fixed(450.0))
             .height(Length::Fill)
             .style(|_theme: &iced::Theme| container::Style {
                 background: Some(iced::Color::from_rgb(0.12, 0.12, 0.12).into()),

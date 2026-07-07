@@ -5,7 +5,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::Mutex;
 use tokio::task;
 
-use crate::audio::mananger::manager::TrackManager;
+use crate::audio::manager::manager::TrackManager;
 use crate::audio::track_event::QueueEvent;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;

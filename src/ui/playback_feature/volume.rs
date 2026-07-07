@@ -1,4 +1,4 @@
-use iced::Element;
+use iced::{Element, Length};
 use iced::widget::{row, slider, text};
 use iced::Task;
 use crate::JETBRAINS_MONO;
@@ -35,7 +35,6 @@ impl Volume {
             text(volume_icon).font(JETBRAINS_MONO),
             slider(0.0..=1.0, volume, VolumeMessage::UiSliderChanged)
                 .step(0.01)
-                .width(150)
         ]
             .spacing(20)
             .padding(20)

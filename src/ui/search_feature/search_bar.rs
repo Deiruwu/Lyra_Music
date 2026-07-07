@@ -120,6 +120,10 @@ impl SearchInput {
 
         container(search_bar)
             .padding(20)
+            .style(|_theme: &Theme| container::Style {
+                background: Some(Color::from_rgb(0.1, 0.1, 0.1).into()),
+                ..Default::default()
+            })
             .width(Length::Fill)
             .into()
     }

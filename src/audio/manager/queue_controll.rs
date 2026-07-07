@@ -1,5 +1,5 @@
-use crate::audio::mananger::manager::TrackManager;
-use crate::audio::mananger::error_mananger::ManagerError;
+use crate::audio::manager::manager::TrackManager;
+use crate::audio::manager::error_mananger::ManagerError;
 use crate::model::Track;
 
 impl TrackManager {

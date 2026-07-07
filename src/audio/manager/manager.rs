@@ -11,7 +11,7 @@ use crate::model::Track;
 use crate::audio::decoder::ChannelMode;
 use crate::audio::engine_state::{AudioCommand, EngineState};
 use crate::audio::engine::AudioEngine;
-use crate::audio::mananger::error_mananger::ManagerError;
+use crate::audio::manager::error_mananger::ManagerError;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 
 const HISTORY_CAP: usize = 100;

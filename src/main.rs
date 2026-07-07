@@ -8,21 +8,29 @@ use std::sync::{Arc, OnceLock};
 use std::sync::atomic::Ordering;
 use iced::{border, window, Background, Border, Color, Element, Font, Length, Padding, Theme};
 use iced::widget::{column, container, row, space, stack};
+
 use crate::audio::discord::DiscordPresence;
 use crate::audio::download_daemon::DownloadWorker;
 use crate::audio::engine::AudioEngine;
-use audio::mananger::manager::TrackManager;
+use audio::manager::manager::TrackManager;
 use crate::audio::mpris::MprisServer;
 use crate::audio::radio_daemon::RadioWorker;
 use crate::microservices::client::MicroserviceClient;
 use crate::tray::TrayFlags;
-use crate::ui::playback_feature::playback_feature::{PlaybackFeature, PlaybackFeatureMessage};
+
+use crate::ui::playback_feature::playback_feature::{PlaybackFeature, PlaybackFeatureMessage, PlaybackOutMessage};
 use crate::ui::search_feature::search_feature::{SearchFeature, SearchFeatureMessage, SearchFeatureOutMessage};
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 
 const JETBRAINS_MONO: Font = Font::with_name("JetBrainsMono Nerd Font");
 
 static TRAY_FLAGS: OnceLock<Arc<TrayFlags>> = OnceLock::new();
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppView {
+    Explorer,
+    Theater,
+}
 
 #[derive(Debug, Clone)]
 pub enum AppMessage {
@@ -36,12 +44,14 @@ pub enum AppMessage {
 
 struct App {
     _engine: AudioEngine,
+    manager: Arc<TrackManager>,
     search_feature: SearchFeature,
     playback_feature: PlaybackFeature,
     thumbnails: ThumbnailCache,
     radio: Arc<RadioWorker>,
     tray_flags: Arc<TrayFlags>,
     main_window: Option<window::Id>,
+    current_view: AppView,
 }
 
 impl App {
@@ -83,6 +93,8 @@ impl App {
             radio,
             tray_flags,
             main_window: Some(window_id),
+            manager,
+            current_view: AppView::Theater,
         };
 
         (app, open_task.map(AppMessage::WindowOpened))
@@ -125,25 +137,42 @@ impl App {
                     self.tray_flags.show_window.store(false, Ordering::Relaxed);
                     return iced::Task::done(AppMessage::ShowWindow);
                 }
-                self.playback_feature
-                    .update(PlaybackFeatureMessage::Tick, &mut self.thumbnails)
-                    .map(AppMessage::PlaybackFeature)
+
+                let position = self.manager.get_position();
+                let position_task = self.playback_feature.position_updated(position);
+
+                let (tick_task, _out) = self.playback_feature
+                    .update(PlaybackFeatureMessage::Tick, &mut self.thumbnails);
+
+                iced::Task::batch(vec![
+                    position_task.map(AppMessage::PlaybackFeature),
+                    tick_task.map(AppMessage::PlaybackFeature),
+                ])
             }
 
             AppMessage::PlaybackFeature(msg) => {
-                self.playback_feature.update(msg, &mut self.thumbnails).map(AppMessage::PlaybackFeature)
+                let (task, out_msg) = self.playback_feature.update(msg, &mut self.thumbnails);
+
+                if let PlaybackOutMessage::ToggleTheaterMode = out_msg {
+                    self.current_view = match self.current_view {
+                        AppView::Explorer => AppView::Theater,
+                        AppView::Theater => AppView::Explorer,
+                    };
+                }
+
+                task.map(AppMessage::PlaybackFeature)
             }
 
             AppMessage::SearchFeature(msg) => {
                 let (search_task, out_msg) = self.search_feature.update(msg, &mut self.thumbnails);
-
                 let mut feature_task = iced::Task::none();
 
                 if let SearchFeatureOutMessage::TrackReadyToPlay(playable) = out_msg {
-                    feature_task = self.playback_feature.update(
+                    let (t, _out) = self.playback_feature.update(
                         PlaybackFeatureMessage::Play(playable),
                         &mut self.thumbnails,
                     );
+                    feature_task = t;
                 }
 
                 iced::Task::batch(vec![
@@ -155,9 +184,12 @@ impl App {
     }
 
     pub fn view(&self, _window: window::Id) -> Element<'_, AppMessage> {
-        let center_view = container(
-            self.playback_feature.view_lyrics().map(AppMessage::PlaybackFeature)
-        )
+        let center_content: Element<'_, AppMessage> = match self.current_view {
+            AppView::Explorer => space().into(), // Tu futuro explorador irá aquí
+            AppView::Theater => self.playback_feature.view_theater().map(AppMessage::PlaybackFeature),
+        };
+
+        let center_view = container(center_content)
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(20)
@@ -183,17 +215,26 @@ impl App {
                 left: 0.0,
             });
 
-        let content_layer = row![
-            space().width(15),
-            center_view,
-            space().width(15),
-        ]
+        let content_layer = container(
+            row![
+                space().width(15),
+                center_view,
+                space().width(15),
+            ]
+                .width(Length::Fill)
+                .height(Length::Fill)
+        )
             .width(Length::Fill)
-            .height(Length::Fill);
+            .height(Length::Fill)
+            .style(|_theme| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
+                ..Default::default()
+            });
 
         let layout_stack = stack![content_layer, queue_layer];
 
-        let playback_view  = self.playback_feature.view(&self.thumbnails).map(AppMessage::PlaybackFeature);
+        let is_theater = self.current_view == AppView::Theater;
+        let playback_view  = self.playback_feature.view(&self.thumbnails, is_theater).map(AppMessage::PlaybackFeature);
         let search_view    = self.search_feature.view().map(AppMessage::SearchFeature);
         let search_overlay = self.search_feature.view_dropdown(&self.thumbnails).map(AppMessage::SearchFeature);
 
@@ -205,14 +246,18 @@ impl App {
     }
 
     pub fn subscription(&self) -> iced::Subscription<AppMessage> {
-        let search_sub  = self.search_feature.subscription().map(AppMessage::SearchFeature);
-        let feature_sub = self.playback_feature.subscription().map(AppMessage::PlaybackFeature);
+        let search_sub   = self.search_feature.subscription().map(AppMessage::SearchFeature);
+
+        let is_theater   = self.current_view == AppView::Theater;
+        let playback_sub = self.playback_feature.subscription(is_theater).map(AppMessage::PlaybackFeature);
+
         let close_sub = window::events()
             .filter_map(|(id, event)| match event {
                 window::Event::CloseRequested => Some(AppMessage::CloseRequested(id)),
                 _ => None,
             });
-        iced::Subscription::batch(vec![search_sub, feature_sub, close_sub])
+
+        iced::Subscription::batch(vec![search_sub, playback_sub, close_sub])
     }
 
     pub fn theme(&self, _window: window::Id) -> Theme {
@@ -231,12 +276,12 @@ fn main() -> iced::Result {
         libc::signal(libc::SIGINT,  signal_handler as extern "C" fn(libc::c_int) as libc::sighandler_t);
     }
 
-
     let _ = dotenvy::dotenv();
 
     iced::daemon(App::init, App::update, App::view)
         .subscription(App::subscription)
         .font(include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf"))
+        .font(include_bytes!("../assets/fonts/SF-Pro-Display-Regular.otf"))
         .theme(App::theme)
         .run()
 }

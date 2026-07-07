@@ -1,0 +1,162 @@
+use std::sync::Arc;
+use std::time::Instant;
+
+use iced::widget::image::Handle;
+use iced::widget::{column, container, image, row, space, text};
+use iced::{Alignment, Color, Element, Font, Length, Task, Theme};
+use crate::model::audio_tech::PlayableTrack;
+
+// ACTUALIZADO A LA NUEVA RUTA:
+use super::lyrics::lyrics_panel::{LyricsMessage, LyricsOutMessage, LyricsPanel};
+
+const PRO_DISPLAY: Font = Font::with_name("SF Pro Display");
+const ARTWORK_MAX_SIZE: f32 = 544.0;
+
+#[derive(Debug, Clone)]
+pub enum TheaterMessage {
+    Lyrics(LyricsMessage),
+}
+#[derive(Debug, Clone)]
+pub enum TheaterOutMessage {
+    RequestSeek(std::time::Duration),
+    Idle,
+}
+
+pub struct TheaterPanel {
+    lyrics: LyricsPanel,
+    current_title: Option<String>,
+    current_artist: Option<String>,
+}
+
+impl Default for TheaterPanel {
+    fn default() -> Self {
+        Self {
+            lyrics: LyricsPanel::default(),
+            current_title: None,
+            current_artist: None,
+        }
+    }
+}
+
+impl TheaterPanel {
+    pub fn update(&mut self, msg: TheaterMessage) -> (Task<TheaterMessage>, TheaterOutMessage) {
+        match msg {
+            TheaterMessage::Lyrics(msg) => {
+                let (task, out) = self.lyrics.update(msg);
+                let out = match out {
+                    LyricsOutMessage::RequestSeek(t) => TheaterOutMessage::RequestSeek(t),
+                    LyricsOutMessage::Idle => TheaterOutMessage::Idle,
+                };
+                (task.map(TheaterMessage::Lyrics), out)
+            }
+        }
+    }
+
+    pub fn track_changed(&mut self, playable: &Arc<PlayableTrack>) -> Task<TheaterMessage> {
+        self.current_title = Some(playable.track.title.clone());
+        self.current_artist = Some(playable.track.format_artists());
+
+        let (task, _out) = self.lyrics.update(LyricsMessage::TrackChanged(Arc::clone(playable)));
+        task.map(TheaterMessage::Lyrics)
+    }
+
+    pub fn position_updated(&mut self, position: std::time::Duration) -> Task<TheaterMessage> {
+        let (task, _out) = self.lyrics.update(LyricsMessage::PositionUpdated(position));
+        task.map(TheaterMessage::Lyrics)
+    }
+
+    pub fn is_animating(&self, now: Instant) -> bool {
+        self.lyrics.is_animating(now)
+    }
+
+    pub fn animation_frame(&mut self, instant: Instant) -> Task<TheaterMessage> {
+        let (task, _out) = self.lyrics.update(LyricsMessage::AnimationFrame(instant));
+        task.map(TheaterMessage::Lyrics)
+    }
+
+    pub fn view<'a>(&'a self, large_thumbnail: Option<&'a Handle>) -> Element<'a, TheaterMessage> {
+        let artwork_box = |content: Element<'a, TheaterMessage>, style_bg: Option<Color>| -> container::Container<'a, TheaterMessage> {
+            container(content)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .max_width(ARTWORK_MAX_SIZE)
+                .max_height(ARTWORK_MAX_SIZE)
+                .clip(true)
+                .style(move |_theme: &Theme| container::Style {
+                    background: style_bg.map(Into::into),
+                    border: iced::border::rounded(16),
+                    shadow: if style_bg.is_none() {
+                        iced::Shadow {
+                            color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+                            offset: iced::Vector::new(0.0, 8.0),
+                            blur_radius: 32.0,
+                        }
+                    } else {
+                        Default::default()
+                    },
+                    ..Default::default()
+                })
+        };
+
+        let artwork: Element<'_, TheaterMessage> = match large_thumbnail {
+            Some(handle) => artwork_box(
+                image(handle.clone())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .content_fit(iced::ContentFit::Cover)
+                    .into(),
+                None,
+            )
+                .into(),
+            None => artwork_box(space().into(), Some(Color::from_rgb(0.16, 0.16, 0.2)))
+                .into(),
+        };
+
+        let title = self.current_title.clone().unwrap_or_default();
+        let artist = self.current_artist.clone().unwrap_or_default();
+
+        let header = column![
+            text(title)
+                .font(PRO_DISPLAY)
+                .size(20)
+                .color(Color::WHITE),
+            text(artist)
+                .font(PRO_DISPLAY)
+                .size(14)
+                .color(Color::from_rgb(0.65, 0.65, 0.7)),
+        ]
+            .spacing(4)
+            .align_x(Alignment::Center);
+
+        let artwork_slot = container(artwork)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center);
+
+        let artwork_column = column![artwork_slot, header]
+            .spacing(18)
+            .align_x(Alignment::Center);
+
+        let artwork_panel = container(artwork_column)
+            .width(Length::FillPortion(1))
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center);
+
+        let lyrics_panel = container(self.lyrics.view().map(TheaterMessage::Lyrics))
+            .width(Length::FillPortion(1))
+            .height(Length::Fill);
+
+        let divider = container(space().width(Length::Fixed(1.0)).height(Length::Fill))
+            .style(|_theme: &Theme| container::Style {
+                background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
+                ..Default::default()
+            });
+
+        row![artwork_panel, divider, lyrics_panel]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+}

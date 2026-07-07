@@ -9,7 +9,7 @@ use mpris_server::{
 };
 use mpris_server::zbus::fdo;
 
-use crate::audio::mananger::manager::TrackManager;
+use crate::audio::manager::manager::TrackManager;
 use crate::audio::track_event::TrackEvent;
 use crate::model::audio_tech::PlayableTrack;
 

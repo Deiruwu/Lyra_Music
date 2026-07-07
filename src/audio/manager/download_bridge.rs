@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use crate::audio::mananger::manager::TrackManager;
+use crate::audio::manager::manager::TrackManager;
 use crate::model::Track;
 
 // ── Helpers para el DownloadWorker ────────────────────────────────────────

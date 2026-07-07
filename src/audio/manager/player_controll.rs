@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 use crate::audio::engine_state::AudioCommand;
-use crate::audio::mananger::manager::{probe_track, TrackManager};
-use crate::audio::mananger::error_mananger::ManagerError;
+use crate::audio::manager::manager::{probe_track, TrackManager};
+use crate::audio::manager::error_mananger::ManagerError;
 use crate::audio::track_event::TrackEvent;
 use crate::model::Track;
 

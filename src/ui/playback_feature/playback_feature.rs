@@ -1,16 +1,18 @@
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use futures::SinkExt;
+use iced::widget::image::Handle;
 use iced::{stream, Alignment, Color, Element, Length, Subscription, Task, Theme};
 use iced::widget::{container, column, row};
 use tokio::sync::broadcast;
+
 use crate::model::audio_tech::PlayableTrack;
-use crate::audio::mananger::manager::TrackManager;
+use crate::audio::manager::manager::TrackManager;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 
-use crate::ui::playback_feature::lyrics::lyrics_panel::{LyricsPanel, LyricsMessage, LyricsOutMessage};
 use crate::ui::playback_feature::player::{Player, PlayerMessage, PlayerOutMessage};
 use crate::ui::playback_feature::queue::queue_panel::{QueueMessage, QueueOutMessage, QueuePanel};
+use crate::ui::playback_feature::theater::theater_panel::{TheaterMessage, TheaterOutMessage, TheaterPanel};
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 
@@ -19,13 +21,22 @@ pub enum PlaybackFeatureMessage {
     Player(PlayerMessage),
     Volume(VolumeMessage),
     Queue(QueueMessage),
-    Lyrics(LyricsMessage),
+    Theater(TheaterMessage),
     QueueChanged,
     DownloadingStarted(String),
     DownloadingFinished(String),
     ThumbnailColorLoaded { key: String, bytes: Vec<u8> },
+    LargeThumbnailLoaded { track_id: String, bytes: Vec<u8> },
     Play(PlayableTrack),
+    ToggleTheaterMode,
     Tick,
+    AnimationFrame(Instant),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlaybackOutMessage {
+    ToggleTheaterMode,
+    Idle,
 }
 
 pub struct PlaybackFeature {
@@ -33,15 +44,12 @@ pub struct PlaybackFeature {
     queue: QueuePanel,
     player: Player,
     volume: Volume,
-    lyrics: LyricsPanel,
+    theater: TheaterPanel,
     spinner_frame: u8,
     is_predownloading: bool,
-    /// Id del track que el DownloadWorker está bajando ahora mismo, si
-    /// alguno. Antes se asumía "siempre es el índice 0 de la cola", pero
-    /// eso deja de ser cierto en cuanto el usuario reordena la cola con
-    /// drag & drop: el índice 0 visual ya no es necesariamente el track
-    /// real en descarga.
     downloading_track_id: Option<String>,
+    current_track_id: Option<String>,
+    current_large_thumbnail: Option<(String, Handle)>,
 }
 
 impl PlaybackFeature {
@@ -52,23 +60,20 @@ impl PlaybackFeature {
             queue: QueuePanel::default(),
             player: Player::default(),
             volume: Volume::default(),
-            lyrics: LyricsPanel::default(),
+            theater: TheaterPanel::default(),
             manager,
             spinner_frame: 0,
             is_predownloading: false,
             downloading_track_id: None,
+            current_track_id: None,
+            current_large_thumbnail: None,
         }
     }
 
-    pub fn subscription(&self) -> Subscription<PlaybackFeatureMessage> {
+    pub fn subscription(&self, is_theater_visible: bool) -> Subscription<PlaybackFeatureMessage> {
         let tick_sub = iced::time::every(Duration::from_millis(40))
             .map(|_| PlaybackFeatureMessage::Tick);
 
-        // Suelta cualquier drag en curso sin importar dónde esté el
-        // cursor al momento del release — necesario porque el panel de
-        // cola es angosto y es normal que el mouse salga de su área
-        // mientras arrastras. Sin esto, self.queue.drag queda "pegado"
-        // y el ghost sigue las coordenadas del mouse para siempre.
         let global_release = iced::event::listen_with(|event, _status, _id| match event {
             iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                 Some(PlaybackFeatureMessage::Queue(QueueMessage::DragReleased))
@@ -83,9 +88,6 @@ impl PlaybackFeature {
             global_release,
         ];
 
-        // Solo pedimos frames del compositor mientras alguna fila de la
-        // cola está a medio animar; si no, esta subscription desaparece
-        // sola y dejamos de gastar ciclos en cada refresh del monitor.
         if self.queue.is_animating() {
             subs.push(
                 iced::window::frames()
@@ -93,20 +95,15 @@ impl PlaybackFeature {
             );
         }
 
-        // Igual que con la cola: solo pedimos frames del compositor
-        // mientras una línea de la letra está en transición de fade/slide.
-        if self.lyrics.is_animating(std::time::Instant::now()) {
+        if is_theater_visible && self.theater.is_animating(Instant::now()) {
             subs.push(
-                iced::window::frames()
-                    .map(|instant| PlaybackFeatureMessage::Lyrics(LyricsMessage::AnimationFrame(instant))),
+                iced::window::frames().map(PlaybackFeatureMessage::AnimationFrame),
             );
         }
 
         Subscription::batch(subs)
     }
 
-    /// True si hay cualquier descarga activa: emergencia (status==4)
-    /// o pre-descarga proactiva del worker.
     fn is_downloading(&self) -> bool {
         self.manager.state.is_downloading() || self.is_predownloading
     }
@@ -115,11 +112,11 @@ impl PlaybackFeature {
         &mut self,
         msg: PlaybackFeatureMessage,
         thumbnails: &mut ThumbnailCache,
-    ) -> Task<PlaybackFeatureMessage> {
+    ) -> (Task<PlaybackFeatureMessage>, PlaybackOutMessage) {
         match msg {
             PlaybackFeatureMessage::Play(track) => {
                 self.manager.enqueue(track.track);
-                Task::none()
+                (Task::none(), PlaybackOutMessage::Idle)
             }
 
             PlaybackFeatureMessage::QueueChanged => {
@@ -134,30 +131,33 @@ impl PlaybackFeature {
                     })
                 }).collect();
 
-                Task::batch(tasks)
+                (Task::batch(tasks), PlaybackOutMessage::Idle)
             }
 
             PlaybackFeatureMessage::DownloadingStarted(track_id) => {
                 self.is_predownloading = true;
                 self.downloading_track_id = Some(track_id);
-                Task::none()
+                (Task::none(), PlaybackOutMessage::Idle)
             }
 
             PlaybackFeatureMessage::DownloadingFinished(track_id) => {
                 self.is_predownloading = false;
-                // Solo limpiamos si coincide con la que teníamos guardada;
-                // si por alguna condición de carrera llega un Finished de
-                // un id viejo después de que ya empezó otra descarga, no
-                // queremos borrar el id correcto por error.
                 if self.downloading_track_id.as_deref() == Some(track_id.as_str()) {
                     self.downloading_track_id = None;
                 }
-                Task::none()
+                (Task::none(), PlaybackOutMessage::Idle)
             }
 
             PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes } => {
                 thumbnails.insert_color(key, bytes);
-                Task::none()
+                (Task::none(), PlaybackOutMessage::Idle)
+            }
+
+            PlaybackFeatureMessage::LargeThumbnailLoaded { track_id, bytes } => {
+                if self.current_track_id.as_deref() == Some(track_id.as_str()) && !bytes.is_empty() {
+                    self.current_large_thumbnail = Some((track_id, Handle::from_bytes(bytes)));
+                }
+                (Task::none(), PlaybackOutMessage::Idle)
             }
 
             PlaybackFeatureMessage::Tick => {
@@ -165,11 +165,12 @@ impl PlaybackFeature {
                     self.spinner_frame = (self.spinner_frame + 1) % 6;
                     let _ = self.queue.update(QueueMessage::Tick);
                 }
+                (Task::none(), PlaybackOutMessage::Idle)
+            }
 
-                let position = self.manager.get_position();
-                let (_, _) = self.lyrics.update(LyricsMessage::PositionUpdated(position));
-
-                Task::none()
+            PlaybackFeatureMessage::AnimationFrame(instant) => {
+                let task = self.theater.animation_frame(instant).map(PlaybackFeatureMessage::Theater);
+                (task, PlaybackOutMessage::Idle)
             }
 
             PlaybackFeatureMessage::Queue(msg) => {
@@ -182,12 +183,19 @@ impl PlaybackFeature {
                     QueueOutMessage::Idle                  => {}
                 }
 
-                task.map(PlaybackFeatureMessage::Queue)
+                (task.map(PlaybackFeatureMessage::Queue), PlaybackOutMessage::Idle)
+            }
+
+            PlaybackFeatureMessage::Theater(msg) => {
+                let (task, out) = self.theater.update(msg);
+                if let TheaterOutMessage::RequestSeek(timestamp) = out {
+                    self.manager.seek(timestamp);
+                }
+                (task.map(PlaybackFeatureMessage::Theater), PlaybackOutMessage::Idle)
             }
 
             PlaybackFeatureMessage::Player(msg) => {
-                let mut extra_task = Task::none();
-                let mut lyrics_task = Task::none();
+                let mut extra_tasks = vec![];
 
                 if let PlayerMessage::BackendEvent(TrackEvent::TrackChanged(ref playable)) = msg {
                     let key = thumb_key(&playable.track);
@@ -195,14 +203,28 @@ impl PlaybackFeature {
                         if let Some(t) = thumbnails.request_color(key, url, |key, bytes| {
                             PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes }
                         }) {
-                            extra_task = t;
+                            extra_tasks.push(t);
                         }
                     }
 
-                    // Nuevo track sonando: avisamos al panel de letras
-                    // para que busque y cargue su .lrc correspondiente.
-                    let (t, _out) = self.lyrics.update(LyricsMessage::TrackChanged(Arc::clone(playable)));
-                    lyrics_task = t.map(PlaybackFeatureMessage::Lyrics);
+                    self.current_track_id = Some(playable.track.id.clone());
+                    self.current_large_thumbnail = None; // reset inmediato al cambiar de track
+
+                    let theater_task = self.theater
+                        .track_changed(playable)
+                        .map(PlaybackFeatureMessage::Theater);
+                    extra_tasks.push(theater_task);
+
+                    if let Some(url) = playable.track.thumbnail_large.clone() {
+                        let track_id = playable.track.id.clone();
+                        extra_tasks.push(Task::perform(
+                            crate::ui::utils::image::download_thumbnail(url),
+                            move |result| {
+                                let bytes = result.unwrap_or_default();
+                                PlaybackFeatureMessage::LargeThumbnailLoaded { track_id: track_id.clone(), bytes }
+                            },
+                        ));
+                    }
                 }
 
                 let (task, out_msg) = self.player.update(msg);
@@ -218,40 +240,39 @@ impl PlaybackFeature {
                             eprintln!("Error: {}", e);
                         }
                     }
-                    PlayerOutMessage::RequestSeek(pos) => self.manager.seek(Duration::from_secs_f32(pos)),
+                    PlayerOutMessage::RequestSeek(pos) => {
+                        let position = Duration::from_secs_f32(pos);
+                        self.manager.seek(position);
+                    }
                     PlayerOutMessage::Idle             => {}
                 }
 
-                Task::batch(vec![
-                    task.map(PlaybackFeatureMessage::Player),
-                    extra_task,
-                    lyrics_task,
-                ])
+                extra_tasks.push(task.map(PlaybackFeatureMessage::Player));
+                (Task::batch(extra_tasks), PlaybackOutMessage::Idle)
+            }
+
+            PlaybackFeatureMessage::ToggleTheaterMode => {
+                (Task::none(), PlaybackOutMessage::ToggleTheaterMode)
             }
 
             PlaybackFeatureMessage::Volume(msg) => {
                 let (task, out_msg) = self.volume.update(msg);
-
                 match out_msg {
-                    VolumeOutMessage::RequestVolumeChange(vol) => self.manager.set_volume(vol),
+                    VolumeOutMessage::RequestVolumeChange(vol) => {
+                        self.manager.set_volume(vol);
+                    }
                 }
 
-                task.map(PlaybackFeatureMessage::Volume)
-            }
-
-            PlaybackFeatureMessage::Lyrics(msg) => {
-                let (task, out_msg) = self.lyrics.update(msg);
-
-                if let LyricsOutMessage::RequestSeek(timestamp) = out_msg {
-                    self.manager.seek(timestamp);
-                }
-
-                task.map(PlaybackFeatureMessage::Lyrics)
+                (task.map(PlaybackFeatureMessage::Volume), PlaybackOutMessage::Idle)
             }
         }
     }
 
-    pub fn view(&self, thumbnails: &ThumbnailCache) -> Element<'_, PlaybackFeatureMessage> {
+    pub fn position_updated(&mut self, position: Duration) -> Task<PlaybackFeatureMessage> {
+        self.theater.position_updated(position).map(PlaybackFeatureMessage::Theater)
+    }
+
+    pub fn view(&self, thumbnails: &ThumbnailCache, is_theater_mode: bool) -> Element<'_, PlaybackFeatureMessage> {
         let current_position = self.manager.get_position().as_secs_f32();
         let vol              = self.manager.get_volume();
         let has_track        = self.player.has_track();
@@ -268,24 +289,32 @@ impl PlaybackFeature {
         let play_center  = self.player.view(self.manager.state.is_playing(), has_track, has_history).map(PlaybackFeatureMessage::Player);
         let seek_bar     = self.player.view_seek_bar(current_position).map(PlaybackFeatureMessage::Player);
         let vol_view     = self.volume.view(vol).map(PlaybackFeatureMessage::Volume);
-        let queue_toggle = self.queue.view_toggle_button().map(PlaybackFeatureMessage::Queue);
+        let queue_toggle   = self.queue.view_toggle_button().map(PlaybackFeatureMessage::Queue);
+        let theater_toggle = self.view_theater_toggle(is_theater_mode);
 
-        let right_view = row![queue_toggle, vol_view].align_y(Alignment::Center);
+        let right_view = row![
+            container(queue_toggle).width(Length::Shrink),
+            container(vol_view).width(Length::Fill),
+            container(theater_toggle).width(Length::Shrink),
+        ]
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
+
+        let right_view = container(right_view).max_width(250).width(Length::Fill);
 
         let play_controller = row![
-            container(current_track).width(Length::FillPortion(1)),
+            container(current_track).width(Length::FillPortion(2)),
             container(play_center)
-                .width(Length::FillPortion(4))
+                .width(Length::FillPortion(3))
                 .align_x(Alignment::Center),
             container(right_view)
-                .width(Length::FillPortion(1))
+                .width(Length::FillPortion(2))
                 .align_x(Alignment::End),
+
         ]
             .width(Length::Fill)
             .align_y(Alignment::Center);
 
-        // La letra ahora vive en su propio panel grande (ver view_lyrics),
-        // así que aquí solo queda la seek bar y los controles.
         let layout_final = column![seek_bar, play_controller]
             .spacing(10)
             .align_x(Alignment::Center);
@@ -308,10 +337,21 @@ impl PlaybackFeature {
             .map(PlaybackFeatureMessage::Queue)
     }
 
-    /// Panel grande de letras, pensado para ocupar el espacio central
-    /// vacío del layout principal (antes un placeholder sin contenido).
-    pub fn view_lyrics(&self) -> Element<'_, PlaybackFeatureMessage> {
-        self.lyrics.view().map(PlaybackFeatureMessage::Lyrics)
+    pub fn view_theater(&self) -> Element<'_, PlaybackFeatureMessage> {
+        let handle = self.current_large_thumbnail.as_ref().map(|(_, h)| h);
+        self.theater.view(handle).map(PlaybackFeatureMessage::Theater)
+    }
+
+    pub fn view_theater_toggle(&self, is_theater_mode: bool) -> Element<'_, PlaybackFeatureMessage> {
+        use iced::widget::{button, text};
+        use crate::ui::styles::styles::transparent_button;
+
+        let icon = if is_theater_mode { "" } else { "" };
+
+        button(text(icon).font(crate::JETBRAINS_MONO).size(18))
+            .style(transparent_button)
+            .on_press(PlaybackFeatureMessage::ToggleTheaterMode)
+            .into()
     }
 }
 
@@ -324,19 +364,11 @@ fn queue_events() -> impl futures::Stream<Item = PlaybackFeatureMessage> {
         let mut rx = tx.subscribe();
         loop {
             match rx.recv().await {
-                Ok(QueueEvent::QueueChanged) => {
-                    let _ = output.send(PlaybackFeatureMessage::QueueChanged).await;
-                }
-                Ok(QueueEvent::DownloadStarted(track)) => {
-                    let _ = output.send(PlaybackFeatureMessage::DownloadingStarted(track.id.clone())).await;
-                }
-                Ok(QueueEvent::DownloadFinished(track)) => {
-                    let _ = output.send(PlaybackFeatureMessage::DownloadingFinished(track.id.clone())).await;
-                }
-                // DownloadRequired lo maneja el worker, la UI no necesita reaccionar.
-                Ok(QueueEvent::DownloadRequired(_))         => {}
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed)    => break,
+                Ok(QueueEvent::QueueChanged) => { let _ = output.send(PlaybackFeatureMessage::QueueChanged).await; }
+                Ok(QueueEvent::DownloadStarted(track)) => { let _ = output.send(PlaybackFeatureMessage::DownloadingStarted(track.id.clone())).await; }
+                Ok(QueueEvent::DownloadFinished(track)) => { let _ = output.send(PlaybackFeatureMessage::DownloadingFinished(track.id.clone())).await; }
+                Ok(QueueEvent::DownloadRequired(_)) => {}
+                Err(_) => continue,
             }
         }
     })
@@ -347,10 +379,8 @@ fn backend_events() -> impl futures::Stream<Item = PlayerMessage> {
     stream::channel(100, async move |mut output| {
         let mut rx = tx.subscribe();
         loop {
-            match rx.recv().await {
-                Ok(event) => { let _ = output.send(PlayerMessage::BackendEvent(event)).await; }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed)    => break,
+            if let Ok(event) = rx.recv().await {
+                let _ = output.send(PlayerMessage::BackendEvent(event)).await;
             }
         }
     })

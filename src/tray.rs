@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use image::GenericImageView;
 use ksni::{MenuItem, Tray, TrayMethods};
-use crate::audio::mananger::manager::TrackManager;
+use crate::audio::manager::manager::TrackManager;
 
 static ICON: LazyLock<ksni::Icon> = LazyLock::new(|| {
     let img = image::load_from_memory_with_format(
@@ -42,6 +42,10 @@ impl Tray for AppTray {
         env!("CARGO_PKG_NAME").into()
     }
 
+    fn activate(&mut self, _x: i32, _y: i32) {
+        self.flags.show_window.store(true, Ordering::Relaxed);
+    }
+
     fn title(&self) -> String {
         "Atelier".into()
     }
@@ -56,10 +60,6 @@ impl Tray for AppTray {
             description: "Reproductor de música".into(),
             ..Default::default()
         }
-    }
-
-    fn activate(&mut self, _x: i32, _y: i32) {
-        self.flags.show_window.store(true, Ordering::Relaxed);
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
