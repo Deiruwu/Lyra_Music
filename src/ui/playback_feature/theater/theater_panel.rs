@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use iced::widget::image::Handle;
-use iced::widget::{column, container, image, row, space, text};
+use iced::widget::{column, container, image, responsive, row, space, text};
 use iced::{Alignment, Color, Element, Font, Length, Task, Theme};
 use crate::model::audio_tech::PlayableTrack;
 
@@ -75,74 +75,88 @@ impl TheaterPanel {
     }
 
     pub fn view<'a>(&'a self, large_thumbnail: Option<&'a Handle>) -> Element<'a, TheaterMessage> {
-        let artwork_box = |content: Element<'a, TheaterMessage>, style_bg: Option<Color>| -> container::Container<'a, TheaterMessage> {
-            container(content)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .max_width(ARTWORK_MAX_SIZE)
-                .max_height(ARTWORK_MAX_SIZE)
-                .clip(true)
-                .style(move |_theme: &Theme| container::Style {
-                    background: style_bg.map(Into::into),
-                    border: iced::border::rounded(16),
-                    shadow: if style_bg.is_none() {
-                        iced::Shadow {
-                            color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
-                            offset: iced::Vector::new(0.0, 8.0),
-                            blur_radius: 32.0,
-                        }
-                    } else {
-                        Default::default()
-                    },
-                    ..Default::default()
-                })
-        };
-
-        let artwork: Element<'_, TheaterMessage> = match large_thumbnail {
-            Some(handle) => artwork_box(
-                image(handle.clone())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .content_fit(iced::ContentFit::Cover)
-                    .into(),
-                None,
-            )
-                .into(),
-            None => artwork_box(space().into(), Some(Color::from_rgb(0.16, 0.16, 0.2)))
-                .into(),
-        };
-
+        let thumbnail_handle = large_thumbnail.cloned();
         let title = self.current_title.clone().unwrap_or_default();
         let artist = self.current_artist.clone().unwrap_or_default();
 
-        let header = column![
-            text(title)
-                .font(PRO_DISPLAY)
-                .size(20)
-                .color(Color::WHITE),
-            text(artist)
-                .font(PRO_DISPLAY)
-                .size(14)
-                .color(Color::from_rgb(0.65, 0.65, 0.7)),
-        ]
-            .spacing(4)
-            .align_x(Alignment::Center);
+        let artwork_panel = responsive(move |size| {
+            let available_height = (size.height - 80.0).max(50.0);
 
-        let artwork_slot = container(artwork)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center);
+            let side = size.width.min(available_height).min(ARTWORK_MAX_SIZE);
 
-        let artwork_column = column![artwork_slot, header]
-            .spacing(18)
-            .align_x(Alignment::Center);
+            let artwork_box = |content: Element<'a, TheaterMessage>, style_bg: Option<Color>| -> container::Container<'a, TheaterMessage> {
+                container(content)
+                    .width(Length::Fixed(side))
+                    .height(Length::Fixed(side))
+                    .clip(true)
+                    .style(move |_theme: &Theme| container::Style {
+                        background: style_bg.map(Into::into),
+                        border: iced::border::rounded(16),
+                        shadow: if style_bg.is_none() {
+                            iced::Shadow {
+                                color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+                                offset: iced::Vector::new(0.0, 8.0),
+                                blur_radius: 32.0,
+                            }
+                        } else {
+                            Default::default()
+                        },
+                        ..Default::default()
+                    })
+            };
 
-        let artwork_panel = container(artwork_column)
-            .width(Length::FillPortion(1))
-            .height(Length::Fill)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center);
+            let artwork: Element<'_, TheaterMessage> = match &thumbnail_handle {
+                Some(handle) => artwork_box(
+                    image(handle.clone())
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .content_fit(iced::ContentFit::Cover)
+                        .into(),
+                    None,
+                )
+                    .into(),
+                None => artwork_box(
+                    space().width(Length::Fill).height(Length::Fill).into(),
+                    Some(Color::TRANSPARENT),
+                )
+                    .into(),
+            };
+
+            let header = column![
+                text(title.clone())
+                    .font(PRO_DISPLAY)
+                    .size(20)
+                    .color(Color::WHITE),
+                text(artist.clone())
+                    .font(PRO_DISPLAY)
+                    .size(14)
+                    .color(Color::from_rgb(0.65, 0.65, 0.7)),
+            ]
+                .spacing(4)
+                .align_x(Alignment::Center);
+
+            let artwork_column = column![artwork, header]
+                .spacing(18)
+                .align_x(Alignment::Center);
+
+
+            let (align_x, pad_right) = if size.width < ARTWORK_MAX_SIZE {
+                (iced::alignment::Horizontal::Right, 24.0)
+            } else {
+                (iced::alignment::Horizontal::Center, 0.0)
+            };
+
+            container(artwork_column)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(align_x)
+                .align_y(Alignment::Center)
+                .padding(iced::Padding {
+                    right: pad_right,
+                    ..Default::default()
+                })
+                .into()
+        });
 
         let lyrics_panel = container(self.lyrics.view().map(TheaterMessage::Lyrics))
             .width(Length::FillPortion(1))
