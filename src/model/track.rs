@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Track {
     // ── Columnas directas de `tracks` ────────────────────────────────────────
     pub id: String,                      // uuid TEXT PRIMARY KEY
