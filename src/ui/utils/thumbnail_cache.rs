@@ -4,6 +4,7 @@ use iced::Task;
 use iced::widget::image::Handle;
 use lru::LruCache;
 use crate::model::{Track, TrackState};
+use crate::ui::utils::download_queue::DownloadQueue;
 
 // ── Clave album-first para el caché de color ──────────────────────────────────
 
@@ -25,11 +26,12 @@ pub struct ThumbnailCache {
     /// Usado por búsqueda cuando state == Partial.
     gray: LruCache<String, Handle>,
 
-    /// IDs con descarga de color en vuelo (evita Tasks duplicados).
-    pending_color: HashSet<String>,
-
-    /// IDs con descarga de gris en vuelo.
-    pending_gray: HashSet<String>,
+    /// Cola LIFO compartida para color y gris. LIFO porque bajo scroll
+    /// brusco lo último pedido (lo que el usuario ve ahora) debe
+    /// descargarse antes que lo pedido hace 2 segundos y ya fuera de
+    /// pantalla. Ver `download_queue.rs` para el porqué completo.
+    color_queue: DownloadQueue,
+    gray_queue: DownloadQueue,
 }
 
 impl ThumbnailCache {
@@ -37,8 +39,8 @@ impl ThumbnailCache {
         Self {
             color: LruCache::new(NonZeroUsize::new(color_capacity).unwrap()),
             gray:  LruCache::new(NonZeroUsize::new(gray_capacity).unwrap()),
-            pending_color: HashSet::new(),
-            pending_gray:  HashSet::new(),
+            color_queue: DownloadQueue::new(),
+            gray_queue: DownloadQueue::new(),
         }
     }
 
@@ -73,7 +75,6 @@ impl ThumbnailCache {
     /// Inserta un thumbnail a color (cola, reproducción, DownloadFinished).
     /// Usa `thumb_key(track)` como clave en el call site.
     pub fn insert_color(&mut self, key: String, bytes: Vec<u8>) {
-        self.pending_color.remove(&key);
         if !bytes.is_empty() {
             self.color.put(key, Handle::from_bytes(bytes));
         }
@@ -82,7 +83,6 @@ impl ThumbnailCache {
     /// Inserta un thumbnail en escala de grises (búsqueda con state == Partial).
     /// Clave: track.id siempre.
     pub fn insert_gray(&mut self, track_id: String, bytes: Vec<u8>) {
-        self.pending_gray.remove(&track_id);
         if bytes.is_empty() {
             return;
         }
@@ -105,28 +105,20 @@ impl ThumbnailCache {
 
     /// Solicita descarga a color si la clave no está ya en caché ni en vuelo.
     /// `key` debe ser el resultado de `thumb_key(track)`.
+    /// `epoch` es tu generación de vista actual (p. ej. `page_generation`);
+    /// se te devolverá tal cual en `to_message` para que puedas descartar
+    /// resultados obsoletos en tu `update()`.
     pub fn request_color<Message: 'static + Send>(
         &mut self,
         key: String,
         url: String,
-        to_message: impl Fn(String, Vec<u8>) -> Message + Send + Sync + 'static,
+        epoch: u64,
+        to_message: impl Fn(String, Vec<u8>, u64) -> Message + Send + Sync + 'static,
     ) -> Option<Task<Message>> {
-        if self.color.contains(&key) || self.pending_color.contains(&key) {
+        if self.color.contains(&key) {
             return None;
         }
-
-        self.pending_color.insert(key.clone());
-
-        Some(Task::perform(
-            crate::ui::utils::image::download_thumbnail(url),
-            move |result| match result {
-                Ok(bytes) => to_message(key.clone(), bytes),
-                Err(e) => {
-                    println!("[ThumbnailCache] Error descargando color {}: {}", key, e);
-                    to_message(key.clone(), vec![])
-                }
-            },
-        ))
+        self.color_queue.enqueue(key, url, epoch, to_message)
     }
 
     /// Solicita descarga en gris si el track_id no está ya en caché ni en vuelo.
@@ -134,23 +126,61 @@ impl ThumbnailCache {
         &mut self,
         track_id: String,
         url: String,
-        to_message: impl Fn(String, Vec<u8>) -> Message + Send + Sync + 'static,
+        epoch: u64,
+        to_message: impl Fn(String, Vec<u8>, u64) -> Message + Send + Sync + 'static,
     ) -> Option<Task<Message>> {
-        if self.gray.contains(&track_id) || self.pending_gray.contains(&track_id) {
+        if self.gray.contains(&track_id) {
             return None;
         }
+        self.gray_queue.enqueue(track_id, url, epoch, to_message)
+    }
 
-        self.pending_gray.insert(track_id.clone());
+    /// Llama esto en tu `update()` al recibir el resultado de una
+    /// descarga a color (éxito o error), pasando la key que terminó.
+    /// Libera el slot de concurrencia y arranca la siguiente descarga
+    /// pendiente en la pila, si hay alguna.
+    pub fn on_color_finished<Message: 'static + Send>(
+        &self,
+        finished_key: &str,
+        to_message: impl Fn(String, Vec<u8>, u64) -> Message + Send + Sync + 'static,
+    ) -> Task<Message> {
+        self.color_queue.on_finished(finished_key, to_message)
+    }
 
-        Some(Task::perform(
-            crate::ui::utils::image::download_thumbnail(url),
-            move |result| match result {
-                Ok(bytes) => to_message(track_id.clone(), bytes),
-                Err(e) => {
-                    println!("[ThumbnailCache] Error descargando gris {}: {}", track_id, e);
-                    to_message(track_id.clone(), vec![])
-                }
-            },
-        ))
+    /// Igual que `on_color_finished` pero para la cola de gris.
+    pub fn on_gray_finished<Message: 'static + Send>(
+        &self,
+        finished_key: &str,
+        to_message: impl Fn(String, Vec<u8>, u64) -> Message + Send + Sync + 'static,
+    ) -> Task<Message> {
+        self.gray_queue.on_finished(finished_key, to_message)
+    }
+
+    /// Descarta de ambas colas (color y gris) todo lo que no pertenezca
+    /// al epoch/rango de epochs aún válido. Llama esto cuando cambias de
+    /// página, de vista, o detectas scroll brusco.
+    pub fn drop_stale(&self, is_still_valid: impl Fn(u64) -> bool + Copy) {
+        self.color_queue.drop_stale(is_still_valid);
+        self.gray_queue.drop_stale(is_still_valid);
+    }
+
+    /// Poda ambas colas (color y gris) dejando solo lo que esté en
+    /// `still_wanted_color` / `still_wanted_gray` respectivamente,
+    /// SIN tocar epoch. Pensado para llamarse en cada `Scrolled`: el
+    /// universo de tracks no cambió, solo la ventana visible, así que
+    /// no corresponde invalidar por epoch — pero sí hay que liberar las
+    /// keys que quedaron enterradas en el stack fuera de la ventana
+    /// (ver docstring de `DownloadQueue::drop_outside_visible`).
+    ///
+    /// Puedes pasar el mismo `HashSet` de keys para color y gris si tu
+    /// vista usa la misma clave para ambos; si no, calcula cada uno por
+    /// separado según qué pediste con `request_color`/`request_gray`.
+    pub fn drop_outside_visible(
+        &self,
+        still_wanted_color: &HashSet<String>,
+        still_wanted_gray: &HashSet<String>,
+    ) {
+        self.color_queue.drop_outside_visible(still_wanted_color);
+        self.gray_queue.drop_outside_visible(still_wanted_gray);
     }
 }

@@ -19,7 +19,7 @@ pub struct AudioProperties {
 
 /// La unión entre la Base de Datos y el Archivo Físico.
 /// Esto es lo que viaja por tus canales hacia la cola de reproducción.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PlayableTrack {
     pub track: Track,
     pub audio: AudioProperties,

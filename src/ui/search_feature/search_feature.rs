@@ -5,16 +5,24 @@ use crate::model::{Track, TrackState};
 use crate::ui::search_feature::search_bar::{SearchFilter, SearchInput, SearchMessage, SearchOutMessage};
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 
+/// Epoch fijo para este feature. La búsqueda no tiene noción de
+/// "páginas" ni "scroll" que invalide resultados viejos — un resultado
+/// que llega tarde sigue siendo válido (la canción sigue en `results` o
+/// siendo reproducida), así que no hay nada que descartar por epoch
+/// aquí. Se usa 0 constante solo porque la firma de `request_color`/
+/// `request_gray` ahora lo exige.
+const EPOCH: u64 = 0;
+
 #[derive(Debug, Clone)]
 pub enum SearchFeatureMessage {
     Ui(SearchMessage),
     SearchCompleted(Result<Vec<Track>, String>),
-    ThumbnailColorLoaded { key: String, bytes: Vec<u8> },
-    ThumbnailGrayLoaded  { track_id: String, bytes: Vec<u8> },
+    ThumbnailColorLoaded { key: String, bytes: Vec<u8>, epoch: u64 },
+    ThumbnailGrayLoaded  { track_id: String, bytes: Vec<u8>, epoch: u64 },
     DownloadFinished(Result<PlayableTrack, String>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SearchFeatureOutMessage {
     Idle,
     TrackReadyToPlay(PlayableTrack),
@@ -131,7 +139,8 @@ impl SearchFeature {
                             thumbnails.request_gray(
                                 t.id.clone(),
                                 url,
-                                |id, bytes| SearchFeatureMessage::ThumbnailGrayLoaded { track_id: id, bytes },
+                                EPOCH,
+                                |id, bytes, epoch| SearchFeatureMessage::ThumbnailGrayLoaded { track_id: id, bytes, epoch },
                             )
                         }
                         TrackState::Cached => {
@@ -140,7 +149,8 @@ impl SearchFeature {
                             thumbnails.request_color(
                                 key,
                                 url,
-                                |key, bytes| SearchFeatureMessage::ThumbnailColorLoaded { key, bytes },
+                                EPOCH,
+                                |key, bytes, epoch| SearchFeatureMessage::ThumbnailColorLoaded { key, bytes, epoch },
                             )
                         }
                     }
@@ -156,15 +166,25 @@ impl SearchFeature {
             }
 
             // ── Thumbnails recibidos ──────────────────────────────────────────
+            // En ambos casos hay que llamar on_*_finished para liberar el
+            // slot de concurrencia y dejar que la cola arranque el
+            // siguiente pendiente (si lo hay). No comparamos epoch contra
+            // nada porque EPOCH es constante aquí — siempre se guarda.
 
-            SearchFeatureMessage::ThumbnailGrayLoaded { track_id, bytes } => {
-                thumbnails.insert_gray(track_id, bytes);
-                (Task::none(), SearchFeatureOutMessage::Idle)
+            SearchFeatureMessage::ThumbnailGrayLoaded { track_id, bytes, .. } => {
+                thumbnails.insert_gray(track_id.clone(), bytes);
+                let next = thumbnails.on_gray_finished(&track_id, |id, bytes, epoch| {
+                    SearchFeatureMessage::ThumbnailGrayLoaded { track_id: id, bytes, epoch }
+                });
+                (next, SearchFeatureOutMessage::Idle)
             }
 
-            SearchFeatureMessage::ThumbnailColorLoaded { key, bytes } => {
-                thumbnails.insert_color(key, bytes);
-                (Task::none(), SearchFeatureOutMessage::Idle)
+            SearchFeatureMessage::ThumbnailColorLoaded { key, bytes, .. } => {
+                thumbnails.insert_color(key.clone(), bytes);
+                let next = thumbnails.on_color_finished(&key, |key, bytes, epoch| {
+                    SearchFeatureMessage::ThumbnailColorLoaded { key, bytes, epoch }
+                });
+                (next, SearchFeatureOutMessage::Idle)
             }
 
             // ── Descarga de canción completada ────────────────────────────────
@@ -182,7 +202,8 @@ impl SearchFeature {
                         thumbnails.request_color(
                             key,
                             url.clone(),
-                            |key, bytes| SearchFeatureMessage::ThumbnailColorLoaded { key, bytes },
+                            EPOCH,
+                            |key, bytes, epoch| SearchFeatureMessage::ThumbnailColorLoaded { key, bytes, epoch },
                         )
                     })
                     .unwrap_or(Task::none());

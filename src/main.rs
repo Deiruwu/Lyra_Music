@@ -46,7 +46,19 @@ struct App {
     search_feature: SearchFeature,
     playback_feature: PlaybackFeature,
     sidebar_feature: SidebarFeature,
-    thumbnails: ThumbnailCache,
+    /// Caché SOLO para current track + queue_panel (playback_feature).
+    /// Pocas keys vivas a la vez, prioridad = que nunca se sienta lag
+    /// al cambiar de canción. Su propia `DownloadQueue` (5 workers)
+    /// nunca compite por concurrencia con el scroll de catálogo.
+    player_thumbnails: ThumbnailCache,
+    /// Caché para TODO lo que es scroll infinito de catálogo: Explorer,
+    /// Favorites, Playlists y el dropdown de Search. Estos generan
+    /// ráfagas de decenas de pedidos por segundo durante un scroll
+    /// rápido — antes competían por los mismos 5 workers que el
+    /// thumbnail del player, causando que la miniatura de "lo que estás
+    /// escuchando ahora mismo" tardara en aparecer si el usuario estaba
+    /// scrolleando el Explorer al mismo tiempo.
+    view_thumbnails: ThumbnailCache,
     radio: Arc<RadioWorker>,
     tray_flags: Arc<TrayFlags>,
     main_window: Option<window::Id>,
@@ -94,7 +106,8 @@ impl App {
             search_feature: SearchFeature::new(),
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
             sidebar_feature,
-            thumbnails: ThumbnailCache::new(250, 50),
+            player_thumbnails: ThumbnailCache::new(250, 50),
+            view_thumbnails: ThumbnailCache::new(100, 50),
             radio,
             tray_flags,
             main_window: Some(window_id),
@@ -151,7 +164,7 @@ impl App {
                 let position_task = self.playback_feature.position_updated(position);
 
                 let (tick_task, _out) = self.playback_feature
-                    .update(PlaybackFeatureMessage::Tick, &mut self.thumbnails);
+                    .update(PlaybackFeatureMessage::Tick, &mut self.player_thumbnails);
 
                 iced::Task::batch(vec![
                     position_task.map(AppMessage::PlaybackFeature),
@@ -160,7 +173,7 @@ impl App {
             }
 
             AppMessage::PlaybackFeature(msg) => {
-                let (task, out_msg) = self.playback_feature.update(msg, &mut self.thumbnails);
+                let (task, out_msg) = self.playback_feature.update(msg, &mut self.player_thumbnails);
 
                 if let PlaybackOutMessage::ToggleTheaterMode = out_msg {
                     self.is_theater_mode = !self.is_theater_mode;
@@ -170,7 +183,7 @@ impl App {
             }
 
             AppMessage::SidebarFeature(msg) => {
-                let (task, out_msg) = self.sidebar_feature.update(msg, &mut self.thumbnails);
+                let (task, out_msg) = self.sidebar_feature.update(msg, &mut self.view_thumbnails);
 
                 match out_msg {
                     SidebarFeatureOutMessage::RequestPlay(track) => {
@@ -188,13 +201,13 @@ impl App {
             }
 
             AppMessage::SearchFeature(msg) => {
-                let (search_task, out_msg) = self.search_feature.update(msg, &mut self.thumbnails);
+                let (search_task, out_msg) = self.search_feature.update(msg, &mut self.view_thumbnails);
                 let mut feature_task = iced::Task::none();
 
                 if let SearchFeatureOutMessage::TrackReadyToPlay(playable) = out_msg {
                     let (t, _out) = self.playback_feature.update(
                         PlaybackFeatureMessage::Play(playable),
-                        &mut self.thumbnails,
+                        &mut self.player_thumbnails,
                     );
                     feature_task = t;
                 }
@@ -211,7 +224,7 @@ impl App {
         let center_content: Element<'_, AppMessage> = if self.is_theater_mode {
             self.playback_feature.view_theater().map(AppMessage::PlaybackFeature)
         } else {
-            self.sidebar_feature.view_content(&self.thumbnails).map(AppMessage::SidebarFeature)
+            self.sidebar_feature.view_content(&self.view_thumbnails).map(AppMessage::SidebarFeature)
         };
 
         let center_view = container(center_content)
@@ -228,7 +241,7 @@ impl App {
             });
 
         let queue_layer = container(
-            self.playback_feature.view_queue(&self.thumbnails).map(AppMessage::PlaybackFeature)
+            self.playback_feature.view_queue(&self.player_thumbnails).map(AppMessage::PlaybackFeature)
         )
             .width(Length::Fill)
             .height(Length::Fill)
@@ -251,9 +264,9 @@ impl App {
 
         let layout_stack = stack![content_layer, queue_layer];
 
-        let playback_view  = self.playback_feature.view(&self.thumbnails, self.is_theater_mode).map(AppMessage::PlaybackFeature);
+        let playback_view  = self.playback_feature.view(&self.player_thumbnails, self.is_theater_mode).map(AppMessage::PlaybackFeature);
         let search_view    = self.search_feature.view().map(AppMessage::SearchFeature);
-        let search_overlay = self.search_feature.view_dropdown(&self.thumbnails).map(AppMessage::SearchFeature);
+        let search_overlay = self.search_feature.view_dropdown(&self.view_thumbnails).map(AppMessage::SearchFeature);
 
         let top_bar = row![
             self.sidebar_feature.view_toggle().map(AppMessage::SidebarFeature),

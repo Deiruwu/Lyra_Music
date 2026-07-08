@@ -16,6 +16,13 @@ use crate::ui::playback_feature::theater::theater_panel::{TheaterMessage, Theate
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 
+/// Epoch fijo para este feature. La cola de reproducción y la canción
+/// actual no tienen un concepto de "vista invalidada" como el scroll del
+/// Explorer — un thumbnail que llega tarde para una canción que sigue en
+/// cola sigue siendo válido. Se usa 0 constante solo porque la firma de
+/// `request_color` ahora lo exige.
+const EPOCH: u64 = 0;
+
 #[derive(Debug, Clone)]
 pub enum PlaybackFeatureMessage {
     Player(PlayerMessage),
@@ -25,7 +32,7 @@ pub enum PlaybackFeatureMessage {
     QueueChanged,
     DownloadingStarted(String),
     DownloadingFinished(String),
-    ThumbnailColorLoaded { key: String, bytes: Vec<u8> },
+    ThumbnailColorLoaded { key: String, bytes: Vec<u8>, epoch: u64 },
     LargeThumbnailLoaded { track_id: String, bytes: Vec<u8> },
     Play(PlayableTrack),
     ToggleTheaterMode,
@@ -126,8 +133,8 @@ impl PlaybackFeature {
                 let tasks: Vec<Task<_>> = tracks.into_iter().filter_map(|t| {
                     let url = t.thumbnail_small.clone()?;
                     let key = thumb_key(&t);
-                    thumbnails.request_color(key, url, |key, bytes| {
-                        PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes }
+                    thumbnails.request_color(key, url, EPOCH, |key, bytes, epoch| {
+                        PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes, epoch }
                     })
                 }).collect();
 
@@ -148,9 +155,14 @@ impl PlaybackFeature {
                 (Task::none(), PlaybackOutMessage::Idle)
             }
 
-            PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes } => {
-                thumbnails.insert_color(key, bytes);
-                (Task::none(), PlaybackOutMessage::Idle)
+            PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes, .. } => {
+                thumbnails.insert_color(key.clone(), bytes);
+                // Libera el slot de concurrencia y arranca el siguiente
+                // pendiente en la cola (si hay alguno).
+                let next = thumbnails.on_color_finished(&key, |key, bytes, epoch| {
+                    PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes, epoch }
+                });
+                (next, PlaybackOutMessage::Idle)
             }
 
             PlaybackFeatureMessage::LargeThumbnailLoaded { track_id, bytes } => {
@@ -200,8 +212,8 @@ impl PlaybackFeature {
                 if let PlayerMessage::BackendEvent(TrackEvent::TrackChanged(ref playable)) = msg {
                     let key = thumb_key(&playable.track);
                     if let Some(url) = playable.track.thumbnail_small.clone() {
-                        if let Some(t) = thumbnails.request_color(key, url, |key, bytes| {
-                            PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes }
+                        if let Some(t) = thumbnails.request_color(key, url, EPOCH, |key, bytes, epoch| {
+                            PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes, epoch }
                         }) {
                             extra_tasks.push(t);
                         }
@@ -346,7 +358,7 @@ impl PlaybackFeature {
         use iced::widget::{button, text};
         use crate::ui::styles::styles::transparent_button;
 
-        let icon = if is_theater_mode { "" } else { "" };
+        let icon = if is_theater_mode { "" } else { "" };
 
         button(text(icon).font(crate::JETBRAINS_MONO).size(18))
             .style(transparent_button)
