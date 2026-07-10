@@ -16,7 +16,7 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-pub fn track_thumbnail<'a, Message>(thumbnail: Option<Handle>) -> Element<'a, Message>
+pub fn track_thumbnail_sized<'a, Message>(thumbnail: Option<Handle>, size: f32) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
@@ -24,7 +24,14 @@ where
         Some(handle) => ThumbnailState::Loaded(handle),
         None => ThumbnailState::Loading,
     };
-    async_thumbnail(state, 60.0)
+    async_thumbnail(state, size)
+}
+
+pub fn track_thumbnail<'a, Message>(thumbnail: Option<Handle>) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
+    track_thumbnail_sized(thumbnail, 60.0)
 }
 
 pub fn track_info<'a, Message>(track: &'a Track, width: Length) -> Element<'a, Message>

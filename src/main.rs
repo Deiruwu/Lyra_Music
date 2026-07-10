@@ -46,18 +46,7 @@ struct App {
     search_feature: SearchFeature,
     playback_feature: PlaybackFeature,
     sidebar_feature: SidebarFeature,
-    /// Caché SOLO para current track + queue_panel (playback_feature).
-    /// Pocas keys vivas a la vez, prioridad = que nunca se sienta lag
-    /// al cambiar de canción. Su propia `DownloadQueue` (5 workers)
-    /// nunca compite por concurrencia con el scroll de catálogo.
     player_thumbnails: ThumbnailCache,
-    /// Caché para TODO lo que es scroll infinito de catálogo: Explorer,
-    /// Favorites, Playlists y el dropdown de Search. Estos generan
-    /// ráfagas de decenas de pedidos por segundo durante un scroll
-    /// rápido — antes competían por los mismos 5 workers que el
-    /// thumbnail del player, causando que la miniatura de "lo que estás
-    /// escuchando ahora mismo" tardara en aparecer si el usuario estaba
-    /// scrolleando el Explorer al mismo tiempo.
     view_thumbnails: ThumbnailCache,
     radio: Arc<RadioWorker>,
     tray_flags: Arc<TrayFlags>,
@@ -99,7 +88,7 @@ impl App {
             ..Default::default()
         });
 
-        let (sidebar_feature, sidebar_task) = SidebarFeature::new(sidebar_client);
+        let (sidebar_feature, sidebar_task) = SidebarFeature::new(sidebar_client, Arc::clone(&manager));
 
         let app = Self {
             _engine: engine,
@@ -183,15 +172,16 @@ impl App {
             }
 
             AppMessage::SidebarFeature(msg) => {
+                // Ya no resolvemos play/enqueue acá: `SidebarFeature`
+                // tiene su propia instancia de `Arc<TrackManager>` y
+                // resuelve esas peticiones internamente contra los
+                // out-messages de Explorer/Playlists. Main solo se
+                // entera de lo que de verdad le importa a nivel
+                // ventana/app (por ahora, nada más que abrir el diálogo
+                // de crear playlist, si aplica).
                 let (task, out_msg) = self.sidebar_feature.update(msg, &mut self.view_thumbnails);
 
                 match out_msg {
-                    SidebarFeatureOutMessage::RequestPlay(track) => {
-                        self.manager.play_now(track);
-                    }
-                    SidebarFeatureOutMessage::RequestEnqueue(track) => {
-                        self.manager.enqueue(track);
-                    }
                     SidebarFeatureOutMessage::CreatePlaylistRequested => {
                     }
                     SidebarFeatureOutMessage::Idle => {}

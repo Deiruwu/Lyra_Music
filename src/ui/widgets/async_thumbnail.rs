@@ -18,7 +18,7 @@ where
         ThumbnailState::Loaded(handle) => image(handle)
             .width(Length::Fixed(size))
             .height(Length::Fixed(size))
-            .border_radius(5)
+            .border_radius(size * 0.12)
             .into(),
 
         ThumbnailState::Loading => container(
@@ -28,9 +28,9 @@ where
             .height(Length::Fixed(size))
             .align_x(iced::alignment::Horizontal::Center)
             .align_y(iced::alignment::Vertical::Center)
-            .style(|_theme: &iced::Theme| container::Style {
+            .style(move |_theme: &iced::Theme| container::Style {
                 background: Some(iced::Color::from_rgb(0.18, 0.18, 0.18).into()),
-                border: iced::border::rounded(5),
+                border: iced::border::rounded(size * 0.12),
                 ..Default::default()
             })
             .into(),
