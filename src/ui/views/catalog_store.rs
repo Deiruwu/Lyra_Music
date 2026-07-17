@@ -38,6 +38,7 @@ const CHUNK_SIZE: usize = 250;
 pub enum CatalogStoreMessage {
     IdsLoaded(Result<Vec<String>, String>),
     ChunkResolved(usize, Result<Vec<Track>, String>),
+    TrackDeleted(String, Result<(), String>),
 }
 
 pub struct CatalogStore {
@@ -93,6 +94,26 @@ impl CatalogStore {
         // campo/relación en `Track` (p. ej. `track.playlist_ids.contains(...)`
         // o una tabla intermedia resuelta por el microservicio).
         Vec::new()
+    }
+
+    pub fn delete_track(&mut self, track_id: &str) {
+        self.all_tracks.retain(|t| t.id != track_id);
+        self.rebuild_index();
+
+        let client = Arc::clone(&self.client);
+        let id_clone = track_id.to_string();
+
+        tokio::spawn(async move {
+            match client.delete(&id_clone).await {
+                Ok(_) => {
+                    println!("[CatalogStore] Pista {} eliminada de la BD remota.", id_clone);
+                }
+                Err(e) => {
+                    eprintln!("[CatalogStore] ERROR: Fallo al eliminar {} de la BD remota: {}", id_clone, e);
+
+                }
+            }
+        });
     }
 
     // ── CARGA (chunking) ─────────────────────────────────────────────────────
@@ -155,6 +176,21 @@ impl CatalogStore {
                     self.is_loading = false;
                 }
 
+                Task::none()
+            }
+
+            CatalogStoreMessage::TrackDeleted(deleted_id, result) => {
+                match result {
+                    Ok(_) => {
+                        self.all_tracks.retain(|t| t.id != deleted_id);
+
+                        self.rebuild_index();
+                        self.last_error = None;
+                    }
+                    Err(e) => {
+                        self.last_error = Some(e);
+                    }
+                }
                 Task::none()
             }
         }

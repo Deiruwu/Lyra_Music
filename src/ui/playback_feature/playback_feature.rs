@@ -358,7 +358,7 @@ impl PlaybackFeature {
         use iced::widget::{button, text};
         use crate::ui::styles::styles::transparent_button;
 
-        let icon = if is_theater_mode { "" } else { "" };
+        let icon = if is_theater_mode { "" } else { "" };
 
         button(text(icon).font(crate::JETBRAINS_MONO).size(18))
             .style(transparent_button)

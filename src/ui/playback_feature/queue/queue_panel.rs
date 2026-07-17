@@ -30,9 +30,7 @@ pub enum QueueMessage {
     DragStarted(usize),
     DragOver(usize),
     DragReleased,
-    /// Posición Y del cursor relativa al inicio de la lista de filas.
     CursorMoved(f32),
-    /// window::frames(): solo se suscribe mientras hay animaciones vivas.
     AnimationFrame(Instant),
 }
 

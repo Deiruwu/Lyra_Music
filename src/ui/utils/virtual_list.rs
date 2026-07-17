@@ -135,6 +135,10 @@ pub struct ScrollTracker {
 }
 
 impl ScrollTracker {
+
+    pub fn reset(&mut self) {
+        self.offset_y = 0.0;
+    }
     /// Llama esto desde tu callback `on_scroll(Viewport)`.
     pub fn update(&mut self, viewport: iced::widget::scrollable::Viewport) {
         let offset = viewport.absolute_offset();

@@ -63,4 +63,14 @@ impl TrackManager {
         self.enqueue(track);
         true
     }
+
+        pub fn clear_queue(&self) -> Result<(), ManagerError> {
+        let mut ps = self.playback.lock().unwrap();
+
+        ps.queue.clear();
+
+        drop(ps);
+        self.broadcast_queue_update();
+        Ok(())
+    }
 }

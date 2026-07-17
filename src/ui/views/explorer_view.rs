@@ -5,15 +5,17 @@ use iced::{Alignment, Color, Element, Font, Length, Padding, Task};
 use iced::widget::scrollable::Viewport;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, space, stack, text, text_input, Id};
 use iced::widget::image::Handle;
-
+use iced::widget::operation::snap_to;
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
 use crate::ui::styles::styles::{selected_row_container, transparent_button};
+use crate::ui::utils::search::SearchQuery;
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 use crate::ui::utils::virtual_list::{ScrollTracker, VirtualWindow};
 use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::view_data::{NavId, ViewData};
-use crate::ui::widgets::context_menu::ContextMenu;
+use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuItem};
+use crate::ui::widgets::confirm_dialog::ConfirmDialog;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
 
 pub const SF_PRO: Font = Font::with_name("SF Pro Display");
@@ -28,6 +30,7 @@ pub const VIEW_DATA: ViewData = ViewData::new(
 const ROW_HEIGHT: f32 = 60.0;
 const THUMBNAIL_SIZE: f32 = 44.0;
 const BUFFER_ROWS: usize = 15;
+const CONTEXT_MENU_ITEM_COUNT: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
@@ -61,7 +64,10 @@ const DEFAULT_SORT_DIRECTION: SortDirection = SortDirection::Asc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextMenuAction {
     PlayNow,
-    Enqueue,
+    AddToQueue,
+    AddToFrontQueue,
+    StartRadio,
+    Delete,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +80,8 @@ pub enum ExplorerViewMessage {
     RowRightClicked(String),
     DismissContextMenu,
     ContextMenuAction(ContextMenuAction, Track),
+    ConfirmDialogConfirm,
+    ConfirmDialogCancel,
     SortBy(SortColumn),
     SearchChanged(String),
     ColorThumbnailResult(String, Vec<u8>, u64),
@@ -85,6 +93,9 @@ pub enum ExplorerViewOutMessage {
     Idle,
     RequestPlay(Track),
     RequestEnqueue(Track),
+    RequestFrontEnqueue(Track),
+    RequestPlayRadio(Track),
+    RequestDelete(String),
 }
 
 pub struct ExplorerView {
@@ -95,6 +106,7 @@ pub struct ExplorerView {
     sort_click_stage: u8,
     selected_track_id: Option<String>,
     context_menu: ContextMenu<String>,
+    confirm_dialog: ConfirmDialog<Track>,
     scroll: ScrollTracker,
     epoch: u64,
 }
@@ -109,6 +121,7 @@ impl ExplorerView {
             sort_click_stage: 1,
             selected_track_id: None,
             context_menu: ContextMenu::new(),
+            confirm_dialog: ConfirmDialog::new(),
             scroll: ScrollTracker::default(),
             epoch: 1,
         }
@@ -127,32 +140,28 @@ impl ExplorerView {
     }
 
     // Recalcula filtered_indices según search_query (título/artista/álbum).
+    // Usa SearchQuery: normaliza (minúsculas + sin acentos) una sola vez y
+    // matchea por subcadena o por tokens en cualquier orden, combinando
+    // los tres campos.
     fn apply_search(&mut self, store: &CatalogStore) {
         let tracks = store.all_tracks();
+        let query = SearchQuery::new(&self.search_query);
 
-        if self.search_query.trim().is_empty() {
+        if query.is_empty() {
             self.filtered_indices = (0..tracks.len()).collect();
             return;
         }
 
-        let needle = self.search_query.to_lowercase();
         self.filtered_indices = tracks
             .iter()
             .enumerate()
             .filter_map(|(idx, track)| {
-                let title_match = track.title.to_lowercase().contains(&needle);
-                let artist_match = track.format_artists().to_lowercase().contains(&needle);
-                let album_match = track
-                    .album
-                    .as_ref()
-                    .map(|a| a.name.to_lowercase().contains(&needle))
-                    .unwrap_or(false);
+                let album_name = track.album.as_ref().map(|a| a.name.as_str()).unwrap_or("");
+                let artists = track.format_artists();
 
-                if title_match || artist_match || album_match {
-                    Some(idx)
-                } else {
-                    None
-                }
+                let is_match = query.matches_any(&[&track.title, &artists, album_name]);
+
+                is_match.then_some(idx)
             })
             .collect();
     }
@@ -294,12 +303,20 @@ impl ExplorerView {
             ExplorerViewMessage::SearchChanged(query) => {
                 self.search_query = query;
                 self.apply_sort(store);
+                self.scroll.reset();
                 let thumb_task = self.invalidate_and_reload_thumbnails(store, thumbnails);
-                (thumb_task, ExplorerViewOutMessage::Idle)
+
+                let snap = snap_to(
+                    Id::new("explorer_catalog_scroll"),
+                    scrollable::RelativeOffset::START,
+                );
+
+                (Task::batch([snap, thumb_task]), ExplorerViewOutMessage::Idle)
             }
 
             ExplorerViewMessage::Scrolled(viewport) => {
                 self.scroll.update(viewport);
+                self.context_menu.note_viewport_size(viewport.bounds().size());
                 let keys = self.visible_keys(store);
                 thumbnails.drop_outside_visible(&keys, &keys);
                 let thumb_task = self.request_visible_thumbnails(store, thumbnails);
@@ -323,7 +340,7 @@ impl ExplorerView {
             }
 
             ExplorerViewMessage::RowRightClicked(track_id) => {
-                self.context_menu.toggle(track_id.clone());
+                self.context_menu.toggle(track_id.clone(), CONTEXT_MENU_ITEM_COUNT);
                 self.selected_track_id = Some(track_id);
                 (Task::none(), ExplorerViewOutMessage::Idle)
             }
@@ -336,11 +353,33 @@ impl ExplorerView {
             ExplorerViewMessage::ContextMenuAction(action, track) => {
                 self.context_menu.dismiss();
                 self.selected_track_id = Some(track.id.clone());
+
+                if action == ContextMenuAction::Delete {
+                    self.confirm_dialog.request(track, "¿Eliminar esta canción del catálogo?");
+                    return (Task::none(), ExplorerViewOutMessage::Idle);
+                }
+
                 let out = match action {
                     ContextMenuAction::PlayNow => ExplorerViewOutMessage::RequestPlay(track),
-                    ContextMenuAction::Enqueue => ExplorerViewOutMessage::RequestEnqueue(track),
+                    ContextMenuAction::AddToQueue => ExplorerViewOutMessage::RequestEnqueue(track),
+                    ContextMenuAction::AddToFrontQueue => ExplorerViewOutMessage::RequestFrontEnqueue(track),
+                    ContextMenuAction::StartRadio => ExplorerViewOutMessage::RequestPlayRadio(track),
+                    ContextMenuAction::Delete => unreachable!(),
                 };
                 (Task::none(), out)
+            }
+
+            ExplorerViewMessage::ConfirmDialogConfirm => {
+                let Some(track) = self.confirm_dialog.take_confirmed() else {
+                    return (Task::none(), ExplorerViewOutMessage::Idle);
+                };
+                let thumb_task = self.invalidate_and_reload_thumbnails(store, thumbnails);
+                (thumb_task, ExplorerViewOutMessage::RequestDelete(track.id.clone()))
+            }
+
+            ExplorerViewMessage::ConfirmDialogCancel => {
+                self.confirm_dialog.cancel();
+                (Task::none(), ExplorerViewOutMessage::Idle)
             }
 
             ExplorerViewMessage::ColorThumbnailResult(key, bytes, result_epoch) => {
@@ -455,8 +494,8 @@ impl ExplorerView {
             let is_active = self.sort_column == col && !is_default_state;
             let arrow = if is_active {
                 match self.sort_direction {
-                    SortDirection::Asc => " ▲",
-                    SortDirection::Desc => " ▼",
+                    SortDirection::Asc => " ",
+                    SortDirection::Desc => " ",
                 }
             } else {
                 ""
@@ -488,7 +527,7 @@ impl ExplorerView {
             header_cell("TÍTULO", SortColumn::Title, Length::FillPortion(3)),
             header_cell("ARTISTA", SortColumn::Artist, Length::FillPortion(2)),
             header_cell("ÁLBUM", SortColumn::Album, Length::FillPortion(2)),
-            header_cell("DURACIÓN", SortColumn::Duration, Length::Fixed(60.0))  ,
+            header_cell("DURACIÓN", SortColumn::Duration, Length::Fixed(70.0))  ,
             header_cell("BPM", SortColumn::Bpm, Length::Fixed(42.0)),
             header_cell("KEY", SortColumn::Key, Length::Fixed(42.0)),
             header_cell("AGREGADO", SortColumn::AddedAt, Length::Fixed(80.0)),
@@ -521,14 +560,18 @@ impl ExplorerView {
                 .width(Length::FillPortion(2)),
             container(text(track.album.as_ref().map(|a| a.name.as_str()).unwrap_or("-")).font(SF_PRO).size(12.5).color(Color::from_rgb(0.6, 0.6, 0.65)))
                 .width(Length::FillPortion(2)),
-            container(text(Self::format_added_at(track.added_at)).font(SF_PRO).size(12).color(Color::from_rgb(0.55, 0.55, 0.6)))
-                .width(Length::Fixed(80.0)),
-            container(text(track.bpm.map(|b| b.to_string()).unwrap_or_else(|| "-".into())).font(SF_PRO).size(12.5).color(Color::from_rgb(0.65, 0.65, 0.7)))
-                .width(Length::Fixed(42.0)),
-            container(text(track.camelot_key.as_deref().unwrap_or("-")).font(JETBRAINS_MONO).size(12.5).color(Color::from_rgb(0.74, 0.58, 0.98)))
-                .width(Length::Fixed(42.0)),
+
             container(text(format!("{:02}:{:02}", mins, secs)).font(SF_PRO).size(12.5).color(Color::from_rgb(0.6, 0.6, 0.65)))
                 .width(Length::Fixed(60.0)),
+
+            container(text(track.bpm.map(|b| b.to_string()).unwrap_or_else(|| "-".into())).font(SF_PRO).size(12.5).color(Color::from_rgb(0.65, 0.65, 0.7)))
+                .width(Length::Fixed(42.0)),
+            container(text(track.camelot_key.as_deref().unwrap_or("-")).font(SF_PRO).size(12.5).color(Color::from_rgb(0.74, 0.58, 0.98)))
+                .width(Length::Fixed(42.0)),
+
+            container(text(Self::format_added_at(track.added_at)).font(SF_PRO).size(12).color(Color::from_rgb(0.55, 0.55, 0.6)))
+                .width(Length::Fixed(80.0)),
+
         ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -588,14 +631,29 @@ impl ExplorerView {
             let menu = self.context_menu.view(
                 anchor,
                 vec![
-                    ("▶  Reproducir ahora", ContextMenuAction::PlayNow),
-                    ("＋  Agregar a cola", ContextMenuAction::Enqueue),
+                    ContextMenuItem::new("Reproducir ahora", ContextMenuAction::PlayNow)
+                        .icon(""),
+                    ContextMenuItem::new("Agregar a cola", ContextMenuAction::AddToQueue)
+                        .icon(""),
+                    ContextMenuItem::new("Reproducir después", ContextMenuAction::AddToFrontQueue)
+                        .icon("󰐒"),
+                    ContextMenuItem::new("Iniciar radio", ContextMenuAction::StartRadio)
+                        .icon("󰐹"),
+                    ContextMenuItem::new("Eliminar canción", ContextMenuAction::Delete)
+                        .icon(""),
                 ],
                 track,
                 ExplorerViewMessage::ContextMenuAction,
                 ExplorerViewMessage::DismissContextMenu,
             );
             layers = layers.push(menu);
+        }
+
+        if let Some(dialog) = self.confirm_dialog.view(
+            ExplorerViewMessage::ConfirmDialogConfirm,
+            ExplorerViewMessage::ConfirmDialogCancel,
+        ) {
+            layers = layers.push(dialog);
         }
 
         layers.into()

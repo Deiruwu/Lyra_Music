@@ -25,8 +25,8 @@ impl MicroserviceClient {
         self.inner.resolve(query).await
     }
 
-    pub async fn delete(&self) -> Result<(), MicroserviceError>{
-        todo!()
+    pub async fn delete(&self, query: &str) -> Result<(), MicroserviceError>{
+        self.inner.delete_track(query).await
     }
 
     pub async fn radio(&self, query: &str, limit: Option<usize>) -> Result<Vec<Track>, MicroserviceError> {

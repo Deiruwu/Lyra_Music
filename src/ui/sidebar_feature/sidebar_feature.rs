@@ -155,7 +155,7 @@ impl SidebarFeature {
                     thumbnails,
                 );
 
-                let task = iced::Task::batch(vec![
+                let task = Task::batch(vec![
                     store_task.map(SidebarFeatureMessage::Catalog),
                     explorer_task.map(SidebarFeatureMessage::Explorer),
                 ]);
@@ -181,6 +181,21 @@ impl SidebarFeature {
                     ExplorerViewOutMessage::RequestEnqueue(track) => {
                         self.manager.enqueue(track);
                     }
+
+                    ExplorerViewOutMessage::RequestFrontEnqueue(track) => {
+                        self.manager.enqueue_front(track);
+                    }
+
+                    ExplorerViewOutMessage::RequestPlayRadio(track) => {
+                        self.manager.play_now(track);
+                        self.manager.clear_queue().unwrap();
+                    }
+
+                    ExplorerViewOutMessage::RequestDelete(track_id) => {
+                        self.catalog_store.delete_track(&track_id)
+                    }
+
+
                     ExplorerViewOutMessage::Idle => {}
                 }
                 (task.map(SidebarFeatureMessage::Explorer), SidebarFeatureOutMessage::Idle)
@@ -290,7 +305,7 @@ impl SidebarFeature {
 
     /// EL ENRUTADOR DE CONTENIDO: Cada distrito renderiza su propio DOM.
     /// Explorer ahora recibe `&self.catalog_store` además del thumbnail
-    /// cache, porque ya no guarda su propia copia de tracks.
+    /// caché, porque ya no guarda su propia copia de tracks.
     pub fn view_content<'a>(&'a self, thumbnails: &'a ThumbnailCache) -> Element<'a, SidebarFeatureMessage> {
         match &self.active_selection {
             ActiveSelection::Nav(NavId::Home) => {
