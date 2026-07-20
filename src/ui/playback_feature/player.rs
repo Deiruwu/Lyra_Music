@@ -5,8 +5,8 @@ use iced::widget::{button, container, row, slider, space, text};
 use crate::audio::track_event::TrackEvent;
 use crate::JETBRAINS_MONO;
 use crate::model::audio_tech::PlayableTrack;
-use crate::ui::styles::styles::transparent_button;
-use crate::ui::widgets::track_row::currently_playing_row;
+use crate::ui::styles::styles::{minimal_button, transparent_button};
+use crate::ui::widgets::track_row::currently_playing_row_with_trailing;
 
 const SPINNER: [&str; 6] = ["\u{ee06}", "\u{ee07}", "\u{ee08}", "\u{ee09}", "\u{ee0a}", "\u{ee0b}"];
 
@@ -17,6 +17,7 @@ pub enum PlayerMessage {
     UiNext,
     UiPrev,
     UiSeek(f32),
+    UiToggleLike(String),
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,7 @@ pub enum PlayerOutMessage {
     RequestNext,
     RequestPrev,
     RequestSeek(f32),
+    RequestToggleLike(String),
 }
 
 pub struct Player {
@@ -56,6 +58,7 @@ impl Player {
             PlayerMessage::UiNext           => (Task::none(), PlayerOutMessage::RequestNext),
             PlayerMessage::UiPrev           => (Task::none(), PlayerOutMessage::RequestPrev),
             PlayerMessage::UiSeek(pos)      => (Task::none(), PlayerOutMessage::RequestSeek(pos)),
+            PlayerMessage::UiToggleLike(track_id) => (Task::none(), PlayerOutMessage::RequestToggleLike(track_id)),
         }
     }
 
@@ -68,18 +71,18 @@ impl Player {
 
         let prev_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
-                button(text("󰒮").font(JETBRAINS_MONO).size(18)).style(transparent_button);
+                button(text("󰒮").font(JETBRAINS_MONO).size(18)).style(minimal_button);
             if has_history { b.on_press(PlayerMessage::UiPrev) } else { b }
         };
 
         let play_button = {
-            let b = button(play_icon).style(transparent_button);
+            let b = button(play_icon).style(minimal_button);
             if has_track { b.on_press(PlayerMessage::UiTogglePlayback) } else { b }
         };
 
         let next_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
-                button(text("󰒭").font(JETBRAINS_MONO).size(18)).style(transparent_button);
+                button(text("󰒭").font(JETBRAINS_MONO).size(18)).style(minimal_button);
             if has_track { b.on_press(PlayerMessage::UiNext) } else { b }
         };
 
@@ -96,9 +99,13 @@ impl Player {
         thumbnail: Option<Handle>,
         is_downloading: bool,
         spinner_frame: u8,
+        is_liked: bool,
     ) -> Element<'_, PlayerMessage> {
         match &self.current_track {
-            Some(track) => currently_playing_row(&track.track, thumbnail),
+            Some(track) => {
+                let like = Self::like_button(track.track.id.clone(), is_liked);
+                currently_playing_row_with_trailing(&track.track, thumbnail, Some(like))
+            }
 
             None if is_downloading => {
                 let spinner_char = SPINNER[spinner_frame as usize % 6];
@@ -135,6 +142,24 @@ impl Player {
 
             None => space().into(),
         }
+    }
+
+    fn like_button(track_id: String, is_liked: bool) -> Element<'static, PlayerMessage> {
+        let (icon, color) = if is_liked {
+            ("\u{f004}", iced::Color::from_rgb(0.94, 0.23, 0.35))
+        } else {
+            ("\u{eb05}", iced::Color::from_rgb(0.6, 0.6, 0.6))
+        };
+
+        button(
+            text(icon)
+                .font(JETBRAINS_MONO)
+                .size(18)
+                .style(move |_: &Theme| text::Style { color: Some(color) }),
+        )
+            .style(minimal_button)
+            .on_press(PlayerMessage::UiToggleLike(track_id))
+            .into()
     }
 
     pub fn view_seek_bar(&self, current_position: f32) -> Element<'_, PlayerMessage> {

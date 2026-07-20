@@ -2,13 +2,18 @@
 ///
 /// ## Qué es
 /// `CatalogStore` es el único dueño de `Vec<Track>` completo (todo lo que
-/// existe en `music_center`, resuelto vía `MicroserviceClient` en chunks).
+/// existe en `music_center`, resuelto vía `MicroserviceClient` en chunks) y
+/// también el dueño de las relaciones locales de playlist/likes, resueltas
+/// vía `PlaylistManager` (SQLite). El servicio de reproducción/descarga es
+/// agnóstico a playlists — todo lo que es "pertenece a X playlist" o
+/// "está likeado" vive aquí, no en el microservicio remoto.
 ///
 /// 1. `SidebarFeature` es dueño de UNA instancia de `CatalogStore` y la
 ///    construye junto a los demás distritos en `SidebarFeature::new`.
 /// 2. Los mensajes de carga (`CatalogStoreMessage::IdsLoaded`,
-///    `ChunkResolved`) se rutean desde `SidebarFeature::update` hacia
-///    `catalog_store.update(msg)`, igual que cualquier otro distrito.
+///    `ChunkResolved`, `LikesLoaded`, `PlaylistOrderLoaded`) se rutean desde
+///    `SidebarFeature::update` hacia `catalog_store.update(msg)`, igual que
+///    cualquier otro distrito.
 /// 3. Cualquier vista (Explorer, Favorites, Playlists) YA NO guarda su
 ///    propia copia de tracks. En vez de eso, en su `view()`/`update()`
 ///    recibe `&CatalogStore` como parámetro extra y pide su slice:
@@ -16,19 +21,34 @@
 ///    // Todo el catálogo (Explorer aplica su propio filtro/orden encima):
 ///    let tracks: &[Track] = store.all_tracks();
 ///
-///    // Solo los tracks de una playlist puntual:
-///    let slide: Vec<&Track> = store.tracks_for_playlist(&playlist_id);
+///    // Solo los tracks de una playlist puntual (incluye la de Likes,
+///    // identificada internamente por `PlaylistManager::system_playlist_id`):
+///    let slice: Vec<&Track> = store.tracks_for_playlist(&playlist_id);
 ///
 ///    // Un track puntual por id (útil para refrescar selección/menú):
 ///    if let Some(track) = store.track_by_id(&id) { ... }
-///    ```
 ///
+/// ## Sobre `liked`
+/// No se mantiene un `HashSet` aparte: el estado de like vive directamente
+/// en `Track::liked` dentro de `all_tracks`. La vista de Favoritos simplemente
+/// filtra `all_tracks.iter().filter(|t| t.liked)`. Al hacer toggle, se muta
+/// el campo en memoria de forma optimista y se persiste en SQLite en
+/// background vía `PlaylistManager`.
+///
+/// ## Sobre el orden de playlists
+/// `playlist_order` guarda `playlist_id -> Vec<track_id>` para las playlists
+/// CUSTOM (la SYSTEM/Likes no necesita orden, se resuelve filtrando `liked`).
+/// Se carga de forma eager al arrancar junto con los tracks. El orden por
+/// defecto es el de inserción (último agregado al final); reordenar es
+/// responsabilidad de quien llame a `PlaylistManager::reorder_tracks` y
+/// luego refresque `playlist_order` vía el mensaje correspondiente.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use iced::Task;
 
+use crate::db::playlist_manager::PlaylistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;
 
@@ -39,26 +59,64 @@ pub enum CatalogStoreMessage {
     IdsLoaded(Result<Vec<String>, String>),
     ChunkResolved(usize, Result<Vec<Track>, String>),
     TrackDeleted(String, Result<(), String>),
+
+    /// Ids de tracks likeados (contenido de la playlist SYSTEM), llega una
+    /// sola vez tras terminar de resolver todos los chunks de `all_tracks`.
+    LikesLoaded(Result<Vec<String>, String>),
+
+    /// `(playlist_id, [track_id])` para todas las playlists CUSTOM, cargado
+    /// eager junto con los likes.
+    PlaylistOrderLoaded(Result<Vec<(String, Vec<String>)>, String>),
+
+    /// `(id, name)` de todas las playlists CUSTOM, cargado eager junto con
+    /// `playlist_order`. Es la fuente para pintar la lista en el sidebar.
+    PlaylistsMetadataLoaded(Result<Vec<(String, String)>, String>),
+
+    /// Resultado de persistir un toggle de like en SQLite. Si falla, se
+    /// revierte la mutación optimista sobre `all_tracks`.
+    LikeToggled(String, bool, Result<(), String>),
+
+    /// Resultado de crear una playlist nueva. Si tuvo éxito, trae
+    /// `(id, name)` para insertarla directo en memoria sin round-trip.
+    PlaylistCreated(Result<(String, String), String>),
+
+    /// Resultado de eliminar una playlist. El id viaja siempre, exista o
+    /// no error, para poder revertir/limpiar el estado correspondiente.
+    PlaylistDeleted(String, Result<(), String>),
 }
 
 pub struct CatalogStore {
     client: Arc<MicroserviceClient>,
+    playlist_manager: Arc<PlaylistManager>,
+
     all_tracks: Vec<Track>,
     index_by_id: HashMap<String, usize>,
     pending_chunks: HashMap<usize, Vec<Track>>,
     total_chunks: usize,
+
+    playlist_order: HashMap<String, Vec<String>>,
+    liked_order: Vec<String>,
+    playlists_metadata: Vec<(String, String)>,
+
     is_loading: bool,
     last_error: Option<String>,
 }
 
 impl CatalogStore {
-    pub fn load(client: Arc<MicroserviceClient>) -> (Self, Task<CatalogStoreMessage>) {
+    pub fn load(
+        client: Arc<MicroserviceClient>,
+        playlist_manager: Arc<PlaylistManager>,
+    ) -> (Self, Task<CatalogStoreMessage>) {
         let store = Self {
             client: Arc::clone(&client),
+            playlist_manager,
             all_tracks: Vec::new(),
             index_by_id: HashMap::new(),
             pending_chunks: HashMap::new(),
             total_chunks: 0,
+            playlist_order: HashMap::new(),
+            liked_order: Vec::new(),
+            playlists_metadata: Vec::new(),
             is_loading: true,
             last_error: None,
         };
@@ -89,11 +147,37 @@ impl CatalogStore {
         self.index_by_id.get(id).and_then(|&idx| self.all_tracks.get(idx))
     }
 
-    pub fn tracks_for_playlist(&self, _playlist_id: &str) -> Vec<&Track> {
-        // TODO: reemplazar por el filtro real una vez confirmado el
-        // campo/relación en `Track` (p. ej. `track.playlist_ids.contains(...)`
-        // o una tabla intermedia resuelta por el microservicio).
-        Vec::new()
+    /// `(id, name)` de todas las playlists CUSTOM, listas para pintar en
+    /// el sidebar. No incluye la playlist SYSTEM (Likes).
+    pub fn playlists_metadata(&self) -> &[(String, String)] {
+        &self.playlists_metadata
+    }
+
+    pub fn system_playlist_id(&self) -> &str {
+        self.playlist_manager.system_playlist_id()
+    }
+
+    /// Devuelve los tracks de una playlist, en orden, como slice lógico
+    /// sobre `all_tracks` (sin duplicar los `Track`, solo referencias).
+    ///
+    /// Caso especial: si `playlist_id` es la playlist SYSTEM (Likes), no se
+    /// usa `playlist_order` — se filtra directo por `Track::liked`, ya que
+    /// esa playlist no tiene orden propio.
+    pub fn tracks_for_playlist(&self, playlist_id: &str) -> Vec<&Track> {
+        if playlist_id == self.playlist_manager.system_playlist_id() {
+            return self.liked_order
+                .iter()
+                .filter_map(|id| self.track_by_id(id))
+                .collect();
+        }
+
+        let Some(ids) = self.playlist_order.get(playlist_id) else {
+            return Vec::new();
+        };
+
+        ids.iter()
+            .filter_map(|id| self.track_by_id(id))
+            .collect()
     }
 
     pub fn delete_track(&mut self, track_id: &str) {
@@ -116,6 +200,77 @@ impl CatalogStore {
         });
     }
 
+    /// Alterna el like de un track: muta `Track::liked` de forma optimista
+    /// y persiste el cambio en SQLite en background. Si la escritura falla,
+    /// `LikeToggled` revierte la mutación.
+    pub fn toggle_like(&mut self, track_id: &str) -> Task<CatalogStoreMessage> {
+        let Some(&idx) = self.index_by_id.get(track_id) else {
+            return Task::none();
+        };
+
+        let new_value = !self.all_tracks[idx].liked;
+        self.all_tracks[idx].liked = new_value;
+
+        if new_value {
+            self.liked_order.insert(0, track_id.to_string());
+        } else {
+            self.liked_order.retain(|id| id != track_id);
+        }
+
+        let manager = Arc::clone(&self.playlist_manager);
+        let id_clone = track_id.to_string();
+
+        Task::perform(
+            async move {
+                let result = if new_value {
+                    manager.like_track(&id_clone).await
+                } else {
+                    manager.dislike_track(&id_clone).await
+                };
+                (id_clone, new_value, result.map_err(|e| e.to_string()))
+            },
+            |(id, value, result)| CatalogStoreMessage::LikeToggled(id, value, result),
+        )
+    }
+
+    /// Crea una playlist nueva en SQLite y la agrega al final de
+    /// `playlists_metadata` cuando el server confirme (no optimista, porque
+    /// necesitamos el `id` real generado por `PlaylistManager`).
+    pub fn create_playlist(&self, name: &str) -> Task<CatalogStoreMessage> {
+        let manager = Arc::clone(&self.playlist_manager);
+        let name_clone = name.to_string();
+
+        Task::perform(
+            async move {
+                let result = manager.create_playlist(&name_clone).await;
+                result
+                    .map(|id| (id, name_clone))
+                    .map_err(|e| e.to_string())
+            },
+            CatalogStoreMessage::PlaylistCreated,
+        )
+    }
+
+    /// Elimina una playlist: quita su entrada de `playlists_metadata` y
+    /// `playlist_order` de forma optimista, y persiste en SQLite en
+    /// background. No aplica a la playlist SYSTEM (Likes) — el caller debe
+    /// evitar ofrecer esa opción en la UI para esa playlist.
+    pub fn delete_playlist(&mut self, playlist_id: &str) -> Task<CatalogStoreMessage> {
+        self.playlists_metadata.retain(|(id, _)| id != playlist_id);
+        self.playlist_order.remove(playlist_id);
+
+        let manager = Arc::clone(&self.playlist_manager);
+        let id_clone = playlist_id.to_string();
+
+        Task::perform(
+            async move {
+                let result = manager.delete_playlist(&id_clone).await;
+                (id_clone, result.map_err(|e| e.to_string()))
+            },
+            |(id, result)| CatalogStoreMessage::PlaylistDeleted(id, result),
+        )
+    }
+
     // ── CARGA (chunking) ─────────────────────────────────────────────────────
 
     pub fn update(&mut self, msg: CatalogStoreMessage) -> Task<CatalogStoreMessage> {
@@ -129,7 +284,7 @@ impl CatalogStore {
 
                     if chunks.is_empty() {
                         self.is_loading = false;
-                        return Task::none();
+                        return self.load_playlist_relations();
                     }
 
                     let tasks: Vec<Task<CatalogStoreMessage>> = chunks
@@ -174,6 +329,11 @@ impl CatalogStore {
                     self.all_tracks = joined;
                     self.rebuild_index();
                     self.is_loading = false;
+
+                    // Todos los tracks están en memoria: ahora sí podemos
+                    // hidratar likes y orden de playlists contra índices
+                    // válidos.
+                    return self.load_playlist_relations();
                 }
 
                 Task::none()
@@ -193,7 +353,145 @@ impl CatalogStore {
                 }
                 Task::none()
             }
+
+            CatalogStoreMessage::LikesLoaded(result) => {
+                match result {
+                    Ok(liked_ids) => {
+                        self.liked_order = liked_ids.clone();
+
+                        for track in self.all_tracks.iter_mut() {
+                            track.liked = false;
+                        }
+                        for id in liked_ids {
+                            if let Some(&idx) = self.index_by_id.get(&id) {
+                                self.all_tracks[idx].liked = true;
+                            }
+                        }
+                        self.last_error = None;
+                    }
+                    Err(e) => {
+                        self.last_error = Some(e);
+                    }
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::PlaylistOrderLoaded(result) => {
+                match result {
+                    Ok(pairs) => {
+                        self.playlist_order = pairs.into_iter().collect();
+                        self.last_error = None;
+                    }
+                    Err(e) => {
+                        self.last_error = Some(e);
+                    }
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::LikeToggled(track_id, attempted_value, result) => {
+                if let Err(e) = result {
+                    if let Some(&idx) = self.index_by_id.get(&track_id) {
+                        self.all_tracks[idx].liked = !attempted_value;
+                    }
+
+                    if attempted_value {
+                        self.liked_order.retain(|id| id != &track_id);
+                    } else {
+                        self.liked_order.insert(0, track_id.clone());
+                    }
+
+                    self.last_error = Some(e);
+                } else {
+                    self.last_error = None;
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::PlaylistsMetadataLoaded(result) => {
+                match result {
+                    Ok(metadata) => {
+                        self.playlists_metadata = metadata;
+                        self.last_error = None;
+                    }
+                    Err(e) => {
+                        self.last_error = Some(e);
+                    }
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::PlaylistCreated(result) => {
+                match result {
+                    Ok((id, name)) => {
+                        self.playlists_metadata.push((id, name));
+                        self.last_error = None;
+                    }
+                    Err(e) => {
+                        self.last_error = Some(e);
+                    }
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::PlaylistDeleted(_playlist_id, result) => {
+                // La mutación optimista ya se aplicó en `delete_playlist`.
+                // Si falló, solo dejamos constancia del error; recargar el
+                // estado exacto de SQLite ahí es un caso raro (fallo de
+                // escritura) que no amerita un round-trip completo aquí.
+                if let Err(e) = result {
+                    self.last_error = Some(e);
+                } else {
+                    self.last_error = None;
+                }
+                Task::none()
+            }
         }
+    }
+
+    /// Dispara en paralelo la carga de likes y de orden de playlists custom.
+    /// Se llama una vez que `all_tracks`/`index_by_id` ya están completos.
+    fn load_playlist_relations(&self) -> Task<CatalogStoreMessage> {
+        let manager_likes = Arc::clone(&self.playlist_manager);
+        let system_id = self.playlist_manager.system_playlist_id().to_string();
+
+        let likes_task = Task::perform(
+            async move {
+                manager_likes
+                    .get_playlist_track_ids(&system_id)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            CatalogStoreMessage::LikesLoaded,
+        );
+
+        let manager_order = Arc::clone(&self.playlist_manager);
+        let order_task = Task::perform(
+            async move {
+                manager_order
+                    .get_all_playlist_track_ids()
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            CatalogStoreMessage::PlaylistOrderLoaded,
+        );
+
+        let manager_meta = Arc::clone(&self.playlist_manager);
+        let system_id_for_meta = self.playlist_manager.system_playlist_id().to_string();
+        let metadata_task = Task::perform(
+            async move {
+                let playlists = manager_meta.get_all_playlists().await.map_err(|e| e.to_string())?;
+                let metadata: Vec<(String, String)> = playlists
+                    .into_iter()
+                    .filter(|p| p.id != system_id_for_meta)
+                    .map(|p| (p.id, p.name))
+                    .collect();
+                Ok::<Vec<(String, String)>, String>(metadata)
+            },
+            CatalogStoreMessage::PlaylistsMetadataLoaded,
+        );
+
+        Task::batch(vec![likes_task, order_task, metadata_task])
     }
 
     fn rebuild_index(&mut self) {

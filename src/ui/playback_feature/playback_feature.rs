@@ -14,6 +14,7 @@ use crate::ui::playback_feature::player::{Player, PlayerMessage, PlayerOutMessag
 use crate::ui::playback_feature::queue::queue_panel::{QueueMessage, QueueOutMessage, QueuePanel};
 use crate::ui::playback_feature::theater::theater_panel::{TheaterMessage, TheaterOutMessage, TheaterPanel};
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
+use crate::ui::styles::styles::minimal_button;
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 
 /// Epoch fijo para este feature. La cola de reproducción y la canción
@@ -43,6 +44,7 @@ pub enum PlaybackFeatureMessage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlaybackOutMessage {
     ToggleTheaterMode,
+    RequestToggleLike(String),
     Idle,
 }
 
@@ -241,6 +243,8 @@ impl PlaybackFeature {
 
                 let (task, out_msg) = self.player.update(msg);
 
+                let mut feature_out = PlaybackOutMessage::Idle;
+
                 match out_msg {
                     PlayerOutMessage::RequestTogglePlayback => {
                         if self.manager.state.is_playing() { self.manager.pause(); }
@@ -256,11 +260,14 @@ impl PlaybackFeature {
                         let position = Duration::from_secs_f32(pos);
                         self.manager.seek(position);
                     }
+                    PlayerOutMessage::RequestToggleLike(track_id) => {
+                        feature_out = PlaybackOutMessage::RequestToggleLike(track_id);
+                    }
                     PlayerOutMessage::Idle             => {}
                 }
 
                 extra_tasks.push(task.map(PlaybackFeatureMessage::Player));
-                (Task::batch(extra_tasks), PlaybackOutMessage::Idle)
+                (Task::batch(extra_tasks), feature_out)
             }
 
             PlaybackFeatureMessage::ToggleTheaterMode => {
@@ -280,11 +287,18 @@ impl PlaybackFeature {
         }
     }
 
+    /// Id del track actualmente en reproducción, si hay alguno. `main.rs`
+    /// lo usa para consultar `CatalogStore::track_by_id` y así saber si
+    /// está likeado antes de llamar a `view()`.
+    pub fn current_track_id(&self) -> Option<&str> {
+        self.current_track_id.as_deref()
+    }
+
     pub fn position_updated(&mut self, position: Duration) -> Task<PlaybackFeatureMessage> {
         self.theater.position_updated(position).map(PlaybackFeatureMessage::Theater)
     }
 
-    pub fn view(&self, thumbnails: &ThumbnailCache, is_theater_mode: bool) -> Element<'_, PlaybackFeatureMessage> {
+    pub fn view(&self, thumbnails: &ThumbnailCache, is_theater_mode: bool, is_current_liked: bool) -> Element<'_, PlaybackFeatureMessage> {
         let current_position = self.manager.get_position().as_secs_f32();
         let vol              = self.manager.get_volume();
         let has_track        = self.player.has_track();
@@ -295,7 +309,7 @@ impl PlaybackFeature {
             .and_then(|p| thumbnails.peek_color(&thumb_key(&p.track)));
 
         let current_track = self.player
-            .view_current_play(current_thumbnail, is_downloading, self.spinner_frame)
+            .view_current_play(current_thumbnail, is_downloading, self.spinner_frame, is_current_liked)
             .map(PlaybackFeatureMessage::Player);
 
         let play_center  = self.player.view(self.manager.state.is_playing(), has_track, has_history).map(PlaybackFeatureMessage::Player);
@@ -361,7 +375,7 @@ impl PlaybackFeature {
         let icon = if is_theater_mode { "" } else { "" };
 
         button(text(icon).font(crate::JETBRAINS_MONO).size(18))
-            .style(transparent_button)
+            .style(minimal_button)
             .on_press(PlaybackFeatureMessage::ToggleTheaterMode)
             .into()
     }

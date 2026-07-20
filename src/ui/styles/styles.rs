@@ -4,7 +4,6 @@ use iced::widget::{button, container};
 pub fn transparent_button(_theme: &Theme, status: button::Status) -> button::Style {
     let (background, text_color) = match status {
         button::Status::Disabled => (None, Color::from_rgb(0.35, 0.35, 0.38)),
-        // Subtle hover feedback para la fila completa tipo Tidal
         button::Status::Hovered => (
             Some(Color::from_rgba(1.0, 1.0, 1.0, 0.03).into()),
             Color::WHITE
@@ -15,6 +14,30 @@ pub fn transparent_button(_theme: &Theme, status: button::Status) -> button::Sty
     button::Style {
         background,
         text_color,
+        ..Default::default()
+    }
+}
+
+pub fn minimal_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let text_color = match status {
+        button::Status::Disabled => {
+            Color::from_rgb(0.35, 0.35, 0.38)
+        }
+
+        button::Status::Hovered
+        | button::Status::Pressed => {
+            Color::WHITE
+        }
+
+        button::Status::Active => {
+            Color::from_rgb(0.82, 0.82, 0.82)
+        }
+    };
+
+    button::Style {
+        background: None,
+        text_color,
+        border: Border::default(),
         ..Default::default()
     }
 }

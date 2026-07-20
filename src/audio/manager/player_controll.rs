@@ -1,14 +1,60 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use crate::audio::engine_state::AudioCommand;
 use crate::audio::manager::manager::{probe_track, TrackManager};
 use crate::audio::manager::error_mananger::ManagerError;
-use crate::audio::track_event::TrackEvent;
+use crate::audio::track_event::{QueueEvent, TrackEvent};
 use crate::model::Track;
 
 impl TrackManager {
 
-    /// Pone una pista inmediatamente, borrando lo que esté sonando.
+    pub fn play_context(&self, context_tracks: Vec<Track>, start_index: usize) {
+        if start_index >= context_tracks.len() { return; }
+
+        let mut tracks_iter = context_tracks.into_iter().skip(start_index);
+        let first_track = Arc::new(tracks_iter.next().unwrap());
+        let remaining: Vec<Arc<Track>> = tracks_iter.map(Arc::new).collect();
+
+        {
+            let mut ps = self.playback.lock().unwrap();
+            ps.queue.clear();
+            ps.queue.extend(remaining);
+            ps.clear_current_to_history();
+            ps.auto_advance = true;
+        }
+
+        if first_track.file_path.is_none() {
+            {
+                let mut ps = self.playback.lock().unwrap();
+                ps.queue.push_front(Arc::clone(&first_track));
+            }
+
+            let _ = self.engine_tx.send(AudioCommand::Stop);
+
+            self.state.status.store(4, Ordering::Relaxed);
+            let _ = self.queue_tx.send(QueueEvent::DownloadRequired(first_track));
+            self.broadcast_queue_update();
+            return;
+        }
+
+        match probe_track(&first_track, "MANAGER:play_context") {
+            Ok(playable) => {
+                {
+                    let mut ps = self.playback.lock().unwrap();
+                    ps.advance_to(Arc::clone(&playable));
+                }
+                let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&playable)));
+                self.broadcast_queue_update();
+                self.play_track(playable);
+            }
+            Err(_) => {
+                self.broadcast_queue_update();
+                self.skip_next();
+            }
+        }
+    }
+
     pub fn play_now(&self, track: Track) {
         let playable = match probe_track(&track, "MANAGER:play_now") {
             Ok(p) => p,

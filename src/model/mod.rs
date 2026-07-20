@@ -3,6 +3,7 @@ pub mod album;
 pub mod artist;
 pub mod track_state;
 pub mod audio_tech;
+pub mod playlist;
 
 pub use track::Track;
 pub use album::Album;

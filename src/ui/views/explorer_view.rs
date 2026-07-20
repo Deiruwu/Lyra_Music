@@ -8,7 +8,7 @@ use iced::widget::image::Handle;
 use iced::widget::operation::snap_to;
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
-use crate::ui::styles::styles::{selected_row_container, transparent_button};
+use crate::ui::styles::styles::{minimal_button, selected_row_container, transparent_button};
 use crate::ui::utils::search::SearchQuery;
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 use crate::ui::utils::virtual_list::{ScrollTracker, VirtualWindow};
@@ -513,7 +513,7 @@ impl ExplorerView {
                     .size(10.5)
                     .style(move |_| text::Style { color: Some(color) }),
             )
-                .style(transparent_button)
+                .style(minimal_button)
                 .width(width)
                 .padding(0)
                 .on_press(ExplorerViewMessage::SortBy(col))

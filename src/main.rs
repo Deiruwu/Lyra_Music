@@ -3,6 +3,7 @@ mod model;
 mod audio;
 mod ui;
 pub mod tray;
+pub mod db;
 
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::Ordering;
@@ -15,13 +16,15 @@ use crate::audio::engine::AudioEngine;
 use audio::manager::manager::TrackManager;
 use crate::audio::mpris::MprisServer;
 use crate::audio::radio_daemon::RadioWorker;
+use crate::db::db::init_db;
+use crate::db::playlist_manager::PlaylistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::tray::TrayFlags;
 
 use crate::ui::playback_feature::playback_feature::{PlaybackFeature, PlaybackFeatureMessage, PlaybackOutMessage};
 use crate::ui::search_feature::search_feature::{SearchFeature, SearchFeatureMessage, SearchFeatureOutMessage};
 use crate::ui::sidebar_feature::sidebar_feature::{
-    SidebarFeature, SidebarFeatureMessage, SidebarFeatureOutMessage
+    SidebarFeature, SidebarFeatureMessage
 };
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 
@@ -88,7 +91,46 @@ impl App {
             ..Default::default()
         });
 
-        let (sidebar_feature, sidebar_task) = SidebarFeature::new(sidebar_client, Arc::clone(&manager));
+        // `PlaylistManager` necesita el pool de SQLite ya conectado (init_db
+        // corre las migraciones) antes de poder construirse (cachea el id
+        // de la playlist SYSTEM con una query). Ambos pasos son async, pero
+        // `App::init()` es síncrono.
+        //
+        // `iced` está compilado con el feature "tokio" (ver Cargo.toml), lo
+        // que significa que ya arranca su propio runtime tokio multi-thread
+        // para ejecutar `Task::perform` — es el mismo runtime que hace
+        // funcionar el `tokio::spawn` de `CatalogStore::delete_track`. Por
+        // eso `block_in_place` es seguro aquí: el runtime activo es
+        // multi-thread (rt-multi-thread está en Cargo.toml). El fallback a
+        // `Runtime::new()` queda solo como red de seguridad; en la práctica
+        // nunca debería activarse dado este setup.
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "sqlite://music_center.db".into());
+
+        let init_playlist_manager = async {
+            let pool = init_db(&database_url)
+                .await
+                .expect("Fallo fatal al inicializar la base de datos local");
+            PlaylistManager::new(pool)
+                .await
+                .expect("Fallo fatal al inicializar PlaylistManager")
+        };
+
+        let playlist_manager = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(init_playlist_manager)),
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()
+                    .expect("No se pudo crear runtime temporal para inicializar la BD");
+                rt.block_on(init_playlist_manager)
+            }
+        };
+        let playlist_manager = Arc::new(playlist_manager);
+
+        let (sidebar_feature, sidebar_task) = SidebarFeature::new(
+            sidebar_client,
+            Arc::clone(&playlist_manager),
+            Arc::clone(&manager),
+        );
 
         let app = Self {
             _engine: engine,
@@ -164,28 +206,40 @@ impl App {
             AppMessage::PlaybackFeature(msg) => {
                 let (task, out_msg) = self.playback_feature.update(msg, &mut self.player_thumbnails);
 
-                if let PlaybackOutMessage::ToggleTheaterMode = out_msg {
-                    self.is_theater_mode = !self.is_theater_mode;
-                }
+                let like_task = match out_msg {
+                    PlaybackOutMessage::ToggleTheaterMode => {
+                        self.is_theater_mode = !self.is_theater_mode;
+                        iced::Task::none()
+                    }
+                    PlaybackOutMessage::RequestToggleLike(track_id) => {
+                        // El estado de like vive en `CatalogStore`, dueño de
+                        // `SidebarFeature`; `PlaybackFeature` no lo conoce,
+                        // así que el toggle se resuelve aquí y el resultado
+                        // (LikeToggled) se enruta como un CatalogStoreMessage
+                        // normal hacia el sidebar.
+                        self.sidebar_feature
+                            .catalog_store
+                            .toggle_like(&track_id)
+                            .map(|catalog_msg| {
+                                AppMessage::SidebarFeature(SidebarFeatureMessage::Catalog(catalog_msg))
+                            })
+                    }
+                    PlaybackOutMessage::Idle => iced::Task::none(),
+                };
 
-                task.map(AppMessage::PlaybackFeature)
+                iced::Task::batch(vec![
+                    task.map(AppMessage::PlaybackFeature),
+                    like_task,
+                ])
             }
 
             AppMessage::SidebarFeature(msg) => {
-                // Ya no resolvemos play/enqueue acá: `SidebarFeature`
-                // tiene su propia instancia de `Arc<TrackManager>` y
-                // resuelve esas peticiones internamente contra los
-                // out-messages de Explorer/Playlists. Main solo se
-                // entera de lo que de verdad le importa a nivel
-                // ventana/app (por ahora, nada más que abrir el diálogo
-                // de crear playlist, si aplica).
-                let (task, out_msg) = self.sidebar_feature.update(msg, &mut self.view_thumbnails);
-
-                match out_msg {
-                    SidebarFeatureOutMessage::CreatePlaylistRequested => {
-                    }
-                    SidebarFeatureOutMessage::Idle => {}
-                }
+                // `SidebarFeature` resuelve internamente play/enqueue y el
+                // flujo de creación/eliminación de playlists contra sus
+                // propios distritos (Explorer/Playlists) y `CatalogStore`.
+                // Main ya no necesita reaccionar a ningún out-message por
+                // ahora.
+                let (task, _out_msg) = self.sidebar_feature.update(msg, &mut self.view_thumbnails);
 
                 task.map(AppMessage::SidebarFeature)
             }
@@ -254,7 +308,12 @@ impl App {
 
         let layout_stack = stack![content_layer, queue_layer];
 
-        let playback_view  = self.playback_feature.view(&self.player_thumbnails, self.is_theater_mode).map(AppMessage::PlaybackFeature);
+        let is_current_liked = self.playback_feature.current_track_id()
+            .and_then(|id| self.sidebar_feature.catalog_store.track_by_id(id))
+            .map(|t| t.liked)
+            .unwrap_or(false);
+
+        let playback_view  = self.playback_feature.view(&self.player_thumbnails, self.is_theater_mode, is_current_liked).map(AppMessage::PlaybackFeature);
         let search_view    = self.search_feature.view().map(AppMessage::SearchFeature);
         let search_overlay = self.search_feature.view_dropdown(&self.view_thumbnails).map(AppMessage::SearchFeature);
 

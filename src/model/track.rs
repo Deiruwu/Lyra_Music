@@ -19,6 +19,9 @@ pub struct Track {
     #[serde(default)]
     pub state: TrackState, // Usamos el Enum estricto
 
+    #[serde(default)]
+    pub liked: bool, // verificación para saber si se encuentra en favoritos
+
     // ── Relaciones resueltas ──────────────────────────────────────────────────
     pub album: Option<Album>, // JOIN albums ON album_id
     pub artists: Vec<Artist>, // JOIN track_artists → artists

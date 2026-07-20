@@ -5,7 +5,7 @@ use iced::{Element, Length, Padding, Task};
 use iced::widget::{button, container, scrollable, space, stack, text};
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
-use crate::ui::styles::styles::transparent_button;
+use crate::ui::styles::styles::{minimal_button, transparent_button};
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 use crate::ui::widgets::track_row::{queue_track_row, DragRowParams, QueueThumbnailState};
 use super::animator::QueueAnimator;
@@ -311,7 +311,7 @@ impl QueuePanel {
     pub fn view_toggle_button(&self) -> Element<'_, QueueMessage> {
         let can_show_queue = !self.queue.is_empty();
         let btn = button(text("󰲸").font(JETBRAINS_MONO).size(18))
-            .style(transparent_button);
+            .style(minimal_button);
 
         if can_show_queue {
             btn.on_press(QueueMessage::Toggle)
