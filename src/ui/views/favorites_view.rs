@@ -8,7 +8,6 @@ use iced::widget::scrollable;
 
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
-use crate::ui::utils::search::SearchQuery;
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::views::catalog_store::CatalogStore;
@@ -20,6 +19,11 @@ use crate::ui::widgets::track_list::{track_list, TrackListCallbacks, TrackListCo
 use crate::ui::widgets::track_fields::{Field, FieldList};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
 use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
+use crate::ui::widgets::views::sort_state::SortState;
+use crate::ui::widgets::views::track_sort;
+use crate::ui::widgets::views::catalog_filter;
+use crate::ui::widgets::views::track_context_menu::{self, LikeSlot};
+use crate::impl_sortable_column;
 
 pub const SF_PRO: Font = Font::with_name("SF Pro Display");
 
@@ -33,12 +37,8 @@ pub const VIEW_DATA: ViewData = ViewData::new(
 const ROW_HEIGHT: f32 = 60.0;
 const THUMBNAIL_SIZE: f32 = 44.0;
 const BUFFER_ROWS: usize = 15;
-// 7 filas de primer nivel: Reproducir ahora, Agregar a cola, Reproducir
-// después, Iniciar radio, Agregar a playlist, Copiar id, Quitar de Me
-// gusta. Ver comentario equivalente en `explorer_view.rs`.
 const CONTEXT_MENU_ITEM_COUNT: usize = 7;
 const SCROLLABLE_ID: &str = "favorites_catalog_scroll";
-/// Id fijo del (único) submenú de este menú: "Agregar a playlist".
 const SUBMENU_ADD_TO_PLAYLIST: usize = 0;
 
 const SORT_KEY_DEFAULT_ORDER: usize = 0;
@@ -60,50 +60,16 @@ pub enum SortColumn {
     Duration,
 }
 
-impl SortColumn {
-    fn sort_key(self) -> usize {
-        match self {
-            SortColumn::DefaultOrder => SORT_KEY_DEFAULT_ORDER,
-            SortColumn::Title => SORT_KEY_TITLE,
-            SortColumn::Artist => SORT_KEY_ARTIST,
-            SortColumn::Album => SORT_KEY_ALBUM,
-            SortColumn::Bpm => SORT_KEY_BPM,
-            SortColumn::Key => SORT_KEY_KEY,
-            SortColumn::Duration => SORT_KEY_DURATION,
-        }
-    }
-
-    fn from_sort_key(key: usize) -> Option<Self> {
-        match key {
-            SORT_KEY_DEFAULT_ORDER => Some(SortColumn::DefaultOrder),
-            SORT_KEY_TITLE => Some(SortColumn::Title),
-            SORT_KEY_ARTIST => Some(SortColumn::Artist),
-            SORT_KEY_ALBUM => Some(SortColumn::Album),
-            SORT_KEY_BPM => Some(SortColumn::Bpm),
-            SORT_KEY_KEY => Some(SortColumn::Key),
-            SORT_KEY_DURATION => Some(SortColumn::Duration),
-            _ => None,
-        }
-    }
+impl_sortable_column! {
+    SortColumn, default = DefaultOrder;
+    DefaultOrder => SORT_KEY_DEFAULT_ORDER,
+    Title => SORT_KEY_TITLE,
+    Artist => SORT_KEY_ARTIST,
+    Album => SORT_KEY_ALBUM,
+    Bpm => SORT_KEY_BPM,
+    Key => SORT_KEY_KEY,
+    Duration => SORT_KEY_DURATION,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortDirection {
-    Asc,
-    Desc,
-}
-
-impl SortDirection {
-    fn toggled(self) -> Self {
-        match self {
-            SortDirection::Asc => SortDirection::Desc,
-            SortDirection::Desc => SortDirection::Asc,
-        }
-    }
-}
-
-const DEFAULT_SORT_COLUMN: SortColumn = SortColumn::DefaultOrder;
-const DEFAULT_SORT_DIRECTION: SortDirection = SortDirection::Asc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextMenuAction {
@@ -146,9 +112,7 @@ pub enum FavoritesViewOutMessage {
 pub struct FavoritesView {
     search_query: String,
     filtered_indices: Vec<usize>,
-    sort_column: SortColumn,
-    sort_direction: SortDirection,
-    sort_click_stage: u8,
+    sort: SortState<SortColumn>,
     selected_track_id: Option<String>,
     context_menu: ContextMenu<String>,
     scroll: ScrollTracker,
@@ -160,9 +124,7 @@ impl FavoritesView {
         Self {
             search_query: String::new(),
             filtered_indices: Vec::new(),
-            sort_column: DEFAULT_SORT_COLUMN,
-            sort_direction: DEFAULT_SORT_DIRECTION,
-            sort_click_stage: 1,
+            sort: SortState::new(),
             selected_track_id: None,
             context_menu: ContextMenu::new(),
             scroll: ScrollTracker::default(),
@@ -194,67 +156,26 @@ impl FavoritesView {
     }
 
     fn apply_search(&mut self, store: &CatalogStore) {
-        let tracks = self.liked_tracks(store);
-        let query = SearchQuery::new(&self.search_query);
-
-        if query.is_empty() {
-            self.filtered_indices = (0..tracks.len()).collect();
-            return;
-        }
-
-        self.filtered_indices = tracks
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, track)| {
-                let album_name = track.album.as_ref().map(|a| a.name.as_str()).unwrap_or("");
-                let artists = track.format_artists();
-                let is_match = query.matches_any(&[&track.title, &artists, album_name]);
-                is_match.then_some(idx)
-            })
-            .collect();
+        self.filtered_indices = catalog_filter::search_indices(&self.liked_tracks(store), &self.search_query);
     }
 
     fn apply_sort(&mut self, store: &CatalogStore) {
         self.apply_search(store);
 
-        let tracks = self.liked_tracks(store);
-        let asc = self.sort_direction == SortDirection::Asc;
+        let liked = self.liked_tracks(store);
+        let asc = self.sort.is_asc();
 
-        match self.sort_column {
+        match self.sort.column() {
             SortColumn::DefaultOrder => {
                 // Bypass: la indexación natural devuelta por apply_search
                 // ya representa el orden cronológico de SQLite.
             }
-            SortColumn::Title => {
-                self.filtered_indices.sort_by(|&a, &b| {
-                    tracks[a].title.to_lowercase().cmp(&tracks[b].title.to_lowercase())
-                });
-            }
-            SortColumn::Artist => {
-                self.filtered_indices.sort_by(|&a, &b| {
-                    tracks[a].format_artists().to_lowercase().cmp(&tracks[b].format_artists().to_lowercase())
-                });
-            }
-            SortColumn::Album => {
-                self.filtered_indices.sort_by(|&a, &b| {
-                    let an = tracks[a].album.as_ref().map(|x| x.name.to_lowercase()).unwrap_or_default();
-                    let bn = tracks[b].album.as_ref().map(|x| x.name.to_lowercase()).unwrap_or_default();
-                    an.cmp(&bn)
-                });
-            }
-            SortColumn::Bpm => {
-                self.filtered_indices.sort_by_key(|&i| tracks[i].bpm.unwrap_or(i32::MIN));
-            }
-            SortColumn::Key => {
-                self.filtered_indices.sort_by(|&a, &b| {
-                    let ak = tracks[a].camelot_key.clone().unwrap_or_default();
-                    let bk = tracks[b].camelot_key.clone().unwrap_or_default();
-                    ak.cmp(&bk)
-                });
-            }
-            SortColumn::Duration => {
-                self.filtered_indices.sort_by_key(|&i| tracks[i].duration_seconds);
-            }
+            SortColumn::Title => track_sort::by_title(&mut self.filtered_indices, &liked),
+            SortColumn::Artist => track_sort::by_artist(&mut self.filtered_indices, &liked),
+            SortColumn::Album => track_sort::by_album(&mut self.filtered_indices, &liked),
+            SortColumn::Bpm => track_sort::by_bpm(&mut self.filtered_indices, &liked),
+            SortColumn::Key => track_sort::by_camelot_key(&mut self.filtered_indices, &liked),
+            SortColumn::Duration => track_sort::by_duration(&mut self.filtered_indices, &liked),
         }
 
         if !asc {
@@ -267,11 +188,7 @@ impl FavoritesView {
     }
 
     fn visible_keys(&self, store: &CatalogStore) -> HashSet<String> {
-        let window = self.current_window();
-        (window.start..window.end)
-            .filter_map(|visible_idx| self.track_at(store, visible_idx))
-            .map(thumb_key)
-            .collect()
+        catalog_filter::visible_keys(&self.current_window(), |idx| self.track_at(store, idx))
     }
 
     fn request_visible_thumbnails(&self, store: &CatalogStore, thumbnails: &mut ThumbnailCache) -> Task<FavoritesViewMessage> {
@@ -332,23 +249,8 @@ impl FavoritesView {
             }
 
             FavoritesViewMessage::SortByKey(key) => {
-                let Some(column) = SortColumn::from_sort_key(key) else {
+                if !self.sort.click(key) {
                     return (Task::none(), FavoritesViewOutMessage::Idle);
-                };
-
-                if self.sort_column == column {
-                    if self.sort_click_stage >= 2 {
-                        self.sort_column = DEFAULT_SORT_COLUMN;
-                        self.sort_direction = DEFAULT_SORT_DIRECTION;
-                        self.sort_click_stage = 1;
-                    } else {
-                        self.sort_direction = self.sort_direction.toggled();
-                        self.sort_click_stage += 1;
-                    }
-                } else {
-                    self.sort_column = column;
-                    self.sort_direction = SortDirection::Asc;
-                    self.sort_click_stage = 1;
                 }
 
                 self.apply_sort(store);
@@ -498,46 +400,31 @@ impl FavoritesView {
 
             let config = TrackListConfig {
                 columns: fields.columns(),
-                active_sort_key: {
-                    let is_default_state = self.sort_column == DEFAULT_SORT_COLUMN
-                        && self.sort_direction == DEFAULT_SORT_DIRECTION
-                        && self.sort_click_stage == 1;
-                    (!is_default_state).then(|| self.sort_column.sort_key())
-                },
-                sort_direction_asc: self.sort_direction == SortDirection::Asc,
+                active_sort_key: self.sort.active_sort_key(),
+                sort_direction_asc: self.sort.is_asc(),
                 row_height: ROW_HEIGHT,
                 buffer_rows: BUFFER_ROWS,
             };
 
             let overlay = self.context_menu.render_target(|id| store.track_by_id(id)).map(|(anchor, track)| {
-                let playlist_children: Vec<ContextMenuItem<ContextMenuAction>> = store
-                    .playlists_metadata()
-                    .iter()
-                    .map(|(playlist_id, name, _)| {
-                        let icon = if store.is_track_in_playlist(playlist_id, &track.id) {
-                            ""
-                        } else {
-                            ""
-                        };
-                        ContextMenuItem::new(
-                            name.clone(),
-                            ContextMenuAction::AddToPlaylist(playlist_id.clone()),
-                        )
-                    })
-                    .collect();
+                let items = track_context_menu::build(
+                    track,
+                    store,
+                    LikeSlot::None,
+                    ContextMenuAction::AddToPlaylist,
+                    None,
+                    SUBMENU_ADD_TO_PLAYLIST,
+                    ContextMenuAction::PlayNow,
+                    ContextMenuAction::AddToQueue,
+                    ContextMenuAction::AddToFrontQueue,
+                    ContextMenuAction::StartRadio,
+                    ContextMenuAction::CopyId,
+                    ContextMenuItem::new("Quitar de Me gusta", ContextMenuAction::Unlike).icon(Icon::HeartBroken),
+                );
 
                 self.context_menu.view(
                     anchor,
-                    vec![
-                        ContextMenuItem::new("Reproducir ahora", ContextMenuAction::PlayNow).icon(Icon::Play),
-                        ContextMenuItem::new("Agregar a cola", ContextMenuAction::AddToQueue).icon(Icon::AddQueue),
-                        ContextMenuItem::new("Reproducir después", ContextMenuAction::AddToFrontQueue).icon(Icon::AddQueueFront),
-                        ContextMenuItem::new("Iniciar radio", ContextMenuAction::StartRadio).icon(Icon::Radio),
-                        ContextMenuItem::submenu("Agregar a playlist", SUBMENU_ADD_TO_PLAYLIST, playlist_children)
-                            .icon(Icon::Playlist),
-                        ContextMenuItem::new("Copiar id", ContextMenuAction::CopyId).icon(Icon::Copiar),
-                        ContextMenuItem::new("Quitar de Me gusta", ContextMenuAction::Unlike).icon(Icon::HeartBroken),
-                    ],
+                    items,
                     track,
                     FavoritesViewMessage::ContextMenuAction,
                     FavoritesViewMessage::DismissContextMenu,

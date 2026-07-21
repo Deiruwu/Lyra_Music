@@ -8,3 +8,4 @@ pub mod playlist_header;
 pub mod track_fields;
 pub mod catalog_status_message;
 pub mod catalog_search_input;
+pub mod views;

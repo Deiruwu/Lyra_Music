@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use chrono::{DateTime, Utc};
 use iced::{Color, Element, Font, Length, Task};
 use iced::widget::scrollable::Viewport;
 use iced::widget::{column, space, text, Id};
@@ -8,7 +7,6 @@ use iced::widget::operation::snap_to;
 use iced::widget::scrollable;
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
-use crate::ui::utils::search::SearchQuery;
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::views::catalog_store::CatalogStore;
@@ -21,6 +19,11 @@ use crate::ui::widgets::track_list::{track_list, TrackListCallbacks, TrackListCo
 use crate::ui::widgets::track_fields::{Field, FieldList};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
 use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
+use crate::ui::widgets::views::sort_state::SortState;
+use crate::ui::widgets::views::track_sort;
+use crate::ui::widgets::views::catalog_filter;
+use crate::ui::widgets::views::track_context_menu::{self, LikeSlot};
+use crate::impl_sortable_column;
 
 pub const SF_PRO: Font = Font::with_name("SF Pro Display");
 
@@ -34,20 +37,10 @@ pub const VIEW_DATA: ViewData = ViewData::new(
 const ROW_HEIGHT: f32 = 60.0;
 const THUMBNAIL_SIZE: f32 = 44.0;
 const BUFFER_ROWS: usize = 15;
-// El menú ahora tiene 7 filas de "primer nivel" (Reproducir ahora,
-// Agregar a cola, Reproducir después, Iniciar radio, Like/Dislike,
-// Agregar a playlist, Copiar id, Eliminar): 8 en total. Se usa para
-// estimar la altura del menú y clampearlo contra el viewport (ver
-// `ContextMenu::clamp_anchor`) — el submenú desplegado NO cuenta aquí,
-// tiene su propio flyout independiente.
 const CONTEXT_MENU_ITEM_COUNT: usize = 8;
 const SCROLLABLE_ID: &str = "explorer_catalog_scroll";
-/// Id fijo del (único) submenú de este menú: "Agregar a playlist".
 const SUBMENU_ADD_TO_PLAYLIST: usize = 0;
 
-// ── Claves opacas de columna para el widget compartido (`Column::sort_key`) ──
-// El widget no conoce `SortColumn`; estas constantes son la traducción
-// hacia/desde el `usize` opaco que sí conoce.
 const SORT_KEY_TITLE: usize = 0;
 const SORT_KEY_ARTIST: usize = 1;
 const SORT_KEY_ALBUM: usize = 2;
@@ -67,50 +60,16 @@ pub enum SortColumn {
     AddedAt,
 }
 
-impl SortColumn {
-    fn sort_key(self) -> usize {
-        match self {
-            SortColumn::Title => SORT_KEY_TITLE,
-            SortColumn::Artist => SORT_KEY_ARTIST,
-            SortColumn::Album => SORT_KEY_ALBUM,
-            SortColumn::Bpm => SORT_KEY_BPM,
-            SortColumn::Key => SORT_KEY_KEY,
-            SortColumn::Duration => SORT_KEY_DURATION,
-            SortColumn::AddedAt => SORT_KEY_ADDED_AT,
-        }
-    }
-
-    fn from_sort_key(key: usize) -> Option<Self> {
-        match key {
-            SORT_KEY_TITLE => Some(SortColumn::Title),
-            SORT_KEY_ARTIST => Some(SortColumn::Artist),
-            SORT_KEY_ALBUM => Some(SortColumn::Album),
-            SORT_KEY_BPM => Some(SortColumn::Bpm),
-            SORT_KEY_KEY => Some(SortColumn::Key),
-            SORT_KEY_DURATION => Some(SortColumn::Duration),
-            SORT_KEY_ADDED_AT => Some(SortColumn::AddedAt),
-            _ => None,
-        }
-    }
+impl_sortable_column! {
+    SortColumn, default = Title;
+    Title => SORT_KEY_TITLE,
+    Artist => SORT_KEY_ARTIST,
+    Album => SORT_KEY_ALBUM,
+    Bpm => SORT_KEY_BPM,
+    Key => SORT_KEY_KEY,
+    Duration => SORT_KEY_DURATION,
+    AddedAt => SORT_KEY_ADDED_AT,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortDirection {
-    Asc,
-    Desc,
-}
-
-impl SortDirection {
-    fn toggled(self) -> Self {
-        match self {
-            SortDirection::Asc => SortDirection::Desc,
-            SortDirection::Desc => SortDirection::Asc,
-        }
-    }
-}
-
-const DEFAULT_SORT_COLUMN: SortColumn = SortColumn::Title;
-const DEFAULT_SORT_DIRECTION: SortDirection = SortDirection::Asc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextMenuAction {
@@ -118,11 +77,6 @@ pub enum ContextMenuAction {
     AddToQueue,
     AddToFrontQueue,
     StartRadio,
-    /// Alterna el like. El label/icono que se muestra en el menú ya
-    /// refleja el estado actual del track (ver `view()`), así que este
-    /// mismo variant sirve tanto para "Me gusta" como para "Ya no me
-    /// gusta" — la vista no necesita distinguir Like/Unlike, el store
-    /// ya sabe el estado actual vía `Track::liked`.
     ToggleLike,
     AddToPlaylist(String),
     CopyId,
@@ -138,14 +92,10 @@ pub enum ExplorerViewMessage {
     ViewportMouseMoved(iced::Point),
     RowRightClicked(String),
     DismissContextMenu,
-    /// `Some(id)` al pasar el mouse sobre "Agregar a playlist", `None`
-    /// al salir. Rutea directo a `ContextMenu::set_open_submenu`.
     ContextMenuSubmenuHover(Option<usize>),
     ContextMenuAction(ContextMenuAction, Track),
     ConfirmDialogConfirm,
     ConfirmDialogCancel,
-    /// El widget compartido no conoce `SortColumn`: emite el `usize`
-    /// opaco de la columna clickeada y la vista lo traduce de vuelta.
     SortByKey(usize),
     SearchChanged(String),
     ColorThumbnailResult(String, Vec<u8>, u64),
@@ -161,15 +111,13 @@ pub enum ExplorerViewOutMessage {
     RequestPlayRadio(Track),
     RequestDelete(String),
     RequestToggleLike(String),
-    RequestAddToPlaylist(String, String), // playlist_id, track_id
+    RequestAddToPlaylist(String, String),
 }
 
 pub struct ExplorerView {
     search_query: String,
     filtered_indices: Vec<usize>,
-    sort_column: SortColumn,
-    sort_direction: SortDirection,
-    sort_click_stage: u8,
+    sort: SortState<SortColumn>,
     selected_track_id: Option<String>,
     context_menu: ContextMenu<String>,
     confirm_dialog: ConfirmDialog<Track>,
@@ -182,9 +130,7 @@ impl ExplorerView {
         Self {
             search_query: String::new(),
             filtered_indices: Vec::new(),
-            sort_column: DEFAULT_SORT_COLUMN,
-            sort_direction: DEFAULT_SORT_DIRECTION,
-            sort_click_stage: 1,
+            sort: SortState::new(),
             selected_track_id: None,
             context_menu: ContextMenu::new(),
             confirm_dialog: ConfirmDialog::new(),
@@ -211,70 +157,23 @@ impl ExplorerView {
     }
 
     fn apply_search(&mut self, store: &CatalogStore) {
-        let tracks = store.all_tracks();
-        let query = SearchQuery::new(&self.search_query);
-
-        if query.is_empty() {
-            self.filtered_indices = (0..tracks.len()).collect();
-            return;
-        }
-
-        self.filtered_indices = tracks
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, track)| {
-                let album_name = track.album.as_ref().map(|a| a.name.as_str()).unwrap_or("");
-                let artists = track.format_artists();
-
-                let is_match = query.matches_any(&[&track.title, &artists, album_name]);
-
-                is_match.then_some(idx)
-            })
-            .collect();
+        self.filtered_indices = catalog_filter::search_indices(store.all_tracks(), &self.search_query);
     }
 
     fn apply_sort(&mut self, store: &CatalogStore) {
         self.apply_search(store);
 
         let tracks = store.all_tracks();
-        let asc = self.sort_direction == SortDirection::Asc;
+        let asc = self.sort.is_asc();
 
-        match self.sort_column {
-            SortColumn::Title => {
-                self.filtered_indices.sort_by(|&a, &b| {
-                    tracks[a].title.to_lowercase().cmp(&tracks[b].title.to_lowercase())
-                });
-            }
-            SortColumn::Artist => {
-                self.filtered_indices.sort_by(|&a, &b| {
-                    tracks[a].format_artists().to_lowercase().cmp(&tracks[b].format_artists().to_lowercase())
-                });
-            }
-            SortColumn::Album => {
-                self.filtered_indices.sort_by(|&a, &b| {
-                    let an = tracks[a].album.as_ref().map(|x| x.name.to_lowercase()).unwrap_or_default();
-                    let bn = tracks[b].album.as_ref().map(|x| x.name.to_lowercase()).unwrap_or_default();
-                    an.cmp(&bn)
-                });
-            }
-            SortColumn::Bpm => {
-                self.filtered_indices.sort_by_key(|&i| tracks[i].bpm.unwrap_or(i32::MIN));
-            }
-            SortColumn::Key => {
-                self.filtered_indices.sort_by(|&a, &b| {
-                    let ak = tracks[a].camelot_key.clone().unwrap_or_default();
-                    let bk = tracks[b].camelot_key.clone().unwrap_or_default();
-                    ak.cmp(&bk)
-                });
-            }
-            SortColumn::Duration => {
-                self.filtered_indices.sort_by_key(|&i| tracks[i].duration_seconds);
-            }
-            SortColumn::AddedAt => {
-                self.filtered_indices.sort_by_key(|&i| {
-                    tracks[i].added_at.unwrap_or(DateTime::<Utc>::MIN_UTC)
-                });
-            }
+        match self.sort.column() {
+            SortColumn::Title => track_sort::by_title(&mut self.filtered_indices, tracks),
+            SortColumn::Artist => track_sort::by_artist(&mut self.filtered_indices, tracks),
+            SortColumn::Album => track_sort::by_album(&mut self.filtered_indices, tracks),
+            SortColumn::Bpm => track_sort::by_bpm(&mut self.filtered_indices, tracks),
+            SortColumn::Key => track_sort::by_camelot_key(&mut self.filtered_indices, tracks),
+            SortColumn::Duration => track_sort::by_duration(&mut self.filtered_indices, tracks),
+            SortColumn::AddedAt => track_sort::by_added_at(&mut self.filtered_indices, tracks),
         }
 
         if !asc {
@@ -313,11 +212,7 @@ impl ExplorerView {
     }
 
     fn visible_keys(&self, store: &CatalogStore) -> HashSet<String> {
-        let window = self.current_window();
-        (window.start..window.end)
-            .filter_map(|visible_idx| self.track_at(store, visible_idx))
-            .map(thumb_key)
-            .collect()
+        catalog_filter::visible_keys(&self.current_window(), |idx| self.track_at(store, idx))
     }
 
     fn invalidate_and_reload_thumbnails(&mut self, store: &CatalogStore, thumbnails: &mut ThumbnailCache) -> Task<ExplorerViewMessage> {
@@ -341,23 +236,8 @@ impl ExplorerView {
             }
 
             ExplorerViewMessage::SortByKey(key) => {
-                let Some(column) = SortColumn::from_sort_key(key) else {
+                if !self.sort.click(key) {
                     return (Task::none(), ExplorerViewOutMessage::Idle);
-                };
-
-                if self.sort_column == column {
-                    if self.sort_click_stage >= 2 {
-                        self.sort_column = DEFAULT_SORT_COLUMN;
-                        self.sort_direction = DEFAULT_SORT_DIRECTION;
-                        self.sort_click_stage = 1;
-                    } else {
-                        self.sort_direction = self.sort_direction.toggled();
-                        self.sort_click_stage += 1;
-                    }
-                } else {
-                    self.sort_column = column;
-                    self.sort_direction = SortDirection::Asc;
-                    self.sort_click_stage = 1;
                 }
 
                 self.apply_sort(store);
@@ -482,9 +362,6 @@ impl ExplorerView {
         }
     }
 
-    /// Antes: `columns()` + `row_cells()` por separado (30 líneas, dos
-    /// listas que debían coincidir en orden/longitud a mano). Ahora es
-    /// una sola cadena declarativa — ver `ui::widgets::track_fields`.
     fn fields<'a>() -> FieldList<'a, ExplorerViewMessage> {
         Field::index(30.0)
             .thumbnail(THUMBNAIL_SIZE + 12.0, THUMBNAIL_SIZE)
@@ -527,53 +404,31 @@ impl ExplorerView {
 
             let config = TrackListConfig {
                 columns: fields.columns(),
-                active_sort_key: {
-                    let is_default_state = self.sort_column == DEFAULT_SORT_COLUMN
-                        && self.sort_direction == DEFAULT_SORT_DIRECTION
-                        && self.sort_click_stage == 1;
-                    (!is_default_state).then(|| self.sort_column.sort_key())
-                },
-                sort_direction_asc: self.sort_direction == SortDirection::Asc,
+                active_sort_key: self.sort.active_sort_key(),
+                sort_direction_asc: self.sort.is_asc(),
                 row_height: ROW_HEIGHT,
                 buffer_rows: BUFFER_ROWS,
             };
 
             let overlay = self.context_menu.render_target(|id| store.track_by_id(id)).map(|(anchor, track)| {
-                let (like_label, like_icon) = if track.liked {
-                    ("Ya no me gusta", Icon::HeartBroken)
-                } else {
-                    ("Me gusta", Icon::HeartFull)
-                };
-
-                let playlist_children: Vec<ContextMenuItem<ContextMenuAction>> = store
-                    .playlists_metadata()
-                    .iter()
-                    .map(|(playlist_id, name, _)| {
-                        let icon = if store.is_track_in_playlist(playlist_id, &track.id) {
-                            ""
-                        } else {
-                            ""
-                        };
-                        ContextMenuItem::new(
-                            name.clone(),
-                            ContextMenuAction::AddToPlaylist(playlist_id.clone()),
-                        )
-                    })
-                    .collect();
+                let items = track_context_menu::build(
+                    track,
+                    store,
+                    LikeSlot::Toggle(ContextMenuAction::ToggleLike),
+                    ContextMenuAction::AddToPlaylist,
+                    None,
+                    SUBMENU_ADD_TO_PLAYLIST,
+                    ContextMenuAction::PlayNow,
+                    ContextMenuAction::AddToQueue,
+                    ContextMenuAction::AddToFrontQueue,
+                    ContextMenuAction::StartRadio,
+                    ContextMenuAction::CopyId,
+                    ContextMenuItem::new("Eliminar canción", ContextMenuAction::Delete).icon(Icon::Delete),
+                );
 
                 self.context_menu.view(
                     anchor,
-                    vec![
-                        ContextMenuItem::new("Reproducir ahora", ContextMenuAction::PlayNow).icon(Icon::Play),
-                        ContextMenuItem::new("Agregar a cola", ContextMenuAction::AddToQueue).icon(Icon::AddQueue),
-                        ContextMenuItem::new("Reproducir después", ContextMenuAction::AddToFrontQueue).icon(Icon::AddQueueFront),
-                        ContextMenuItem::new("Iniciar radio", ContextMenuAction::StartRadio).icon(Icon::Radio),
-                        ContextMenuItem::new(like_label, ContextMenuAction::ToggleLike).icon(like_icon),
-                        ContextMenuItem::submenu("Agregar a playlist", SUBMENU_ADD_TO_PLAYLIST, playlist_children)
-                            .icon(Icon::Playlist),
-                        ContextMenuItem::new("Copiar id", ContextMenuAction::CopyId).icon(Icon::Copiar),
-                        ContextMenuItem::new("Eliminar canción", ContextMenuAction::Delete).icon(Icon::Delete),
-                    ],
+                    items,
                     track,
                     ExplorerViewMessage::ContextMenuAction,
                     ExplorerViewMessage::DismissContextMenu,

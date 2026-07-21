@@ -28,6 +28,10 @@ lru = "0.18.0"
 ksni = { version = "0.3.5" , features = ["tokio"]}
 libc = "0.2.186"
 
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "chrono"] }
 
 musichub-client = { path = "../musichub-client" }
 rand = "0.9.4"
+uuid = { version = "0.8.2", features = ["v4"] }
+rfd = "0.17.2"
+strum_macros = "0.28.0"
