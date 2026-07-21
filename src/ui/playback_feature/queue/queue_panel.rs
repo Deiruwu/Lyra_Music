@@ -5,7 +5,7 @@ use iced::{Element, Length, Padding, Task};
 use iced::widget::{button, container, scrollable, space, stack, text};
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
-use crate::ui::styles::styles::{minimal_button, transparent_button};
+use crate::ui::styles::styles::{minimal_button};
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 use crate::ui::widgets::track_row::{queue_track_row, DragRowParams, QueueThumbnailState};
 use super::animator::QueueAnimator;

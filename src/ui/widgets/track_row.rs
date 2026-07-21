@@ -5,6 +5,7 @@ use crate::model::Track;
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 use crate::ui::styles::styles::transparent_button;
 use crate::JETBRAINS_MONO;
+use crate::ui::assets::icons::Icon;
 
 const SPINNER: [&str; 6] = ["", "", "", "", "", ""];
 
@@ -200,7 +201,7 @@ where
             if hovered {
                 let play_btn = button(
                     container(
-                        text("").font(JETBRAINS_MONO).size(18).color(iced::Color::WHITE)
+                        text(Icon::Play.as_ref()).font(JETBRAINS_MONO).size(18).color(iced::Color::WHITE)
                     )
                         .width(Length::Fixed(55.0))
                         .height(Length::Fixed(55.0))

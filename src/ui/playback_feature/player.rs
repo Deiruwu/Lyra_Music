@@ -5,7 +5,8 @@ use iced::widget::{button, container, row, slider, space, text};
 use crate::audio::track_event::TrackEvent;
 use crate::JETBRAINS_MONO;
 use crate::model::audio_tech::PlayableTrack;
-use crate::ui::styles::styles::{minimal_button, transparent_button};
+use crate::ui::assets::icons::Icon;
+use crate::ui::styles::styles::{minimal_button};
 use crate::ui::widgets::track_row::currently_playing_row_with_trailing;
 
 const SPINNER: [&str; 6] = ["\u{ee06}", "\u{ee07}", "\u{ee08}", "\u{ee09}", "\u{ee0a}", "\u{ee0b}"];
@@ -64,14 +65,14 @@ impl Player {
 
     pub fn view(&self, is_playing: bool, has_track: bool, has_history: bool) -> Element<'_, PlayerMessage> {
         let play_icon = if is_playing {
-            text("").font(JETBRAINS_MONO)
+            text(Icon::Pause.as_ref()).font(JETBRAINS_MONO)
         } else {
-            text("").font(JETBRAINS_MONO)
+            text(Icon::Play.as_ref()).font(JETBRAINS_MONO)
         };
 
         let prev_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
-                button(text("󰒮").font(JETBRAINS_MONO).size(18)).style(minimal_button);
+                button(text(Icon::SkipPrevious.as_ref()).font(JETBRAINS_MONO).size(18)).style(minimal_button);
             if has_history { b.on_press(PlayerMessage::UiPrev) } else { b }
         };
 
@@ -82,7 +83,7 @@ impl Player {
 
         let next_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
-                button(text("󰒭").font(JETBRAINS_MONO).size(18)).style(minimal_button);
+                button(text(Icon::SkipNext.as_ref()).font(JETBRAINS_MONO).size(18)).style(minimal_button);
             if has_track { b.on_press(PlayerMessage::UiNext) } else { b }
         };
 

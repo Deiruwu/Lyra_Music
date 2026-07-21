@@ -16,6 +16,10 @@ pub struct Playlist {
     pub name: String,
     pub playlist_type: PlaylistType,
     pub created_at: NaiveDateTime,
+
+
+    #[serde(default)]
+    pub cover_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

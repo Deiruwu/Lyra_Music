@@ -5,3 +5,4 @@ pub mod playback_feature;
 pub mod search_feature;
 pub mod sidebar_feature;
 pub mod views;
+pub mod assets;

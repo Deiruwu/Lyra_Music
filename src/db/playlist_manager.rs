@@ -30,6 +30,7 @@ impl PlaylistManager {
     pub async fn create_playlist(&self, name: &str) -> Result<String, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
 
+        // cover_url queda como NULL por defecto al omitirlo en el INSERT
         sqlx::query!(
             r#"INSERT INTO playlist (id, name, type) VALUES (?, ?, 'CUSTOM')"#,
             id,
@@ -63,17 +64,30 @@ impl PlaylistManager {
         Ok(())
     }
 
+    /// Permite actualizar la URL del cover agregado en la migración.
+    pub async fn update_playlist_cover(&self, id: &str, cover_url: Option<&str>) -> Result<(), sqlx::Error> {
+        if id == self.system_playlist_id {
+            return Err(sqlx::Error::Protocol("Cannot update cover for SYSTEM playlist".into()));
+        }
+
+        sqlx::query!(r#"UPDATE playlist SET cover_url = ? WHERE id = ?"#, cover_url, id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_all_playlists(&self) -> Result<Vec<Playlist>, sqlx::Error> {
         let playlists = sqlx::query_as!(
-        Playlist,
-        r#"SELECT
-            id as "id!",
-            name as "name!",
-            type as "playlist_type!: PlaylistType",
-            created_at as "created_at!"
-           FROM playlist
-           ORDER BY created_at ASC"#
-    )
+            Playlist,
+            r#"SELECT
+                id as "id!",
+                name as "name!",
+                type as "playlist_type!: PlaylistType",
+                created_at as "created_at!",
+                cover_url
+               FROM playlist
+               ORDER BY created_at ASC"#
+        )
             .fetch_all(&self.pool)
             .await?;
 
@@ -150,7 +164,6 @@ impl PlaylistManager {
     pub async fn reorder_tracks(&self, playlist_id: &str, updates: &[(String, f64)]) -> Result<(), sqlx::Error> {
         if updates.is_empty() { return Ok(()); }
 
-        // Múltiples updates envueltos en una transacción
         let mut tx = self.pool.begin().await?;
 
         for (track_id, new_position) in updates {
@@ -170,10 +183,6 @@ impl PlaylistManager {
 
     // ── CONSULTAS ────────────────────────────────────────────────────────────
 
-    /// Devuelve, en una sola llamada, el mapa `playlist_id -> [track_id]` para
-    /// todas las playlists CUSTOM (excluye la SYSTEM/Likes, que se resuelve
-    /// aparte filtrando `Track::liked`). Pensado para que `CatalogStore`
-    /// hidrate `playlist_order` de una vez al arrancar.
     pub async fn get_all_playlist_track_ids(&self) -> Result<Vec<(String, Vec<String>)>, sqlx::Error> {
         let playlists = self.get_all_playlists().await?;
 

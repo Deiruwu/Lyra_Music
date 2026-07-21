@@ -7,6 +7,7 @@ use crate::JETBRAINS_MONO;
 use crate::audio::manager::manager::TrackManager;
 use crate::db::playlist_manager::PlaylistManager;
 use crate::microservices::client::MicroserviceClient;
+use crate::ui::assets::icons::Icon;
 use crate::ui::styles::styles::{minimal_button, transparent_button};
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
@@ -84,6 +85,13 @@ pub enum SidebarFeatureMessage {
     ViewportResized(Size),
     PlaylistContextMenuAction(PlaylistContextAction, String),
     DismissPlaylistContextMenu,
+    /// El menú de playlist del sidebar no tiene ningún `Submenu` hoy
+    /// (solo "Eliminar playlist"), pero `ContextMenu::view` ahora pide
+    /// siempre un callback de hover de submenú — este mensaje solo
+    /// existe para satisfacer esa firma; su `update()` es un no-op real
+    /// (`set_open_submenu` nunca tendrá efecto visible sin un
+    /// `ContextMenuItem::submenu` en la lista).
+    DismissPlaylistContextMenuSubmenuHover(Option<usize>),
     ConfirmDeletePlaylist,
     CancelDeletePlaylist,
 }
@@ -174,27 +182,36 @@ impl SidebarFeature {
 
             SidebarFeatureMessage::SelectNav(nav_id) => {
                 self.active_selection = ActiveSelection::Nav(nav_id);
+                let mut tasks = vec![];
+
                 if nav_id == NavId::PlaylistsOverview {
                     if !self.is_expanded {
                         self.is_expanded = true;
                         self.target_width = EXPANDED_WIDTH;
                     }
-                    self.playlists_view.show_overview();
+
+                    let (task, _out) = self.playlists_view.update(
+                        PlaylistsViewMessage::BackToOverview,
+                        &self.catalog_store,
+                        thumbnails,
+                    );
+                    tasks.push(task.map(SidebarFeatureMessage::Playlists));
                 }
-                (Task::none(), SidebarFeatureOutMessage::Idle)
+                (Task::batch(tasks), SidebarFeatureOutMessage::Idle)
             }
 
             SidebarFeatureMessage::SelectPlaylist(id) => {
                 self.active_selection = ActiveSelection::PlaylistDetail(id.clone());
-                self.playlists_view.open_playlist(&id);
-                (Task::none(), SidebarFeatureOutMessage::Idle)
+
+                let (task, _out) = self.playlists_view.update(
+                    PlaylistsViewMessage::SelectPlaylist(id),
+                    &self.catalog_store,
+                    thumbnails,
+                );
+
+                (task.map(SidebarFeatureMessage::Playlists), SidebarFeatureOutMessage::Idle)
             }
 
-            // El botón "Crear playlist" de `PlaylistsView::render_overview`
-            // (o cualquier otro disparador futuro del mismo mensaje) usa el
-            // mismo campo inline del sidebar, no un modal aparte — así el
-            // flujo de creación es uno solo sin importar desde dónde se
-            // pida.
             SidebarFeatureMessage::CreatePlaylistRequested => {
                 self.new_playlist_input = Some(String::new());
                 if !self.is_expanded {
@@ -265,20 +282,33 @@ impl SidebarFeature {
                 (Task::none(), SidebarFeatureOutMessage::Idle)
             }
 
+            SidebarFeatureMessage::DismissPlaylistContextMenuSubmenuHover(id) => {
+                self.playlist_context_menu.set_open_submenu(id);
+                (Task::none(), SidebarFeatureOutMessage::Idle)
+            }
+
             SidebarFeatureMessage::ConfirmDeletePlaylist => {
                 let Some(playlist_id) = self.delete_playlist_dialog.take_confirmed() else {
                     return (Task::none(), SidebarFeatureOutMessage::Idle);
                 };
 
+                let mut tasks = vec![];
+
                 if let ActiveSelection::PlaylistDetail(active_id) = &self.active_selection {
                     if active_id == &playlist_id {
                         self.active_selection = ActiveSelection::Nav(NavId::PlaylistsOverview);
-                        self.playlists_view.show_overview();
+                        let (task, _out) = self.playlists_view.update(
+                            PlaylistsViewMessage::BackToOverview,
+                            &self.catalog_store,
+                            thumbnails,
+                        );
+                        tasks.push(task.map(SidebarFeatureMessage::Playlists));
                     }
                 }
 
                 let task = self.catalog_store.delete_playlist(&playlist_id);
-                (task.map(SidebarFeatureMessage::Catalog), SidebarFeatureOutMessage::Idle)
+                tasks.push(task.map(SidebarFeatureMessage::Catalog));
+                (Task::batch(tasks), SidebarFeatureOutMessage::Idle)
             }
 
             SidebarFeatureMessage::CancelDeletePlaylist => {
@@ -321,6 +351,9 @@ impl SidebarFeature {
 
             SidebarFeatureMessage::Explorer(msg) => {
                 let (task, out_msg) = self.explorer_view.update(msg, &self.catalog_store, thumbnails);
+
+                let mut extra_tasks = vec![task.map(SidebarFeatureMessage::Explorer)];
+
                 match out_msg {
                     ExplorerViewOutMessage::RequestPlay(track) => {
                         self.manager.play_now(track);
@@ -342,10 +375,19 @@ impl SidebarFeature {
                         self.catalog_store.delete_track(&track_id)
                     }
 
+                    ExplorerViewOutMessage::RequestToggleLike(track_id) => {
+                        let like_task = self.catalog_store.toggle_like(&track_id);
+                        extra_tasks.push(like_task.map(SidebarFeatureMessage::Catalog));
+                    }
+
+                    ExplorerViewOutMessage::RequestAddToPlaylist(playlist_id, track_id) => {
+                        let add_task = self.catalog_store.add_track_to_playlist(&playlist_id, &track_id);
+                        extra_tasks.push(add_task.map(SidebarFeatureMessage::Catalog));
+                    }
 
                     ExplorerViewOutMessage::Idle => {}
                 }
-                (task.map(SidebarFeatureMessage::Explorer), SidebarFeatureOutMessage::Idle)
+                (Task::batch(extra_tasks), SidebarFeatureOutMessage::Idle)
             }
 
             SidebarFeatureMessage::Favorites(msg) => {
@@ -368,15 +410,12 @@ impl SidebarFeature {
                         self.manager.clear_queue().unwrap();
                     }
                     FavoritesViewOutMessage::RequestToggleLike(track_id) => {
-                        // Mismo circuito que el corazón del panel de
-                        // reproducción: `CatalogStore` es la única fuente
-                        // de la verdad para `liked`, así que el toggle
-                        // vuelve a entrar como un CatalogStoreMessage
-                        // normal (dispara LikeToggled + refresco de
-                        // Explorer/Favorites vía el brazo `Catalog` de
-                        // arriba).
                         let like_task = self.catalog_store.toggle_like(&track_id);
                         extra_tasks.push(like_task.map(SidebarFeatureMessage::Catalog));
+                    }
+                    FavoritesViewOutMessage::RequestAddToPlaylist(playlist_id, track_id) => {
+                        let add_task = self.catalog_store.add_track_to_playlist(&playlist_id, &track_id);
+                        extra_tasks.push(add_task.map(SidebarFeatureMessage::Catalog));
                     }
                     FavoritesViewOutMessage::Idle => {}
                 }
@@ -385,31 +424,50 @@ impl SidebarFeature {
             }
 
             SidebarFeatureMessage::Playlists(msg) => {
-                let (task, out_msg) = self.playlists_view.update(msg);
-                let out = match out_msg {
-                    PlaylistsViewOutMessage::RequestPlayNow(track) => {
-                        self.manager.play_now(track);
-                        SidebarFeatureOutMessage::Idle
+                let (task, out_msg) = self.playlists_view.update(
+                    msg,
+                    &self.catalog_store,
+                    thumbnails,
+                );
+
+                let mut extra_tasks = vec![task.map(SidebarFeatureMessage::Playlists)];
+
+                match out_msg {
+                    PlaylistsViewOutMessage::RequestPlayContext(tracks, context_id) => {
+                        self.manager.play_context(tracks, context_id);
                     }
                     PlaylistsViewOutMessage::RequestEnqueue(track) => {
                         self.manager.enqueue(track);
-                        SidebarFeatureOutMessage::Idle
                     }
-                    PlaylistsViewOutMessage::PlaylistSelected(id) => {
-                        self.active_selection = ActiveSelection::PlaylistDetail(id);
-                        SidebarFeatureOutMessage::Idle
+                    PlaylistsViewOutMessage::RequestFrontEnqueue(track) => {
+                        self.manager.enqueue_front(track);
                     }
-                    PlaylistsViewOutMessage::Idle => SidebarFeatureOutMessage::Idle,
+                    PlaylistsViewOutMessage::RequestPlayRadio(track) => {
+                        self.manager.play_now(track);
+                        self.manager.clear_queue().unwrap();
+                    }
+                    PlaylistsViewOutMessage::RequestRemoveFromPlaylist(playlist_id, track_id) => {
+                        let remove_task = self.catalog_store.remove_track_from_playlist(&playlist_id, &track_id);
+                        extra_tasks.push(remove_task.map(SidebarFeatureMessage::Catalog));
+                    }
+                    PlaylistsViewOutMessage::RequestToggleLike(track_id) => {
+                        let like_task = self.catalog_store.toggle_like(&track_id);
+                        extra_tasks.push(like_task.map(SidebarFeatureMessage::Catalog));
+                    }
+                    PlaylistsViewOutMessage::RequestAddToPlaylist(playlist_id, track_id) => {
+                        let add_task = self.catalog_store.add_track_to_playlist(&playlist_id, &track_id);
+                        extra_tasks.push(add_task.map(SidebarFeatureMessage::Catalog));
+                    }
                     PlaylistsViewOutMessage::CreatePlaylistRequested => {
                         self.new_playlist_input = Some(String::new());
                         if !self.is_expanded {
                             self.is_expanded = true;
                             self.target_width = EXPANDED_WIDTH;
                         }
-                        SidebarFeatureOutMessage::Idle
                     }
+                    PlaylistsViewOutMessage::Idle => {}
                 };
-                (task.map(SidebarFeatureMessage::Playlists), out)
+                (Task::batch(extra_tasks), SidebarFeatureOutMessage::Idle)
             }
         }
     }
@@ -505,8 +563,6 @@ impl SidebarFeature {
     }
 
     /// EL ENRUTADOR DE CONTENIDO: Cada distrito renderiza su propio DOM.
-    /// Explorer ahora recibe `&self.catalog_store` además del thumbnail
-    /// caché, porque ya no guarda su propia copia de tracks.
     pub fn view_content<'a>(&'a self, thumbnails: &'a ThumbnailCache) -> Element<'a, SidebarFeatureMessage> {
         match &self.active_selection {
             ActiveSelection::Nav(NavId::Home) => {
@@ -519,7 +575,7 @@ impl SidebarFeature {
                 self.favorites_view.view(&self.catalog_store, thumbnails).map(SidebarFeatureMessage::Favorites)
             }
             ActiveSelection::Nav(NavId::PlaylistsOverview) | ActiveSelection::PlaylistDetail(_) => {
-                self.playlists_view.view().map(SidebarFeatureMessage::Playlists)
+                self.playlists_view.view(&self.catalog_store, thumbnails).map(SidebarFeatureMessage::Playlists)
             }
         }
     }
@@ -537,7 +593,7 @@ impl SidebarFeature {
             Color::from_rgb(0.5, 0.53, 0.6)
         };
 
-        let icon_elem = text(data.icon)
+        let icon_elem = text(data.icon.as_str())
             .font(data.icon_font)
             .size(16)
             .style(move |_| text::Style { color: Some(text_color) });
@@ -562,9 +618,6 @@ impl SidebarFeature {
     }
 
     fn render_expanded_playlists(&self) -> Element<'_, SidebarFeatureMessage> {
-        // El título "PLAYLISTS" y el botón de agregar viven arriba del
-        // separador (ver `view_sidebar`). Aquí solo queda el input de
-        // nueva playlist (si está abierto) y la lista de playlists.
         let mut section = column![].spacing(2).width(Length::Fill);
 
         if let Some(current_value) = &self.new_playlist_input {
@@ -581,7 +634,7 @@ impl SidebarFeature {
             section = section.push(input_row);
         }
 
-        for (playlist_id, playlist_name) in self.catalog_store.playlists_metadata() {
+        for (playlist_id, playlist_name, _) in self.catalog_store.playlists_metadata() {
             let is_row_active = matches!(
                 &self.active_selection,
                 ActiveSelection::PlaylistDetail(active_id) if active_id == playlist_id
@@ -615,11 +668,6 @@ impl SidebarFeature {
         section.into()
     }
 
-    /// Overlay del menú contextual de playlists + diálogo de confirmación
-    /// de borrado, apilados encima de `content`. Debe envolver TODO el
-    /// sidebar (no solo la sección de playlists) para que el tracking de
-    /// mouse/viewport de `ContextMenu` funcione correctamente — ver nota
-    /// en `context_menu.rs`.
     pub fn view_sidebar_with_overlays<'a>(
         &'a self,
         content: Element<'a, SidebarFeatureMessage>,
@@ -628,14 +676,15 @@ impl SidebarFeature {
 
         if let Some((anchor, entry)) = self
             .playlist_context_menu
-            .render_target(|id| self.catalog_store.playlists_metadata().iter().find(|(pid, _)| pid == id))
+            .render_target(|id| self.catalog_store.playlists_metadata().iter().find(|(pid, _, _)| pid == id))
         {
             let menu = self.playlist_context_menu.view(
                 anchor,
-                vec![ContextMenuItem::new("Eliminar playlist", PlaylistContextAction::Delete).icon("")],
+                vec![ContextMenuItem::new("Eliminar playlist", PlaylistContextAction::Delete).icon(Icon::Delete)],
                 entry,
-                |action, (id, _name)| SidebarFeatureMessage::PlaylistContextMenuAction(action, id),
+                |action, (id, _name, _cover)| SidebarFeatureMessage::PlaylistContextMenuAction(action, id),
                 SidebarFeatureMessage::DismissPlaylistContextMenu,
+                SidebarFeatureMessage::DismissPlaylistContextMenuSubmenuHover,
             );
             layers.push(menu);
         }

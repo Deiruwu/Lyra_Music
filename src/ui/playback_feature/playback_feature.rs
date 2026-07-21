@@ -370,7 +370,6 @@ impl PlaybackFeature {
 
     pub fn view_theater_toggle(&self, is_theater_mode: bool) -> Element<'_, PlaybackFeatureMessage> {
         use iced::widget::{button, text};
-        use crate::ui::styles::styles::transparent_button;
 
         let icon = if is_theater_mode { "" } else { "" };
 

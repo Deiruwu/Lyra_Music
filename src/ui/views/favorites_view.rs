@@ -1,27 +1,31 @@
 use std::collections::HashSet;
 
-use iced::{Alignment, Color, Element, Font, Length, Padding, Task};
+use iced::{Color, Element, Font, Length, Task};
 use iced::widget::scrollable::Viewport;
-use iced::widget::{button, column, container, mouse_area, row, scrollable, space, stack, text, text_input, Id};
-use iced::widget::image::Handle;
+use iced::widget::{column, space, text, Id};
 use iced::widget::operation::snap_to;
+use iced::widget::scrollable;
 
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
-use crate::ui::styles::styles::{minimal_button, selected_row_container, transparent_button};
 use crate::ui::utils::search::SearchQuery;
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
-use crate::ui::utils::virtual_list::{ScrollTracker, VirtualWindow};
+use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuItem};
-use crate::ui::widgets::track_row::track_thumbnail_sized;
+use iced::clipboard;
+use crate::ui::assets::icons::Icon;
+use crate::ui::widgets::track_list::{track_list, TrackListCallbacks, TrackListConfig};
+use crate::ui::widgets::track_fields::{Field, FieldList};
+use crate::ui::widgets::catalog_search_input::catalog_search_input;
+use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
 
 pub const SF_PRO: Font = Font::with_name("SF Pro Display");
 
 pub const VIEW_DATA: ViewData = ViewData::new(
     NavId::Favorites,
-    "\u{f004}",
+    Icon::HeartFull,
     "Me gusta",
     JETBRAINS_MONO,
 );
@@ -29,7 +33,21 @@ pub const VIEW_DATA: ViewData = ViewData::new(
 const ROW_HEIGHT: f32 = 60.0;
 const THUMBNAIL_SIZE: f32 = 44.0;
 const BUFFER_ROWS: usize = 15;
-const CONTEXT_MENU_ITEM_COUNT: usize = 5;
+// 7 filas de primer nivel: Reproducir ahora, Agregar a cola, Reproducir
+// después, Iniciar radio, Agregar a playlist, Copiar id, Quitar de Me
+// gusta. Ver comentario equivalente en `explorer_view.rs`.
+const CONTEXT_MENU_ITEM_COUNT: usize = 7;
+const SCROLLABLE_ID: &str = "favorites_catalog_scroll";
+/// Id fijo del (único) submenú de este menú: "Agregar a playlist".
+const SUBMENU_ADD_TO_PLAYLIST: usize = 0;
+
+const SORT_KEY_DEFAULT_ORDER: usize = 0;
+const SORT_KEY_TITLE: usize = 1;
+const SORT_KEY_ARTIST: usize = 2;
+const SORT_KEY_ALBUM: usize = 3;
+const SORT_KEY_BPM: usize = 4;
+const SORT_KEY_KEY: usize = 5;
+const SORT_KEY_DURATION: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
@@ -40,6 +58,33 @@ pub enum SortColumn {
     Bpm,
     Key,
     Duration,
+}
+
+impl SortColumn {
+    fn sort_key(self) -> usize {
+        match self {
+            SortColumn::DefaultOrder => SORT_KEY_DEFAULT_ORDER,
+            SortColumn::Title => SORT_KEY_TITLE,
+            SortColumn::Artist => SORT_KEY_ARTIST,
+            SortColumn::Album => SORT_KEY_ALBUM,
+            SortColumn::Bpm => SORT_KEY_BPM,
+            SortColumn::Key => SORT_KEY_KEY,
+            SortColumn::Duration => SORT_KEY_DURATION,
+        }
+    }
+
+    fn from_sort_key(key: usize) -> Option<Self> {
+        match key {
+            SORT_KEY_DEFAULT_ORDER => Some(SortColumn::DefaultOrder),
+            SORT_KEY_TITLE => Some(SortColumn::Title),
+            SORT_KEY_ARTIST => Some(SortColumn::Artist),
+            SORT_KEY_ALBUM => Some(SortColumn::Album),
+            SORT_KEY_BPM => Some(SortColumn::Bpm),
+            SORT_KEY_KEY => Some(SortColumn::Key),
+            SORT_KEY_DURATION => Some(SortColumn::Duration),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +111,8 @@ pub enum ContextMenuAction {
     AddToQueue,
     AddToFrontQueue,
     StartRadio,
+    AddToPlaylist(String),
+    CopyId,
     Unlike,
 }
 
@@ -78,8 +125,9 @@ pub enum FavoritesViewMessage {
     ViewportMouseMoved(iced::Point),
     RowRightClicked(String),
     DismissContextMenu,
+    ContextMenuSubmenuHover(Option<usize>),
     ContextMenuAction(ContextMenuAction, Track),
-    SortBy(SortColumn),
+    SortByKey(usize),
     SearchChanged(String),
     ColorThumbnailResult(String, Vec<u8>, u64),
 }
@@ -92,6 +140,7 @@ pub enum FavoritesViewOutMessage {
     RequestFrontEnqueue(Track),
     RequestPlayRadio(Track),
     RequestToggleLike(String),
+    RequestAddToPlaylist(String, String), // playlist_id, track_id
 }
 
 pub struct FavoritesView {
@@ -134,6 +183,14 @@ impl FavoritesView {
         self.filtered_indices
             .get(visible_idx)
             .and_then(|&idx| liked.get(idx).copied())
+    }
+
+    fn visible_tracks<'a>(&self, store: &'a CatalogStore) -> Vec<&'a Track> {
+        let liked = self.liked_tracks(store);
+        self.filtered_indices
+            .iter()
+            .filter_map(|&idx| liked.get(idx).copied())
+            .collect()
     }
 
     fn apply_search(&mut self, store: &CatalogStore) {
@@ -205,7 +262,7 @@ impl FavoritesView {
         }
     }
 
-    fn current_window(&self) -> VirtualWindow {
+    fn current_window(&self) -> crate::ui::utils::virtual_list::VirtualWindow {
         self.scroll.window(ROW_HEIGHT, self.visible_count(), BUFFER_ROWS)
     }
 
@@ -248,6 +305,19 @@ impl FavoritesView {
         self.request_visible_thumbnails(store, thumbnails)
     }
 
+    /// Reconstruye la lista de tracks en el orden filtrado actual como
+    /// `Vec<Track>` clonados, para armar el "contexto de reproducción"
+    /// (necesario porque a diferencia de Explorer, tocar cualquier track
+    /// en Favoritos reproduce la playlist completa desde ese punto, no
+    /// solo el track individual).
+    fn context_tracks(&self, store: &CatalogStore) -> Vec<Track> {
+        let liked = self.liked_tracks(store);
+        self.filtered_indices
+            .iter()
+            .filter_map(|&idx| liked.get(idx).map(|t| (*t).clone()))
+            .collect()
+    }
+
     pub fn update(
         &mut self,
         msg: FavoritesViewMessage,
@@ -261,7 +331,11 @@ impl FavoritesView {
                 (thumb_task, FavoritesViewOutMessage::Idle)
             }
 
-            FavoritesViewMessage::SortBy(column) => {
+            FavoritesViewMessage::SortByKey(key) => {
+                let Some(column) = SortColumn::from_sort_key(key) else {
+                    return (Task::none(), FavoritesViewOutMessage::Idle);
+                };
+
                 if self.sort_column == column {
                     if self.sort_click_stage >= 2 {
                         self.sort_column = DEFAULT_SORT_COLUMN;
@@ -289,7 +363,7 @@ impl FavoritesView {
                 let thumb_task = self.invalidate_and_reload_thumbnails(store, thumbnails);
 
                 let snap = snap_to(
-                    Id::new("favorites_catalog_scroll"),
+                    Id::new(SCROLLABLE_ID),
                     scrollable::RelativeOffset::START,
                 );
 
@@ -311,11 +385,7 @@ impl FavoritesView {
                 self.selected_track_id = Some(track.id.clone());
                 self.context_menu.dismiss();
 
-                let context_tracks: Vec<Track> = self.filtered_indices
-                    .iter()
-                    .filter_map(|&idx| self.liked_tracks(store).get(idx).map(|t| (*t).clone()))
-                    .collect();
-
+                let context_tracks = self.context_tracks(store);
                 let start_idx = context_tracks.iter().position(|t| t.id == track.id).unwrap_or(0);
 
                 (Task::none(), FavoritesViewOutMessage::RequestPlayContext(context_tracks, start_idx))
@@ -342,22 +412,32 @@ impl FavoritesView {
                 (Task::none(), FavoritesViewOutMessage::Idle)
             }
 
+            FavoritesViewMessage::ContextMenuSubmenuHover(id) => {
+                self.context_menu.set_open_submenu(id);
+                (Task::none(), FavoritesViewOutMessage::Idle)
+            }
+
             FavoritesViewMessage::ContextMenuAction(action, track) => {
                 self.context_menu.dismiss();
                 self.selected_track_id = Some(track.id.clone());
 
+                if action == ContextMenuAction::CopyId {
+                    return (clipboard::write(track.id.clone()), FavoritesViewOutMessage::Idle);
+                }
+
                 let out = match action {
                     ContextMenuAction::PlayNow => {
-                        let context_tracks: Vec<Track> = self.filtered_indices
-                            .iter()
-                            .filter_map(|&idx| self.liked_tracks(store).get(idx).map(|t| (*t).clone()))
-                            .collect();
+                        let context_tracks = self.context_tracks(store);
                         let start_idx = context_tracks.iter().position(|t| t.id == track.id).unwrap_or(0);
                         FavoritesViewOutMessage::RequestPlayContext(context_tracks, start_idx)
                     },
                     ContextMenuAction::AddToQueue => FavoritesViewOutMessage::RequestEnqueue(track),
                     ContextMenuAction::AddToFrontQueue => FavoritesViewOutMessage::RequestFrontEnqueue(track),
                     ContextMenuAction::StartRadio => FavoritesViewOutMessage::RequestPlayRadio(track),
+                    ContextMenuAction::AddToPlaylist(playlist_id) => {
+                        FavoritesViewOutMessage::RequestAddToPlaylist(playlist_id, track.id.clone())
+                    }
+                    ContextMenuAction::CopyId => unreachable!(),
                     ContextMenuAction::Unlike => FavoritesViewOutMessage::RequestToggleLike(track.id.clone()),
                 };
                 (Task::none(), out)
@@ -375,70 +455,113 @@ impl FavoritesView {
         }
     }
 
+    fn fields<'a>() -> FieldList<'a, FavoritesViewMessage> {
+        Field::index_sortable(40.0, SORT_KEY_DEFAULT_ORDER)
+            .thumbnail(THUMBNAIL_SIZE + 2.0, THUMBNAIL_SIZE)
+            .title(SORT_KEY_TITLE)
+            .artist(SORT_KEY_ARTIST)
+            .album(SORT_KEY_ALBUM)
+            .duration(SORT_KEY_DURATION)
+            .bpm(SORT_KEY_BPM)
+            .camelot_key(SORT_KEY_KEY)
+    }
+
     pub fn view<'a>(&'a self, store: &'a CatalogStore, thumbnails: &'a ThumbnailCache) -> Element<'a, FavoritesViewMessage> {
         let title = text("Me gusta")
             .size(28)
             .font(SF_PRO)
             .style(|_| text::Style { color: Some(Color::WHITE) });
 
-        let search_bar = text_input("Buscar en tus favoritos...", &self.search_query)
-            .font(SF_PRO)
-            .size(14)
-            .padding(Padding { top: 10.0, bottom: 10.0, left: 14.0, right: 14.0 })
-            .style(|theme, status| {
-                let mut style = text_input::default(theme, status);
-                style.border.radius = 8.0.into();
-                style
-            })
-            .on_input(FavoritesViewMessage::SearchChanged)
-            .width(Length::Fill);
+        let search_bar = catalog_search_input(
+            "Buscar en tus favoritos...",
+            &self.search_query,
+            FavoritesViewMessage::SearchChanged,
+        );
 
         let fixed_header = column![
             title,
             space().height(12),
             search_bar,
-            space().height(16),
-            self.render_table_header(),
         ];
 
         let body_content: Element<'_, FavoritesViewMessage> = if store.is_loading() {
-            container(text("Cargando catálogo desde microservicios...").font(SF_PRO).size(14))
-                .width(Length::Fill)
-                .padding(40)
-                .align_x(Alignment::Center)
-                .into()
+            catalog_status_message("Cargando catálogo desde microservicios...", StatusTone::Neutral)
         } else if let Some(err) = store.last_error() {
-            container(text(format!("Error de conexión: {}", err)).font(SF_PRO).size(14))
-                .width(Length::Fill)
-                .padding(40)
-                .align_x(Alignment::Center)
-                .style(|_| container::Style {
-                    text_color: Some(Color::from_rgb(0.9, 0.4, 0.4)),
-                    ..Default::default()
-                })
-                .into()
+            catalog_status_message(format!("Error de conexión: {}", err), StatusTone::Error)
         } else if self.liked_tracks(store).is_empty() {
-            container(text("Aún no has marcado ninguna canción con \"Me gusta\".").font(SF_PRO).size(14))
-                .width(Length::Fill)
-                .padding(40)
-                .align_x(Alignment::Center)
-                .style(|_| container::Style {
-                    text_color: Some(Color::from_rgb(0.6, 0.6, 0.65)),
-                    ..Default::default()
-                })
-                .into()
+            catalog_status_message("Aún no has marcado ninguna canción con \"Me gusta\".", StatusTone::Muted)
         } else if self.visible_count() == 0 {
-            container(text("No se encontraron pistas que coincidan con tu búsqueda.").font(SF_PRO).size(14))
-                .width(Length::Fill)
-                .padding(40)
-                .align_x(Alignment::Center)
-                .style(|_| container::Style {
-                    text_color: Some(Color::from_rgb(0.6, 0.6, 0.65)),
-                    ..Default::default()
-                })
-                .into()
+            catalog_status_message("No se encontraron pistas que coincidan con tu búsqueda.", StatusTone::Muted)
         } else {
-            self.render_virtual_body(store, thumbnails)
+            let tracks = self.visible_tracks(store);
+            let fields = Self::fields();
+
+            let config = TrackListConfig {
+                columns: fields.columns(),
+                active_sort_key: {
+                    let is_default_state = self.sort_column == DEFAULT_SORT_COLUMN
+                        && self.sort_direction == DEFAULT_SORT_DIRECTION
+                        && self.sort_click_stage == 1;
+                    (!is_default_state).then(|| self.sort_column.sort_key())
+                },
+                sort_direction_asc: self.sort_direction == SortDirection::Asc,
+                row_height: ROW_HEIGHT,
+                buffer_rows: BUFFER_ROWS,
+            };
+
+            let overlay = self.context_menu.render_target(|id| store.track_by_id(id)).map(|(anchor, track)| {
+                let playlist_children: Vec<ContextMenuItem<ContextMenuAction>> = store
+                    .playlists_metadata()
+                    .iter()
+                    .map(|(playlist_id, name, _)| {
+                        let icon = if store.is_track_in_playlist(playlist_id, &track.id) {
+                            ""
+                        } else {
+                            ""
+                        };
+                        ContextMenuItem::new(
+                            name.clone(),
+                            ContextMenuAction::AddToPlaylist(playlist_id.clone()),
+                        )
+                    })
+                    .collect();
+
+                self.context_menu.view(
+                    anchor,
+                    vec![
+                        ContextMenuItem::new("Reproducir ahora", ContextMenuAction::PlayNow).icon(Icon::Play),
+                        ContextMenuItem::new("Agregar a cola", ContextMenuAction::AddToQueue).icon(Icon::AddQueue),
+                        ContextMenuItem::new("Reproducir después", ContextMenuAction::AddToFrontQueue).icon(Icon::AddQueueFront),
+                        ContextMenuItem::new("Iniciar radio", ContextMenuAction::StartRadio).icon(Icon::Radio),
+                        ContextMenuItem::submenu("Agregar a playlist", SUBMENU_ADD_TO_PLAYLIST, playlist_children)
+                            .icon(Icon::Playlist),
+                        ContextMenuItem::new("Copiar id", ContextMenuAction::CopyId).icon(Icon::Copiar),
+                        ContextMenuItem::new("Quitar de Me gusta", ContextMenuAction::Unlike).icon(Icon::HeartBroken),
+                    ],
+                    track,
+                    FavoritesViewMessage::ContextMenuAction,
+                    FavoritesViewMessage::DismissContextMenu,
+                    FavoritesViewMessage::ContextMenuSubmenuHover,
+                )
+            });
+
+            track_list(
+                config,
+                &tracks,
+                &self.scroll,
+                thumbnails,
+                self.selected_track_id.as_deref(),
+                SCROLLABLE_ID,
+                TrackListCallbacks::new(
+                    FavoritesViewMessage::Scrolled,
+                    FavoritesViewMessage::PlayTrack,
+                    FavoritesViewMessage::SortByKey,
+                    FavoritesViewMessage::ViewportMouseMoved,
+                    FavoritesViewMessage::RowRightClicked,
+                ),
+                |track, idx| fields.row_cells(track, idx),
+                overlay,
+            )
         };
 
         column![
@@ -448,168 +571,5 @@ impl FavoritesView {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
-    }
-
-    fn render_table_header(&self) -> Element<'_, FavoritesViewMessage> {
-        let is_default_state = self.sort_column == DEFAULT_SORT_COLUMN
-            && self.sort_direction == DEFAULT_SORT_DIRECTION
-            && self.sort_click_stage == 1;
-
-        let header_cell = |label: &'static str, col: SortColumn, width: Length| -> Element<'_, FavoritesViewMessage> {
-            let is_active = self.sort_column == col && !is_default_state;
-            let arrow = if is_active {
-                match self.sort_direction {
-                    SortDirection::Asc => " ",
-                    SortDirection::Desc => " ",
-                }
-            } else {
-                ""
-            };
-
-            let color = if is_active {
-                Color::from_rgb(0.74, 0.58, 0.98)
-            } else {
-                Color::from_rgb(0.5, 0.5, 0.55)
-            };
-
-            button(
-                text(format!("{}{}", label, arrow))
-                    .font(SF_PRO)
-                    .size(10.5)
-                    .style(move |_| text::Style { color: Some(color) }),
-            )
-                .style(minimal_button)
-                .width(width)
-                .padding(0)
-                .on_press(FavoritesViewMessage::SortBy(col))
-                .into()
-        };
-
-        row![
-            header_cell("#", SortColumn::DefaultOrder, Length::Fixed(40.0)),
-            container(space()).width(Length::Fixed(THUMBNAIL_SIZE + 2.0)),
-            header_cell("TÍTULO", SortColumn::Title, Length::FillPortion(3)),
-            header_cell("ARTISTA", SortColumn::Artist, Length::FillPortion(2)),
-            header_cell("ÁLBUM", SortColumn::Album, Length::FillPortion(2)),
-            header_cell("DURACIÓN", SortColumn::Duration, Length::Fixed(70.0)),
-            header_cell("BPM", SortColumn::Bpm, Length::Fixed(42.0)),
-            header_cell("KEY", SortColumn::Key, Length::Fixed(42.0)),
-        ]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .padding(Padding { top: 4.0, bottom: 4.0, left: 10.0, right: 16.0 })
-            .into()
-    }
-
-    fn render_row<'a>(
-        &self,
-        index: usize,
-        track: &'a Track,
-        thumbnail: Option<Handle>,
-        is_selected: bool,
-    ) -> Element<'a, FavoritesViewMessage> {
-        let mins = track.duration_seconds / 60;
-        let secs = track.duration_seconds % 60;
-
-        let row_content = row![
-            container(text(index.to_string()).font(SF_PRO).size(12).color(Color::from_rgb(0.45, 0.45, 0.5)))
-                .width(Length::Fixed(40.0)),
-            container(track_thumbnail_sized(thumbnail, THUMBNAIL_SIZE))
-                .width(Length::Fixed(THUMBNAIL_SIZE + 2.0)),
-            container(text(&track.title).font(SF_PRO).size(14.5).color(Color::WHITE))
-                .width(Length::FillPortion(3)),
-            container(text(track.format_artists()).font(SF_PRO).size(12.5).color(Color::from_rgb(0.7, 0.7, 0.75)))
-                .width(Length::FillPortion(2)),
-            container(text(track.album.as_ref().map(|a| a.name.as_str()).unwrap_or("-")).font(SF_PRO).size(12.5).color(Color::from_rgb(0.6, 0.6, 0.65)))
-                .width(Length::FillPortion(2)),
-
-            container(text(format!("{:02}:{:02}", mins, secs)).font(SF_PRO).size(12.5).color(Color::from_rgb(0.6, 0.6, 0.65)))
-                .width(Length::Fixed(60.0)),
-
-            container(text(track.bpm.map(|b| b.to_string()).unwrap_or_else(|| "-".into())).font(SF_PRO).size(12.5).color(Color::from_rgb(0.65, 0.65, 0.7)))
-                .width(Length::Fixed(42.0)),
-            container(text(track.camelot_key.as_deref().unwrap_or("-")).font(SF_PRO).size(12.5).color(Color::from_rgb(0.74, 0.58, 0.98)))
-                .width(Length::Fixed(42.0)),
-        ]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .padding(Padding { top: 0.0, bottom: 0.0, left: 10.0, right: 16.0 });
-
-        let track_clone = track.clone();
-        let track_id = track.id.clone();
-
-        let btn = button(row_content)
-            .width(Length::Fill)
-            .height(Length::Fixed(ROW_HEIGHT))
-            .style(transparent_button)
-            .on_press(FavoritesViewMessage::PlayTrack(track_clone));
-
-        let styled_container = container(btn)
-            .width(Length::Fill)
-            .height(Length::Fixed(ROW_HEIGHT))
-            .align_y(Alignment::Center)
-            .style(selected_row_container(is_selected));
-
-        mouse_area(styled_container)
-            .on_right_press(FavoritesViewMessage::RowRightClicked(track_id))
-            .into()
-    }
-
-    fn render_virtual_body<'a>(
-        &'a self,
-        store: &'a CatalogStore,
-        thumbnails: &'a ThumbnailCache,
-    ) -> Element<'a, FavoritesViewMessage> {
-        let window = self.current_window();
-
-        let mut rows = column![].width(Length::Fill);
-        rows = rows.push(space().height(window.top_spacer_height(ROW_HEIGHT)));
-
-        for visible_idx in window.start..window.end {
-            if let Some(track) = self.track_at(store, visible_idx) {
-                let handle = thumbnails.peek_for_render(track);
-                let is_selected = self.selected_track_id.as_deref() == Some(track.id.as_str());
-                rows = rows.push(self.render_row(visible_idx + 1, track, handle, is_selected));
-            }
-        }
-
-        rows = rows.push(space().height(window.bottom_spacer_height(ROW_HEIGHT, self.visible_count())));
-
-        let scroll_area: Element<'_, FavoritesViewMessage> = scrollable(rows)
-            .id(Id::new("favorites_catalog_scroll"))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .on_scroll(FavoritesViewMessage::Scrolled)
-            .into();
-
-        let scroll_area: Element<'_, FavoritesViewMessage> = mouse_area(scroll_area)
-            .on_move(FavoritesViewMessage::ViewportMouseMoved)
-            .into();
-
-        let mut layers = stack![scroll_area];
-
-        if let Some((anchor, track)) = self.context_menu.render_target(|id| store.track_by_id(id)) {
-            let menu = self.context_menu.view(
-                anchor,
-                vec![
-                    ContextMenuItem::new("Reproducir ahora", ContextMenuAction::PlayNow)
-                        .icon(""),
-                    ContextMenuItem::new("Agregar a cola", ContextMenuAction::AddToQueue)
-                        .icon(""),
-                    ContextMenuItem::new("Reproducir después", ContextMenuAction::AddToFrontQueue)
-                        .icon("󰐒"),
-                    ContextMenuItem::new("Iniciar radio", ContextMenuAction::StartRadio)
-                        .icon("󰐹"),
-                    ContextMenuItem::new("Quitar de Me gusta", ContextMenuAction::Unlike)
-                        .icon("\u{f004}"),
-                ],
-                track,
-                FavoritesViewMessage::ContextMenuAction,
-                FavoritesViewMessage::DismissContextMenu,
-            );
-            layers = layers.push(menu);
-        }
-
-        layers.into()
     }
 }

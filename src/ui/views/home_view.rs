@@ -1,14 +1,15 @@
-use iced::{Element, Font, Task};
+use std::convert::Into;
+use iced::{Element, Task};
 use iced::widget::container;
 
 use crate::JETBRAINS_MONO;
+use crate::ui::assets::icons::Icon;
 use crate::ui::views::view_data::{NavId, ViewData};
 
-pub const SF_PRO: Font = Font::with_name("SF Pro Display");
 
 pub const VIEW_DATA: ViewData = ViewData::new(
     NavId::Home,
-    "\u{f015}",
+    Icon::Home,
     "Home",
     JETBRAINS_MONO,
 );
@@ -17,6 +18,7 @@ pub const VIEW_DATA: ViewData = ViewData::new(
 pub enum HomeViewMessage {}
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum HomeViewOutMessage {
     Idle,
 }
