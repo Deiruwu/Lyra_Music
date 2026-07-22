@@ -222,7 +222,7 @@ impl CatalogStore {
         self.all_tracks[idx].liked = new_value;
 
         if new_value {
-            self.liked_order.insert(0, track_id.to_string());
+            self.liked_order.push(track_id.to_string());
         } else {
             self.liked_order.retain(|id| id != track_id);
         }

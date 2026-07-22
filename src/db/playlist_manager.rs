@@ -98,10 +98,19 @@ impl PlaylistManager {
 
     pub async fn like_track(&self, track_id: &str) -> Result<(), sqlx::Error> {
         sqlx::query!(
-            r#"INSERT OR IGNORE INTO playlist_track (playlist_id, track_id, position)
-               VALUES (?, ?, NULL)"#,
+            r#"
+            INSERT OR IGNORE INTO playlist_track (playlist_id, track_id, position)
+            VALUES (
+                ?,
+                ?,
+                (SELECT COALESCE(MAX(position), 0.0) + 1024.0
+                 FROM playlist_track
+                 WHERE playlist_id = ?)
+            )
+            "#,
             self.system_playlist_id,
-            track_id
+            track_id,
+            self.system_playlist_id
         )
             .execute(&self.pool)
             .await?;
@@ -199,21 +208,12 @@ impl PlaylistManager {
     }
 
     pub async fn get_playlist_track_ids(&self, playlist_id: &str) -> Result<Vec<String>, sqlx::Error> {
-        let ids = if playlist_id == self.system_playlist_id {
-            sqlx::query_scalar!(
-                r#"SELECT track_id FROM playlist_track WHERE playlist_id = ? ORDER BY added_at DESC"#,
-                playlist_id
-            )
-                .fetch_all(&self.pool)
-                .await?
-        } else {
-            sqlx::query_scalar!(
-                r#"SELECT track_id FROM playlist_track WHERE playlist_id = ? ORDER BY position ASC"#,
-                playlist_id
-            )
-                .fetch_all(&self.pool)
-                .await?
-        };
+        let ids = sqlx::query_scalar!(
+            r#"SELECT track_id FROM playlist_track WHERE playlist_id = ? ORDER BY position ASC"#,
+            playlist_id
+        )
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(ids)
     }

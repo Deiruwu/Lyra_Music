@@ -14,6 +14,11 @@ pub(crate) const ROW_HEIGHT: f32 = 66.0;
 pub(crate) const ROW_SPACING: f32 = 4.0;
 pub(crate) const ROW_STRIDE: f32 = ROW_HEIGHT + ROW_SPACING;
 
+pub(crate) const QUEUE_COLLAPSED_WIDTH: f32 = 0.0;
+pub(crate) const QUEUE_EXPANDED_WIDTH: f32 = 450.0;
+const ANIMATION_SPEED: f32 = 12.0;
+const SNAP_EPSILON: f32 = 0.5;
+
 #[derive(Debug, Clone)]
 pub enum QueueMessage {
     Toggle,
@@ -51,6 +56,8 @@ struct DragState {
 
 pub struct QueuePanel {
     pub show: bool,
+    pub queue_width: f32,
+    pub target_width: f32,
     queue: Vec<Arc<Track>>,
     hovered_row: Option<usize>,
     hovered_delete: Option<usize>,
@@ -63,6 +70,8 @@ impl Default for QueuePanel {
     fn default() -> Self {
         Self {
             show: false,
+            queue_width: QUEUE_COLLAPSED_WIDTH,
+            target_width: QUEUE_COLLAPSED_WIDTH,
             queue: Vec::new(),
             hovered_row: None,
             hovered_delete: None,
@@ -79,6 +88,10 @@ impl QueuePanel {
         self.animator.is_animating(now)
     }
 
+    pub fn is_animating_width(&self) -> bool {
+        (self.queue_width - self.target_width).abs() > SNAP_EPSILON
+    }
+
     fn track_id_of(track: &Track) -> String {
         track.id.to_string()
     }
@@ -87,6 +100,7 @@ impl QueuePanel {
         match msg {
             QueueMessage::Toggle => {
                 self.show = !self.show;
+                self.target_width = if self.show { QUEUE_EXPANDED_WIDTH } else { QUEUE_COLLAPSED_WIDTH };
                 (Task::none(), QueueOutMessage::Idle)
             }
             QueueMessage::Hovered(index) => {
@@ -193,13 +207,20 @@ impl QueuePanel {
             }
 
             QueueMessage::AnimationFrame(_now) => {
+                // Interpolar ancho de panel en el frame
+                let delta = self.target_width - self.queue_width;
+                if delta.abs() <= SNAP_EPSILON {
+                    self.queue_width = self.target_width;
+                } else {
+                    self.queue_width += delta * (ANIMATION_SPEED / 60.0).min(1.0);
+                }
                 (Task::none(), QueueOutMessage::Idle)
             }
         }
     }
 
     pub fn view(&self, cache: &ThumbnailCache, downloading_track_id: Option<&str>) -> Element<'_, QueueMessage> {
-        if !self.show {
+        if self.queue_width == 0.0 {
             return space().into();
         }
 
@@ -293,12 +314,17 @@ impl QueuePanel {
 
         let content_stack = stack(layers).height(Length::Fixed(list_height));
 
+        // FIX: Se añade on_exit para limpiar el estado al abandonar el panel
         let interactive_area = iced::widget::mouse_area(content_stack)
-            .on_move(|point| QueueMessage::CursorMoved(point.y));
+            .on_move(|point| QueueMessage::CursorMoved(point.y))
+            .on_exit(QueueMessage::Unhovered);
+
+        // Escalamos el padding dinámicamente para que no corte el contenedor durante el resize
+        let dynamic_padding = if self.queue_width > 32.0 { 16.0 } else { self.queue_width / 2.0 };
 
         container(scrollable(interactive_area).height(Length::Fill))
-            .padding(16)
-            .width(Length::Fixed(450.0))
+            .padding(dynamic_padding)
+            .width(Length::Fixed(self.queue_width)) // El ancho es gobernado por la animación
             .height(Length::Fill)
             .style(|_theme: &iced::Theme| container::Style {
                 background: Some(iced::Color::from_rgb(0.12, 0.12, 0.12).into()),
@@ -325,6 +351,7 @@ impl QueuePanel {
         self.queue = queue;
         if self.queue.is_empty() {
             self.show = false;
+            self.target_width = QUEUE_COLLAPSED_WIDTH;
             self.animator.clear();
             return;
         }

@@ -284,29 +284,31 @@ impl App {
                 ..Default::default()
             });
 
-        let queue_layer = container(
+        // La Queue ahora es un contenedor directo, desprovisto de alineación absoluta
+        let queue_view = container(
             self.playback_feature.view_queue(&self.player_thumbnails).map(AppMessage::PlaybackFeature)
-        )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(iced::alignment::Horizontal::Right)
-            .padding(Padding {
-                top: 10.0,
-                right: 20.0,
-                bottom: 10.0,
-                left: 0.0,
-            });
+        );
 
+        // Añadimos la Queue al final de la fila. Al expandirse, empujará naturalmente a center_view.
         let content_layer = row![
             self.sidebar_feature.view_sidebar().map(AppMessage::SidebarFeature),
             space().width(15),
             center_view,
             space().width(15),
+            queue_view
         ]
             .width(Length::Fill)
-            .height(Length::Fill);
+            .height(Length::Fill)
+            // Ajustamos el padding general para no pegarnos a los bordes de la ventana
+            .padding(Padding {
+                top: 10.0,
+                right: 15.0,
+                bottom: 10.0,
+                left: 0.0,
+            });
 
-        let layout_stack = stack![content_layer, queue_layer];
+        // El stack central ahora solo tiene la capa base de layouts (sin overlay de queue)
+        let layout_stack = stack![content_layer];
 
         let is_current_liked = self.playback_feature.current_track_id()
             .and_then(|id| self.sidebar_feature.catalog_store.track_by_id(id))
@@ -340,7 +342,6 @@ impl App {
         ]
             .into()
     }
-
     pub fn subscription(&self) -> iced::Subscription<AppMessage> {
         let search_sub   = self.search_feature.subscription().map(AppMessage::SearchFeature);
         let playback_sub = self.playback_feature.subscription(self.is_theater_mode).map(AppMessage::PlaybackFeature);

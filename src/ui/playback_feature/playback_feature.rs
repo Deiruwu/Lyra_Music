@@ -97,7 +97,8 @@ impl PlaybackFeature {
             global_release,
         ];
 
-        if self.queue.is_animating() {
+        // AQUÍ ESTÁ EL CAMBIO CLAVE: Agregamos la condición de la animación de ancho
+        if self.queue.is_animating() || self.queue.is_animating_width() {
             subs.push(
                 iced::window::frames()
                     .map(|instant| PlaybackFeatureMessage::Queue(QueueMessage::AnimationFrame(instant))),
