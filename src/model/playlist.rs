@@ -21,11 +21,3 @@ pub struct Playlist {
     #[serde(default)]
     pub cover_url: Option<String>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlaylistTrackRef {
-    pub playlist_id: String,
-    pub track_id: String,
-    pub position: Option<f64>,
-    pub added_at: NaiveDateTime,
-}

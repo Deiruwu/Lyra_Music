@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use iced::{Alignment, Color, Element, Font, Length, Padding, Point, Size, Task};
+use iced::keyboard::Modifiers;
 use iced::widget::{button, column, container, row, scrollable, space, stack, text, text_input};
 
 use crate::JETBRAINS_MONO;
@@ -51,6 +52,9 @@ pub enum PlaylistContextAction {
 pub enum SidebarFeatureMessage {
     ToggleExpanded,
     AnimationTick,
+    /// Propaga el estado de Shift/Ctrl/Cmd a la vista activa para selección
+    /// múltiple (range-select con Shift, toggle con Ctrl/Cmd).
+    ModifiersChanged(Modifiers),
     SelectNav(NavId),
     SelectPlaylist(String),
     CreatePlaylistRequested,
@@ -150,12 +154,33 @@ impl SidebarFeature {
     }
 
     pub fn subscription(&self) -> iced::Subscription<SidebarFeatureMessage> {
-        if (self.sidebar_width - self.target_width).abs() > SNAP_EPSILON {
+        let animation_sub = if (self.sidebar_width - self.target_width).abs() > SNAP_EPSILON {
             iced::time::every(std::time::Duration::from_millis(16))
                 .map(|_| SidebarFeatureMessage::AnimationTick)
         } else {
             iced::Subscription::none()
-        }
+        };
+
+        // Necesaria para que RowClicked en ExplorerView/FavoritesView/PlaylistsView
+        // sepa si Shift/Ctrl/Cmd están presionados (selección múltiple).
+        // Se usa el listener genérico de eventos (en vez de keyboard::on_key_press,
+        // que no existe en esta versión de iced) y se filtra KeyPressed/KeyReleased;
+        // ambos actualizan el mismo estado para que soltar Shift no deje el
+        // range-select "pegado".
+        let modifiers_sub = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { modifiers, .. }) => {
+                Some(SidebarFeatureMessage::ModifiersChanged(modifiers))
+            }
+            iced::Event::Keyboard(iced::keyboard::Event::KeyReleased { modifiers, .. }) => {
+                Some(SidebarFeatureMessage::ModifiersChanged(modifiers))
+            }
+            iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
+                Some(SidebarFeatureMessage::ModifiersChanged(modifiers))
+            }
+            _ => None,
+        });
+
+        iced::Subscription::batch(vec![animation_sub, modifiers_sub])
     }
 
     pub fn update(
@@ -178,6 +203,34 @@ impl SidebarFeature {
                     self.sidebar_width += delta * (ANIMATION_SPEED / 60.0).min(1.0);
                 }
                 (Task::none(), SidebarFeatureOutMessage::Idle)
+            }
+
+            SidebarFeatureMessage::ModifiersChanged(modifiers) => {
+                // Se propaga a las tres vistas (no solo a la activa): son baratas
+                // de actualizar y así evitamos estado obsoleto si el usuario
+                // suelta Shift mientras cambia de vista.
+                let (explorer_task, _out) = self.explorer_view.update(
+                    ExplorerViewMessage::ModifiersChanged(modifiers),
+                    &self.catalog_store,
+                    thumbnails,
+                );
+                let (favorites_task, _out) = self.favorites_view.update(
+                    FavoritesViewMessage::ModifiersChanged(modifiers),
+                    &self.catalog_store,
+                    thumbnails,
+                );
+                let (playlists_task, _out) = self.playlists_view.update(
+                    PlaylistsViewMessage::ModifiersChanged(modifiers),
+                    &self.catalog_store,
+                    thumbnails,
+                );
+
+                let task = Task::batch(vec![
+                    explorer_task.map(SidebarFeatureMessage::Explorer),
+                    favorites_task.map(SidebarFeatureMessage::Favorites),
+                    playlists_task.map(SidebarFeatureMessage::Playlists),
+                ]);
+                (task, SidebarFeatureOutMessage::Idle)
             }
 
             SidebarFeatureMessage::SelectNav(nav_id) => {
@@ -355,15 +408,23 @@ impl SidebarFeature {
                 let mut extra_tasks = vec![task.map(SidebarFeatureMessage::Explorer)];
 
                 match out_msg {
-                    ExplorerViewOutMessage::RequestPlay(track) => {
-                        self.manager.play_now(track);
+                    ExplorerViewOutMessage::RequestPlay(tracks) => {
+                        if let Some(first) = tracks.into_iter().next() {
+                            self.manager.play_now(first);
+                        }
                     }
-                    ExplorerViewOutMessage::RequestEnqueue(track) => {
-                        self.manager.enqueue(track);
+                    ExplorerViewOutMessage::RequestEnqueue(tracks) => {
+                        for track in tracks {
+                            self.manager.enqueue(track);
+                        }
                     }
 
-                    ExplorerViewOutMessage::RequestFrontEnqueue(track) => {
-                        self.manager.enqueue_front(track);
+                    ExplorerViewOutMessage::RequestFrontEnqueue(tracks) => {
+                        // Orden inverso para que, tras encolar uno por uno al frente,
+                        // el primer track seleccionado quede efectivamente primero.
+                        for track in tracks.into_iter().rev() {
+                            self.manager.enqueue_front(track);
+                        }
                     }
 
                     ExplorerViewOutMessage::RequestPlayRadio(track) => {
@@ -371,18 +432,24 @@ impl SidebarFeature {
                         self.manager.clear_queue().unwrap();
                     }
 
-                    ExplorerViewOutMessage::RequestDelete(track_id) => {
-                        self.catalog_store.delete_track(&track_id)
+                    ExplorerViewOutMessage::RequestDelete(track_ids) => {
+                        for track_id in &track_ids {
+                            self.catalog_store.delete_track(track_id);
+                        }
                     }
 
-                    ExplorerViewOutMessage::RequestToggleLike(track_id) => {
-                        let like_task = self.catalog_store.toggle_like(&track_id);
-                        extra_tasks.push(like_task.map(SidebarFeatureMessage::Catalog));
+                    ExplorerViewOutMessage::RequestToggleLike(track_ids) => {
+                        for track_id in track_ids {
+                            let like_task = self.catalog_store.toggle_like(&track_id);
+                            extra_tasks.push(like_task.map(SidebarFeatureMessage::Catalog));
+                        }
                     }
 
-                    ExplorerViewOutMessage::RequestAddToPlaylist(playlist_id, track_id) => {
-                        let add_task = self.catalog_store.add_track_to_playlist(&playlist_id, &track_id);
-                        extra_tasks.push(add_task.map(SidebarFeatureMessage::Catalog));
+                    ExplorerViewOutMessage::RequestAddToPlaylist(playlist_id, track_ids) => {
+                        for track_id in track_ids {
+                            let add_task = self.catalog_store.add_track_to_playlist(&playlist_id, &track_id);
+                            extra_tasks.push(add_task.map(SidebarFeatureMessage::Catalog));
+                        }
                     }
 
                     ExplorerViewOutMessage::Idle => {}
@@ -399,23 +466,34 @@ impl SidebarFeature {
                     FavoritesViewOutMessage::RequestPlayContext(tracks, context_id) => {
                         self.manager.play_context(tracks, context_id);
                     }
-                    FavoritesViewOutMessage::RequestEnqueue(track) => {
-                        self.manager.enqueue(track);
+                    FavoritesViewOutMessage::RequestEnqueue(tracks) => {
+                        for track in tracks {
+                            self.manager.enqueue(track);
+                        }
                     }
-                    FavoritesViewOutMessage::RequestFrontEnqueue(track) => {
-                        self.manager.enqueue_front(track);
+                    FavoritesViewOutMessage::RequestFrontEnqueue(tracks) => {
+                        // Se insertan en orden inverso para que, tras encolar todos
+                        // al frente uno por uno, el primer track seleccionado quede
+                        // efectivamente primero en la cola (mismo criterio que Explorer).
+                        for track in tracks.into_iter().rev() {
+                            self.manager.enqueue_front(track);
+                        }
                     }
                     FavoritesViewOutMessage::RequestPlayRadio(track) => {
                         self.manager.play_now(track);
                         self.manager.clear_queue().unwrap();
                     }
-                    FavoritesViewOutMessage::RequestToggleLike(track_id) => {
-                        let like_task = self.catalog_store.toggle_like(&track_id);
-                        extra_tasks.push(like_task.map(SidebarFeatureMessage::Catalog));
+                    FavoritesViewOutMessage::RequestToggleLike(track_ids) => {
+                        for track_id in track_ids {
+                            let like_task = self.catalog_store.toggle_like(&track_id);
+                            extra_tasks.push(like_task.map(SidebarFeatureMessage::Catalog));
+                        }
                     }
-                    FavoritesViewOutMessage::RequestAddToPlaylist(playlist_id, track_id) => {
-                        let add_task = self.catalog_store.add_track_to_playlist(&playlist_id, &track_id);
-                        extra_tasks.push(add_task.map(SidebarFeatureMessage::Catalog));
+                    FavoritesViewOutMessage::RequestAddToPlaylist(playlist_id, track_ids) => {
+                        for track_id in track_ids {
+                            let add_task = self.catalog_store.add_track_to_playlist(&playlist_id, &track_id);
+                            extra_tasks.push(add_task.map(SidebarFeatureMessage::Catalog));
+                        }
                     }
                     FavoritesViewOutMessage::Idle => {}
                 }
@@ -436,27 +514,39 @@ impl SidebarFeature {
                     PlaylistsViewOutMessage::RequestPlayContext(tracks, context_id) => {
                         self.manager.play_context(tracks, context_id);
                     }
-                    PlaylistsViewOutMessage::RequestEnqueue(track) => {
-                        self.manager.enqueue(track);
+                    PlaylistsViewOutMessage::RequestEnqueue(tracks) => {
+                        for track in tracks {
+                            self.manager.enqueue(track);
+                        }
                     }
-                    PlaylistsViewOutMessage::RequestFrontEnqueue(track) => {
-                        self.manager.enqueue_front(track);
+                    PlaylistsViewOutMessage::RequestFrontEnqueue(tracks) => {
+                        // Ver comentario equivalente en el handler de Favorites: orden
+                        // inverso para preservar el orden de selección al frente de la cola.
+                        for track in tracks.into_iter().rev() {
+                            self.manager.enqueue_front(track);
+                        }
                     }
                     PlaylistsViewOutMessage::RequestPlayRadio(track) => {
                         self.manager.play_now(track);
                         self.manager.clear_queue().unwrap();
                     }
-                    PlaylistsViewOutMessage::RequestRemoveFromPlaylist(playlist_id, track_id) => {
-                        let remove_task = self.catalog_store.remove_track_from_playlist(&playlist_id, &track_id);
-                        extra_tasks.push(remove_task.map(SidebarFeatureMessage::Catalog));
+                    PlaylistsViewOutMessage::RequestRemoveFromPlaylist(playlist_id, track_ids) => {
+                        for track_id in track_ids {
+                            let remove_task = self.catalog_store.remove_track_from_playlist(&playlist_id, &track_id);
+                            extra_tasks.push(remove_task.map(SidebarFeatureMessage::Catalog));
+                        }
                     }
-                    PlaylistsViewOutMessage::RequestToggleLike(track_id) => {
-                        let like_task = self.catalog_store.toggle_like(&track_id);
-                        extra_tasks.push(like_task.map(SidebarFeatureMessage::Catalog));
+                    PlaylistsViewOutMessage::RequestToggleLike(track_ids) => {
+                        for track_id in track_ids {
+                            let like_task = self.catalog_store.toggle_like(&track_id);
+                            extra_tasks.push(like_task.map(SidebarFeatureMessage::Catalog));
+                        }
                     }
-                    PlaylistsViewOutMessage::RequestAddToPlaylist(playlist_id, track_id) => {
-                        let add_task = self.catalog_store.add_track_to_playlist(&playlist_id, &track_id);
-                        extra_tasks.push(add_task.map(SidebarFeatureMessage::Catalog));
+                    PlaylistsViewOutMessage::RequestAddToPlaylist(playlist_id, track_ids) => {
+                        for track_id in track_ids {
+                            let add_task = self.catalog_store.add_track_to_playlist(&playlist_id, &track_id);
+                            extra_tasks.push(add_task.map(SidebarFeatureMessage::Catalog));
+                        }
                     }
                     PlaylistsViewOutMessage::CreatePlaylistRequested => {
                         self.new_playlist_input = Some(String::new());

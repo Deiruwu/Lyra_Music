@@ -45,7 +45,7 @@ use crate::ui::styles::styles::{context_menu_container, context_menu_item};
 
 #[derive(Clone)]
 pub struct ConfirmDialog<Item> {
-    pending: Option<(Item, &'static str)>,
+    pending: Option<(Item, String)>, // Cambiado de &'static str a String
 }
 
 impl<Item> Default for ConfirmDialog<Item> {
@@ -59,8 +59,8 @@ impl<Item: Clone> ConfirmDialog<Item> {
         Self { pending: None }
     }
 
-    pub fn request(&mut self, item: Item, prompt: &'static str) {
-        self.pending = Some((item, prompt));
+    pub fn request(&mut self, item: Item, prompt: impl Into<String>) {
+        self.pending = Some((item, prompt.into()));
     }
 
     pub fn cancel(&mut self) {
@@ -84,7 +84,7 @@ impl<Item: Clone> ConfirmDialog<Item> {
     ) -> Option<Element<'a, Msg>> {
         let (_, prompt) = self.pending.as_ref()?;
 
-        let prompt_text = text(*prompt)
+        let prompt_text = text(prompt.clone())
             .font(SF_PRO)
             .size(14)
             .color(Color::WHITE);

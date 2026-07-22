@@ -9,3 +9,4 @@ pub mod track_fields;
 pub mod catalog_status_message;
 pub mod catalog_search_input;
 pub mod views;
+pub mod selection_state;

@@ -1,10 +1,14 @@
 use std::collections::HashSet;
+use std::time::Instant;
 
 use iced::{Color, Element, Font, Length, Task};
+use iced::keyboard::Modifiers;
 use iced::widget::scrollable::Viewport;
 use iced::widget::{column, space, text, Id};
 use iced::widget::operation::snap_to;
 use iced::widget::scrollable;
+use iced::clipboard;
+
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
@@ -13,7 +17,6 @@ use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuItem};
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
-use iced::clipboard;
 use crate::ui::assets::icons::Icon;
 use crate::ui::widgets::track_list::{track_list, TrackListCallbacks, TrackListConfig};
 use crate::ui::widgets::track_fields::{Field, FieldList};
@@ -24,6 +27,7 @@ use crate::ui::widgets::views::track_sort;
 use crate::ui::widgets::views::catalog_filter;
 use crate::ui::widgets::views::track_context_menu::{self, LikeSlot};
 use crate::impl_sortable_column;
+use crate::ui::widgets::selection_state::SelectionState;
 
 pub const SF_PRO: Font = Font::with_name("SF Pro Display");
 
@@ -87,40 +91,44 @@ pub enum ContextMenuAction {
 pub enum ExplorerViewMessage {
     CatalogUpdated,
     Scrolled(Viewport),
-    PlayTrack(Track),
-    RowSelected(String),
+    RowClicked(Track, usize),
     ViewportMouseMoved(iced::Point),
     RowRightClicked(String),
     DismissContextMenu,
     ContextMenuSubmenuHover(Option<usize>),
-    ContextMenuAction(ContextMenuAction, Track),
+    ContextMenuAction(ContextMenuAction, Track), // Recibe el "anchor" donde se abrió el menú
     ConfirmDialogConfirm,
     ConfirmDialogCancel,
     SortByKey(usize),
     SearchChanged(String),
     ColorThumbnailResult(String, Vec<u8>, u64),
     GrayThumbnailResult(String, Vec<u8>, u64),
+    ModifiersChanged(Modifiers), // Necesario para recibir si Shift/Ctrl están presionados
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExplorerViewOutMessage {
     Idle,
-    RequestPlay(Track),
-    RequestEnqueue(Track),
-    RequestFrontEnqueue(Track),
-    RequestPlayRadio(Track),
-    RequestDelete(String),
-    RequestToggleLike(String),
-    RequestAddToPlaylist(String, String),
+    RequestPlay(Vec<Track>),
+    RequestEnqueue(Vec<Track>),
+    RequestFrontEnqueue(Vec<Track>),
+    RequestPlayRadio(Track), // La radio usualmente se inicia con una semilla
+    RequestDelete(Vec<String>),
+    RequestToggleLike(Vec<String>),
+    RequestAddToPlaylist(String, Vec<String>),
 }
 
 pub struct ExplorerView {
     search_query: String,
     filtered_indices: Vec<usize>,
     sort: SortState<SortColumn>,
-    selected_track_id: Option<String>,
+
+    selection: SelectionState,
+    last_click: Option<(String, Instant)>,
+    pub current_modifiers: Modifiers,
+
     context_menu: ContextMenu<String>,
-    confirm_dialog: ConfirmDialog<Track>,
+    confirm_dialog: ConfirmDialog<Vec<Track>>, // Mutado a Vec<Track> para deletes masivos
     scroll: ScrollTracker,
     epoch: u64,
 }
@@ -131,7 +139,9 @@ impl ExplorerView {
             search_query: String::new(),
             filtered_indices: Vec::new(),
             sort: SortState::new(),
-            selected_track_id: None,
+            selection: SelectionState::new(),
+            last_click: None,
+            current_modifiers: Modifiers::default(),
             context_menu: ContextMenu::new(),
             confirm_dialog: ConfirmDialog::new(),
             scroll: ScrollTracker::default(),
@@ -153,6 +163,17 @@ impl ExplorerView {
         self.filtered_indices
             .iter()
             .filter_map(|&idx| store.all_tracks().get(idx))
+            .collect()
+    }
+
+    /// Recupera los Tracks reales seleccionados manteniendo el orden del filtro actual (vital para Enqueue masivo)
+    fn get_selected_tracks(&self, store: &CatalogStore) -> Vec<Track> {
+        let all = store.all_tracks();
+        self.filtered_indices
+            .iter()
+            .filter_map(|&idx| all.get(idx))
+            .filter(|t| self.selection.is_selected(&t.id))
+            .cloned()
             .collect()
     }
 
@@ -229,6 +250,11 @@ impl ExplorerView {
         thumbnails: &mut ThumbnailCache,
     ) -> (Task<ExplorerViewMessage>, ExplorerViewOutMessage) {
         match msg {
+            ExplorerViewMessage::ModifiersChanged(modifiers) => {
+                self.current_modifiers = modifiers;
+                (Task::none(), ExplorerViewOutMessage::Idle)
+            }
+
             ExplorerViewMessage::CatalogUpdated => {
                 self.apply_sort(store);
                 let thumb_task = self.invalidate_and_reload_thumbnails(store, thumbnails);
@@ -240,6 +266,7 @@ impl ExplorerView {
                     return (Task::none(), ExplorerViewOutMessage::Idle);
                 }
 
+                self.selection.clear(); // Limpiamos para evitar Shift+Clicks inválidos
                 self.apply_sort(store);
                 let thumb_task = self.invalidate_and_reload_thumbnails(store, thumbnails);
                 (thumb_task, ExplorerViewOutMessage::Idle)
@@ -247,6 +274,7 @@ impl ExplorerView {
 
             ExplorerViewMessage::SearchChanged(query) => {
                 self.search_query = query;
+                self.selection.clear();
                 self.apply_sort(store);
                 self.scroll.reset();
                 let thumb_task = self.invalidate_and_reload_thumbnails(store, thumbnails);
@@ -268,14 +296,33 @@ impl ExplorerView {
                 (thumb_task, ExplorerViewOutMessage::Idle)
             }
 
-            ExplorerViewMessage::PlayTrack(track) => {
-                self.selected_track_id = Some(track.id.clone());
-                self.context_menu.dismiss();
-                (Task::none(), ExplorerViewOutMessage::RequestPlay(track))
-            }
+            ExplorerViewMessage::RowClicked(track, index) => {
+                let now = Instant::now();
+                let is_double_click = match &self.last_click {
+                    Some((last_id, time)) => last_id == &track.id && now.duration_since(*time).as_millis() < 500,
+                    None => false,
+                };
 
-            ExplorerViewMessage::RowSelected(track_id) => {
-                self.selected_track_id = Some(track_id);
+                self.last_click = Some((track.id.clone(), now));
+                self.context_menu.dismiss();
+
+                if is_double_click {
+                    // Doble clic: destuimos la selección múltiple (convención SO) y reproducimos
+                    self.selection.select_single(track.id.clone(), index);
+                    return (Task::none(), ExplorerViewOutMessage::RequestPlay(vec![track]));
+                }
+
+                if self.current_modifiers.shift() {
+                    let visible_ids: Vec<&String> = self.filtered_indices.iter()
+                        .filter_map(|&idx| store.all_tracks().get(idx).map(|t| &t.id))
+                        .collect();
+                    self.selection.select_range(index, &visible_ids);
+                } else if self.current_modifiers.command() || self.current_modifiers.control() {
+                    self.selection.toggle(track.id, index);
+                } else {
+                    self.selection.select_single(track.id, index);
+                }
+
                 (Task::none(), ExplorerViewOutMessage::Idle)
             }
 
@@ -285,8 +332,15 @@ impl ExplorerView {
             }
 
             ExplorerViewMessage::RowRightClicked(track_id) => {
-                self.context_menu.toggle(track_id.clone(), CONTEXT_MENU_ITEM_COUNT);
-                self.selected_track_id = Some(track_id);
+                // Si haces clic derecho en algo que NO está en la selección, se descarta lo anterior
+                if !self.selection.is_selected(&track_id) {
+                    let idx = self.filtered_indices.iter()
+                        .position(|&i| store.all_tracks().get(i).map(|t| &t.id) == Some(&track_id))
+                        .unwrap_or(0);
+                    self.selection.select_single(track_id.clone(), idx);
+                }
+
+                self.context_menu.toggle(track_id, CONTEXT_MENU_ITEM_COUNT);
                 (Task::none(), ExplorerViewOutMessage::Idle)
             }
 
@@ -300,27 +354,34 @@ impl ExplorerView {
                 (Task::none(), ExplorerViewOutMessage::Idle)
             }
 
-            ExplorerViewMessage::ContextMenuAction(action, track) => {
+            ExplorerViewMessage::ContextMenuAction(action, anchor_track) => {
                 self.context_menu.dismiss();
-                self.selected_track_id = Some(track.id.clone());
+
+                let selected = self.get_selected_tracks(store);
 
                 if action == ContextMenuAction::Delete {
-                    self.confirm_dialog.request(track, "¿Eliminar esta canción del catálogo?");
+                    let msg = if selected.len() == 1 {
+                        "¿Eliminar esta canción del catálogo?".to_string()
+                    } else {
+                        format!("¿Eliminar {} canciones del catálogo?", selected.len())
+                    };
+                    self.confirm_dialog.request(selected, &msg);
                     return (Task::none(), ExplorerViewOutMessage::Idle);
                 }
 
                 if action == ContextMenuAction::CopyId {
-                    return (clipboard::write(track.id.clone()), ExplorerViewOutMessage::Idle);
+                    let ids: Vec<String> = selected.iter().map(|t| t.id.clone()).collect();
+                    return (clipboard::write(ids.join(", ")), ExplorerViewOutMessage::Idle);
                 }
 
                 let out = match action {
-                    ContextMenuAction::PlayNow => ExplorerViewOutMessage::RequestPlay(track),
-                    ContextMenuAction::AddToQueue => ExplorerViewOutMessage::RequestEnqueue(track),
-                    ContextMenuAction::AddToFrontQueue => ExplorerViewOutMessage::RequestFrontEnqueue(track),
-                    ContextMenuAction::StartRadio => ExplorerViewOutMessage::RequestPlayRadio(track),
-                    ContextMenuAction::ToggleLike => ExplorerViewOutMessage::RequestToggleLike(track.id.clone()),
+                    ContextMenuAction::PlayNow => ExplorerViewOutMessage::RequestPlay(selected),
+                    ContextMenuAction::AddToQueue => ExplorerViewOutMessage::RequestEnqueue(selected),
+                    ContextMenuAction::AddToFrontQueue => ExplorerViewOutMessage::RequestFrontEnqueue(selected),
+                    ContextMenuAction::StartRadio => ExplorerViewOutMessage::RequestPlayRadio(anchor_track),
+                    ContextMenuAction::ToggleLike => ExplorerViewOutMessage::RequestToggleLike(selected.into_iter().map(|t| t.id).collect()),
                     ContextMenuAction::AddToPlaylist(playlist_id) => {
-                        ExplorerViewOutMessage::RequestAddToPlaylist(playlist_id, track.id.clone())
+                        ExplorerViewOutMessage::RequestAddToPlaylist(playlist_id, selected.into_iter().map(|t| t.id).collect())
                     }
                     ContextMenuAction::CopyId | ContextMenuAction::Delete => unreachable!(),
                 };
@@ -328,11 +389,14 @@ impl ExplorerView {
             }
 
             ExplorerViewMessage::ConfirmDialogConfirm => {
-                let Some(track) = self.confirm_dialog.take_confirmed() else {
+                let Some(tracks) = self.confirm_dialog.take_confirmed() else {
                     return (Task::none(), ExplorerViewOutMessage::Idle);
                 };
+                self.selection.clear();
                 let thumb_task = self.invalidate_and_reload_thumbnails(store, thumbnails);
-                (thumb_task, ExplorerViewOutMessage::RequestDelete(track.id.clone()))
+
+                let ids = tracks.into_iter().map(|t| t.id).collect();
+                (thumb_task, ExplorerViewOutMessage::RequestDelete(ids))
             }
 
             ExplorerViewMessage::ConfirmDialogCancel => {
@@ -453,11 +517,11 @@ impl ExplorerView {
                 &tracks,
                 &self.scroll,
                 thumbnails,
-                self.selected_track_id.as_deref(),
+                &self.selection.selected_ids,
                 SCROLLABLE_ID,
                 TrackListCallbacks::new(
                     ExplorerViewMessage::Scrolled,
-                    ExplorerViewMessage::PlayTrack,
+                    ExplorerViewMessage::RowClicked,
                     ExplorerViewMessage::SortByKey,
                     ExplorerViewMessage::ViewportMouseMoved,
                     ExplorerViewMessage::RowRightClicked,

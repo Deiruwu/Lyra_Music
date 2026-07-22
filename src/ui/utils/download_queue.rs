@@ -238,11 +238,6 @@ impl DownloadQueue {
         ))
     }
 
-    /// Útil para debug/telemetría en la UI si quieres mostrar
-    /// "descargando N thumbnails...".
-    pub fn active_workers(&self) -> usize {
-        self.state.lock().unwrap().active_workers
-    }
 
     pub fn queued_len(&self) -> usize {
         self.state.lock().unwrap().stack.len()

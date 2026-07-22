@@ -1,6 +1,8 @@
 use std::collections::HashSet;
+use std::time::Instant;
 
 use iced::{Alignment, Color, Element, Font, Length, Task};
+use iced::keyboard::Modifiers;
 use iced::widget::scrollable::Viewport;
 use iced::widget::{column, container, row, space, text, Id, button};
 use iced::widget::operation::snap_to;
@@ -24,6 +26,7 @@ use crate::ui::widgets::views::track_sort;
 use crate::ui::widgets::views::catalog_filter;
 use crate::ui::widgets::views::track_context_menu::{self, LikeSlot};
 use crate::impl_sortable_column;
+use crate::ui::widgets::selection_state::SelectionState;
 
 pub const SF_PRO: Font = Font::with_name("SF Pro Display");
 
@@ -92,28 +95,28 @@ pub enum PlaylistsViewMessage {
 
     // --- Mensajes de la tabla virtualizada (Detail) ---
     Scrolled(Viewport),
-    PlayTrack(Track),
-    RowSelected(String),
+    RowClicked(Track, usize),
     ViewportMouseMoved(iced::Point),
     RowRightClicked(String),
     DismissContextMenu,
     ContextMenuSubmenuHover(Option<usize>),
-    ContextMenuAction(ContextMenuAction, Track),
+    ContextMenuAction(ContextMenuAction, Track), // Recibe el "anchor" donde se abrió el menú
     SortByKey(usize),
     SearchChanged(String),
     ColorThumbnailResult(String, Vec<u8>, u64),
+    ModifiersChanged(Modifiers), // Necesario para recibir si Shift/Ctrl están presionados
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlaylistsViewOutMessage {
     Idle,
     RequestPlayContext(Vec<Track>, usize),
-    RequestEnqueue(Track),
-    RequestFrontEnqueue(Track),
+    RequestEnqueue(Vec<Track>),
+    RequestFrontEnqueue(Vec<Track>),
     RequestPlayRadio(Track),
-    RequestRemoveFromPlaylist(String, String), // playlist_id, track_id
-    RequestToggleLike(String),
-    RequestAddToPlaylist(String, String), // playlist_id, track_id
+    RequestRemoveFromPlaylist(String, Vec<String>), // playlist_id, track_ids
+    RequestToggleLike(Vec<String>),
+    RequestAddToPlaylist(String, Vec<String>),
     CreatePlaylistRequested,
 }
 
@@ -124,7 +127,11 @@ pub struct PlaylistsView {
     search_query: String,
     filtered_indices: Vec<usize>,
     sort: SortState<SortColumn>,
-    selected_track_id: Option<String>,
+
+    selection: SelectionState,
+    last_click: Option<(String, Instant)>,
+    pub current_modifiers: Modifiers,
+
     context_menu: ContextMenu<String>,
     scroll: ScrollTracker,
     epoch: u64,
@@ -137,7 +144,9 @@ impl Default for PlaylistsView {
             search_query: String::new(),
             filtered_indices: Vec::new(),
             sort: SortState::new(),
-            selected_track_id: None,
+            selection: SelectionState::new(),
+            last_click: None,
+            current_modifiers: Modifiers::default(),
             context_menu: ContextMenu::new(),
             scroll: ScrollTracker::default(),
             epoch: 1,
@@ -156,7 +165,8 @@ impl PlaylistsView {
         self.search_query.clear();
         self.filtered_indices.clear();
         self.sort.reset();
-        self.selected_track_id = None;
+        self.selection.clear();
+        self.last_click = None;
         self.context_menu.dismiss();
         self.scroll.reset();
         self.epoch = self.epoch.wrapping_add(1);
@@ -178,6 +188,25 @@ impl PlaylistsView {
         self.filtered_indices
             .get(visible_idx)
             .and_then(|&idx| tracks.get(idx).copied())
+    }
+
+    fn visible_tracks<'a>(&self, store: &'a CatalogStore) -> Vec<&'a Track> {
+        let tracks = self.current_playlist_tracks(store);
+        self.filtered_indices
+            .iter()
+            .filter_map(|&idx| tracks.get(idx).copied())
+            .collect()
+    }
+
+    /// Recupera los Tracks reales seleccionados manteniendo el orden del filtro actual (vital para Enqueue masivo)
+    fn get_selected_tracks(&self, store: &CatalogStore) -> Vec<Track> {
+        let tracks = self.current_playlist_tracks(store);
+        self.filtered_indices
+            .iter()
+            .filter_map(|&idx| tracks.get(idx).copied())
+            .filter(|t| self.selection.is_selected(&t.id))
+            .cloned()
+            .collect()
     }
 
     fn apply_search(&mut self, store: &CatalogStore) {
@@ -256,6 +285,11 @@ impl PlaylistsView {
         thumbnails: &mut ThumbnailCache,
     ) -> (Task<PlaylistsViewMessage>, PlaylistsViewOutMessage) {
         match msg {
+            PlaylistsViewMessage::ModifiersChanged(modifiers) => {
+                self.current_modifiers = modifiers;
+                (Task::none(), PlaylistsViewOutMessage::Idle)
+            }
+
             PlaylistsViewMessage::SelectPlaylist(id) => {
                 self.reset_detail_state();
                 self.current_subview = PlaylistsSubView::Detail(id);
@@ -288,12 +322,14 @@ impl PlaylistsView {
                     return (Task::none(), PlaylistsViewOutMessage::Idle);
                 }
 
+                self.selection.clear(); // Limpiamos para evitar Shift+Clicks inválidos
                 self.apply_sort(store);
                 let thumb_task = self.invalidate_and_reload_thumbnails(store, thumbnails);
                 (thumb_task, PlaylistsViewOutMessage::Idle)
             }
             PlaylistsViewMessage::SearchChanged(query) => {
                 self.search_query = query;
+                self.selection.clear();
                 self.apply_sort(store);
                 self.scroll.reset();
                 let thumb_task = self.invalidate_and_reload_thumbnails(store, thumbnails);
@@ -308,24 +344,54 @@ impl PlaylistsView {
                 let thumb_task = self.request_visible_thumbnails(store, thumbnails);
                 (thumb_task, PlaylistsViewOutMessage::Idle)
             }
-            PlaylistsViewMessage::PlayTrack(track) => {
-                self.selected_track_id = Some(track.id.clone());
+
+            PlaylistsViewMessage::RowClicked(track, index) => {
+                let now = Instant::now();
+                let is_double_click = match &self.last_click {
+                    Some((last_id, time)) => last_id == &track.id && now.duration_since(*time).as_millis() < 500,
+                    None => false,
+                };
+
+                self.last_click = Some((track.id.clone(), now));
                 self.context_menu.dismiss();
-                let context_tracks = self.context_tracks(store);
-                let start_idx = context_tracks.iter().position(|t| t.id == track.id).unwrap_or(0);
-                (Task::none(), PlaylistsViewOutMessage::RequestPlayContext(context_tracks, start_idx))
-            }
-            PlaylistsViewMessage::RowSelected(track_id) => {
-                self.selected_track_id = Some(track_id);
+
+                if is_double_click {
+                    // Doble clic: destruimos la selección múltiple (convención SO) y reproducimos
+                    // el contexto completo (esta playlist) desde este track.
+                    self.selection.select_single(track.id.clone(), index);
+                    let context_tracks = self.context_tracks(store);
+                    let start_idx = context_tracks.iter().position(|t| t.id == track.id).unwrap_or(0);
+                    return (Task::none(), PlaylistsViewOutMessage::RequestPlayContext(context_tracks, start_idx));
+                }
+
+                if self.current_modifiers.shift() {
+                    let visible_ids: Vec<&String> = self.filtered_indices.iter()
+                        .filter_map(|&idx| self.current_playlist_tracks(store).get(idx).map(|t| &t.id))
+                        .collect();
+                    self.selection.select_range(index, &visible_ids);
+                } else if self.current_modifiers.command() || self.current_modifiers.control() {
+                    self.selection.toggle(track.id, index);
+                } else {
+                    self.selection.select_single(track.id, index);
+                }
+
                 (Task::none(), PlaylistsViewOutMessage::Idle)
             }
+
             PlaylistsViewMessage::ViewportMouseMoved(point) => {
                 self.context_menu.note_mouse_position(point);
                 (Task::none(), PlaylistsViewOutMessage::Idle)
             }
             PlaylistsViewMessage::RowRightClicked(track_id) => {
-                self.context_menu.toggle(track_id.clone(), CONTEXT_MENU_ITEM_COUNT);
-                self.selected_track_id = Some(track_id);
+                // Si haces clic derecho en algo que NO está en la selección, se descarta lo anterior
+                if !self.selection.is_selected(&track_id) {
+                    let idx = self.filtered_indices.iter()
+                        .position(|&i| self.current_playlist_tracks(store).get(i).map(|t| &t.id) == Some(&track_id))
+                        .unwrap_or(0);
+                    self.selection.select_single(track_id.clone(), idx);
+                }
+
+                self.context_menu.toggle(track_id, CONTEXT_MENU_ITEM_COUNT);
                 (Task::none(), PlaylistsViewOutMessage::Idle)
             }
             PlaylistsViewMessage::DismissContextMenu => {
@@ -336,31 +402,37 @@ impl PlaylistsView {
                 self.context_menu.set_open_submenu(id);
                 (Task::none(), PlaylistsViewOutMessage::Idle)
             }
-            PlaylistsViewMessage::ContextMenuAction(action, track) => {
+            PlaylistsViewMessage::ContextMenuAction(action, anchor_track) => {
                 self.context_menu.dismiss();
-                self.selected_track_id = Some(track.id.clone());
+
+                let selected = self.get_selected_tracks(store);
 
                 if action == ContextMenuAction::CopyId {
-                    return (clipboard::write(track.id.clone()), PlaylistsViewOutMessage::Idle);
+                    let ids: Vec<String> = selected.iter().map(|t| t.id.clone()).collect();
+                    return (clipboard::write(ids.join(", ")), PlaylistsViewOutMessage::Idle);
                 }
 
                 let out = match action {
                     ContextMenuAction::PlayNow => {
                         let context_tracks = self.context_tracks(store);
-                        let start_idx = context_tracks.iter().position(|t| t.id == track.id).unwrap_or(0);
+                        let anchor_id = selected.first().map(|t| t.id.clone()).unwrap_or(anchor_track.id.clone());
+                        let start_idx = context_tracks.iter().position(|t| t.id == anchor_id).unwrap_or(0);
                         PlaylistsViewOutMessage::RequestPlayContext(context_tracks, start_idx)
                     },
-                    ContextMenuAction::AddToQueue => PlaylistsViewOutMessage::RequestEnqueue(track),
-                    ContextMenuAction::AddToFrontQueue => PlaylistsViewOutMessage::RequestFrontEnqueue(track),
-                    ContextMenuAction::StartRadio => PlaylistsViewOutMessage::RequestPlayRadio(track),
-                    ContextMenuAction::ToggleLike => PlaylistsViewOutMessage::RequestToggleLike(track.id.clone()),
+                    ContextMenuAction::AddToQueue => PlaylistsViewOutMessage::RequestEnqueue(selected),
+                    ContextMenuAction::AddToFrontQueue => PlaylistsViewOutMessage::RequestFrontEnqueue(selected),
+                    ContextMenuAction::StartRadio => PlaylistsViewOutMessage::RequestPlayRadio(anchor_track),
+                    ContextMenuAction::ToggleLike => PlaylistsViewOutMessage::RequestToggleLike(selected.into_iter().map(|t| t.id).collect()),
                     ContextMenuAction::AddToPlaylist(playlist_id) => {
-                        PlaylistsViewOutMessage::RequestAddToPlaylist(playlist_id, track.id.clone())
+                        PlaylistsViewOutMessage::RequestAddToPlaylist(playlist_id, selected.into_iter().map(|t| t.id).collect())
                     }
                     ContextMenuAction::CopyId => unreachable!(),
                     ContextMenuAction::RemoveFromPlaylist => {
                         if let PlaylistsSubView::Detail(playlist_id) = &self.current_subview {
-                            PlaylistsViewOutMessage::RequestRemoveFromPlaylist(playlist_id.clone(), track.id)
+                            PlaylistsViewOutMessage::RequestRemoveFromPlaylist(
+                                playlist_id.clone(),
+                                selected.into_iter().map(|t| t.id).collect(),
+                            )
                         } else {
                             PlaylistsViewOutMessage::Idle
                         }
@@ -491,12 +563,10 @@ impl PlaylistsView {
 
         let body_content: Element<'_, PlaylistsViewMessage> = if all_playlist_tracks.is_empty() {
             catalog_status_message("Esta playlist está vacía.", StatusTone::Muted)
+        } else if self.visible_count() == 0 {
+            catalog_status_message("No se encontraron pistas que coincidan con tu búsqueda.", StatusTone::Muted)
         } else {
-            let visible_tracks: Vec<&Track> = self.filtered_indices
-                .iter()
-                .filter_map(|&idx| all_playlist_tracks.get(idx).copied())
-                .collect();
-
+            let tracks = self.visible_tracks(store);
             let fields = Self::fields();
 
             let config = TrackListConfig {
@@ -535,14 +605,14 @@ impl PlaylistsView {
 
             track_list(
                 config,
-                &visible_tracks,
+                &tracks,
                 &self.scroll,
                 thumbnails,
-                self.selected_track_id.as_deref(),
+                &self.selection.selected_ids,
                 SCROLLABLE_ID,
                 TrackListCallbacks::new(
                     PlaylistsViewMessage::Scrolled,
-                    PlaylistsViewMessage::PlayTrack,
+                    PlaylistsViewMessage::RowClicked,
                     PlaylistsViewMessage::SortByKey,
                     PlaylistsViewMessage::ViewportMouseMoved,
                     PlaylistsViewMessage::RowRightClicked,
