@@ -192,10 +192,6 @@ impl SearchFeature {
             SearchFeatureMessage::DownloadFinished(Ok(playable)) => {
                 println!("Descarga completada y lista para sonar.");
 
-                // La canción ahora es Cached → descargar thumbnail a color.
-                // Como usa thumb_key (album_id o track_id), no colisiona con el gris
-                // que usaba track_id directo. El caché de color lanza el Task sin
-                // necesidad de invalidar nada.
                 let task = playable.track.thumbnail_small.as_ref()
                     .and_then(|url| {
                         let key = thumb_key(&playable.track);

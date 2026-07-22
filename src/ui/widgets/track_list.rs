@@ -26,7 +26,6 @@
 //!   (mismo patrón ya usado en `ExplorerView`/`FavoritesView`), y este
 //!   widget solo los apila como overlay si la vista se los pasa ya
 //!   armados (`Element` completo).
-
 use std::collections::HashSet;
 use chrono::{DateTime, Datelike, Utc};
 use iced::widget::image::Handle;
@@ -40,6 +39,7 @@ use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::utils::virtual_list::ScrollTracker;
 
 pub const SF_PRO: Font = Font::with_name("SF Pro Display");
+const JETBRAINS_MONO_HEADER: Font = Font::with_name("JetBrainsMono Nerd Font");
 
 #[derive(Clone)]
 pub enum Column {
@@ -80,6 +80,29 @@ pub struct TrackListConfig {
     pub sort_direction_asc: bool,
     pub row_height: f32,
     pub buffer_rows: usize,
+    /// Índice (dentro del vector ya reordenado visualmente que se le
+    /// pasa a `track_list`) de la fila que se está arrastrando en este
+    /// momento, si la hay. Esa fila se atenúa porque su representación
+    /// "real" es el ghost que sigue al mouse.
+    ///
+    /// `Default::default()` es `None`, así que las vistas que no usan
+    /// reordenamiento (Explorer, Favorites) no necesitan tocar este
+    /// campo: `TrackListConfig { columns, ..., ..Default::default() }`
+    /// o simplemente inicializándolo en `None` explícitamente.
+    pub dragging_row_index: Option<usize>,
+}
+
+impl Default for TrackListConfig {
+    fn default() -> Self {
+        Self {
+            columns: Vec::new(),
+            active_sort_key: None,
+            sort_direction_asc: true,
+            row_height: 60.0,
+            buffer_rows: 15,
+            dragging_row_index: None,
+        }
+    }
 }
 
 pub struct TrackListCallbacks<Message, FScroll, FClick, FSort, FMove, FRightClick>
@@ -95,6 +118,7 @@ where
     pub on_sort: FSort,
     pub on_viewport_moved: FMove,
     pub on_row_right_click: FRightClick,
+    pub on_viewport_exited: Option<Message>, // <--- Nuevo para limpiar tracking global
     _marker: std::marker::PhantomData<Message>,
 }
 
@@ -120,8 +144,14 @@ where
             on_sort,
             on_viewport_moved,
             on_row_right_click,
+            on_viewport_exited: None,
             _marker: std::marker::PhantomData,
         }
+    }
+
+    pub fn with_exit(mut self, on_exit: Message) -> Self {
+        self.on_viewport_exited = Some(on_exit);
+        self
     }
 }
 
@@ -244,7 +274,7 @@ fn render_row<'a, Message: Clone + 'a>(
         .width(Length::Fill)
         .height(Length::Fixed(row_height))
         .style(transparent_button)
-        .on_press(on_click); // Se dispara el evento de clic con el track y su índice
+        .on_press(on_click);
 
     let styled_container = container(btn)
         .width(Length::Fill)
@@ -266,15 +296,13 @@ fn thumbnail_size_of(col: &Column) -> f32 {
     }
 }
 
-const JETBRAINS_MONO_HEADER: Font = Font::with_name("JetBrainsMono Nerd Font");
-
 #[allow(clippy::too_many_arguments)]
 pub fn track_list<'a, Message, FScroll, FClick, FSort, FMove, FRightClick>(
     config: TrackListConfig,
     tracks: &[&'a Track],
     scroll: &ScrollTracker,
     thumbnails: &'a ThumbnailCache,
-    selected_ids: &'a HashSet<String>, // <- Aquí evaluamos la selección múltiple en O(1)
+    selected_ids: &'a HashSet<String>,
     scrollable_id: &'static str,
     callbacks: TrackListCallbacks<Message, FScroll, FClick, FSort, FMove, FRightClick>,
     row_cells: impl Fn(&'a Track, usize) -> Vec<Cell<'a, Message>>,
@@ -283,7 +311,7 @@ pub fn track_list<'a, Message, FScroll, FClick, FSort, FMove, FRightClick>(
 where
     Message: Clone + 'a,
     FScroll: Fn(Viewport) -> Message + 'a,
-    FClick: Fn(Track, usize) -> Message + 'a, // Emitimos el Track y el Índice
+    FClick: Fn(Track, usize) -> Message + 'a,
     FSort: Fn(usize) -> Message + Clone + 'a,
     FMove: Fn(iced::Point) -> Message + 'a,
     FRightClick: Fn(String) -> Message + 'a,
@@ -291,7 +319,12 @@ where
     let window = scroll.window(config.row_height, tracks.len(), config.buffer_rows);
     let row_height = config.row_height;
 
-    let TrackListCallbacks { on_scroll, on_click, on_sort, on_viewport_moved, on_row_right_click, .. } = callbacks;
+    let on_scroll = callbacks.on_scroll;
+    let on_click = callbacks.on_click;
+    let on_sort = callbacks.on_sort;
+    let on_viewport_moved = callbacks.on_viewport_moved;
+    let on_row_right_click = callbacks.on_row_right_click;
+    let on_viewport_exited = callbacks.on_viewport_exited;
 
     let header = render_header(&config, on_sort);
 
@@ -303,11 +336,6 @@ where
             let track = *track;
             let handle = thumbnails.peek_for_render(track);
 
-            // Checkeo O(1) contra el HashSet de tu SelectionState.
-            // Se mira también el vecino anterior/siguiente en `tracks` (la lista
-            // completa filtrada/ordenada, no solo la ventana virtualizada) para
-            // saber si esta fila forma parte de un bloque contiguo seleccionado
-            // y así fusionar visualmente el radio/borde entre ellas.
             let is_selected = selected_ids.contains(track.id.as_str());
             let prev_selected = visible_idx > 0
                 && tracks.get(visible_idx - 1).is_some_and(|t| selected_ids.contains(t.id.as_str()));
@@ -323,20 +351,28 @@ where
                 .collect();
 
             let track_id = track.id.clone();
-
-            // Inyectamos el índice (visible_idx) exacto de la colección filtrada
             let on_click_msg = on_click(track.clone(), visible_idx);
             let on_right_click_msg = on_row_right_click(track_id.clone());
+            let is_dragging_this_row = config.dragging_row_index == Some(visible_idx);
 
-            rows = rows.push(render_row(
-                &config,
-                cells,
-                row_height,
-                shape,
-                track_id,
-                on_click_msg,
-                on_right_click_msg,
-            ));
+            let rendered_row: Element<'a, Message> = if is_dragging_this_row {
+                container(space().height(Length::Fixed(row_height)))
+                    .width(Length::Fill)
+                    .height(Length::Fixed(row_height))
+                    .into()
+            } else {
+                render_row(
+                    &config,
+                    cells,
+                    row_height,
+                    shape,
+                    track_id,
+                    on_click_msg,
+                    on_right_click_msg,
+                )
+            };
+
+            rows = rows.push(rendered_row);
         }
     }
 
@@ -349,9 +385,14 @@ where
         .on_scroll(move |v| on_scroll(v))
         .into();
 
-    let scroll_area: Element<'a, Message> = mouse_area(scroll_area)
-        .on_move(move |p| on_viewport_moved(p))
-        .into();
+    let mut area = mouse_area(scroll_area)
+        .on_move(move |p| on_viewport_moved(p));
+
+    if let Some(exit_msg) = on_viewport_exited {
+        area = area.on_exit(exit_msg);
+    }
+
+    let scroll_area: Element<'a, Message> = area.into();
 
     let overlay_layer: Element<'a, Message> = overlay.unwrap_or_else(|| space().into());
     let body: Element<'a, Message> = stack![scroll_area, overlay_layer].into();

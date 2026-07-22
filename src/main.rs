@@ -27,6 +27,7 @@ use crate::ui::sidebar_feature::sidebar_feature::{
     SidebarFeature, SidebarFeatureMessage
 };
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
+use crate::ui::views::catalog_store::CatalogStoreMessage;
 
 const JETBRAINS_MONO: Font = Font::with_name("JetBrainsMono Nerd Font");
 
@@ -247,18 +248,28 @@ impl App {
             AppMessage::SearchFeature(msg) => {
                 let (search_task, out_msg) = self.search_feature.update(msg, &mut self.view_thumbnails);
                 let mut feature_task = iced::Task::none();
+                let mut catalog_task = iced::Task::none();
 
                 if let SearchFeatureOutMessage::TrackReadyToPlay(playable) = out_msg {
+                    let track_metadata = playable.track.clone();
+
                     let (t, _out) = self.playback_feature.update(
                         PlaybackFeatureMessage::Play(playable),
                         &mut self.player_thumbnails,
                     );
                     feature_task = t;
+
+                    catalog_task = iced::Task::done(AppMessage::SidebarFeature(
+                        SidebarFeatureMessage::Catalog(
+                            CatalogStoreMessage::TrackDownloadedAndCached(track_metadata)
+                        )
+                    ));
                 }
 
                 iced::Task::batch(vec![
                     search_task.map(AppMessage::SearchFeature),
                     feature_task.map(AppMessage::PlaybackFeature),
+                    catalog_task,
                 ])
             }
         }

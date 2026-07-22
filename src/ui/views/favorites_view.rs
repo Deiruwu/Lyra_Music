@@ -461,6 +461,7 @@ impl FavoritesView {
                 sort_direction_asc: self.sort.is_asc(),
                 row_height: ROW_HEIGHT,
                 buffer_rows: BUFFER_ROWS,
+                dragging_row_index: None,
             };
 
             let overlay = self.context_menu.render_target(|id| store.track_by_id(id)).map(|(anchor, track)| {

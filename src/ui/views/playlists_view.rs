@@ -5,8 +5,10 @@ use iced::{Alignment, Color, Element, Font, Length, Task};
 use iced::keyboard::Modifiers;
 use iced::widget::scrollable::Viewport;
 use iced::widget::{column, container, row, space, text, Id, button};
-use iced::widget::operation::snap_to;
+use iced::widget::operation::{snap_to, scroll_by};
+use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::scrollable;
+use iced::clipboard;
 
 use crate::model::Track;
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
@@ -14,12 +16,11 @@ use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuItem};
 use crate::ui::widgets::playlist_header::{playlist_header, PlaylistHeaderData};
-use crate::ui::widgets::track_list::{track_list, TrackListCallbacks, TrackListConfig};
+use crate::ui::widgets::track_list::{track_list, Cell, Column, TrackListCallbacks, TrackListConfig};
 use crate::ui::widgets::track_fields::{Field, FieldList};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
 use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
 use crate::ui::styles::styles::transparent_button;
-use iced::clipboard;
 use crate::ui::assets::icons::Icon;
 use crate::ui::widgets::views::sort_state::SortState;
 use crate::ui::widgets::views::track_sort;
@@ -37,12 +38,19 @@ const CONTEXT_MENU_ITEM_COUNT: usize = 8;
 const SCROLLABLE_ID: &str = "playlists_catalog_scroll";
 const SUBMENU_ADD_TO_PLAYLIST: usize = 0;
 
+// ── Auto-scroll durante drag de reordenamiento ──────────────────────────────
+/// Alto, en píxeles, de la franja sensible junto a cada borde del viewport
+/// donde el drag empieza a autoscrollear.
+const AUTOSCROLL_ZONE_PX: f32 = 50.0;
+/// Velocidad máxima de scroll por tick (16ms) cuando el mouse está pegado
+/// al borde extremo de la zona sensible.
+const AUTOSCROLL_MAX_SPEED_PX: f32 = 18.0;
+
 const SORT_KEY_DEFAULT_ORDER: usize = 0;
 const SORT_KEY_TITLE: usize = 1;
 const SORT_KEY_ARTIST: usize = 2;
 const SORT_KEY_ALBUM: usize = 3;
 const SORT_KEY_DURATION: usize = 4;
-
 const SORT_KEY_BPM: usize = 5;
 const SORT_KEY_KEY: usize = 6;
 
@@ -93,18 +101,22 @@ pub enum PlaylistsViewMessage {
     PlayPlaylist(String),
     CreatePlaylistRequested,
 
-    // --- Mensajes de la tabla virtualizada (Detail) ---
     Scrolled(Viewport),
     RowClicked(Track, usize),
     ViewportMouseMoved(iced::Point),
+    ViewportMouseExited,
     RowRightClicked(String),
     DismissContextMenu,
     ContextMenuSubmenuHover(Option<usize>),
-    ContextMenuAction(ContextMenuAction, Track), // Recibe el "anchor" donde se abrió el menú
+    ContextMenuAction(ContextMenuAction, Track),
     SortByKey(usize),
     SearchChanged(String),
     ColorThumbnailResult(String, Vec<u8>, u64),
-    ModifiersChanged(Modifiers), // Necesario para recibir si Shift/Ctrl están presionados
+    ModifiersChanged(Modifiers),
+
+    GlobalMousePress,
+    GlobalMouseRelease,
+    AutoScrollTick,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,16 +126,22 @@ pub enum PlaylistsViewOutMessage {
     RequestEnqueue(Vec<Track>),
     RequestFrontEnqueue(Vec<Track>),
     RequestPlayRadio(Track),
-    RequestRemoveFromPlaylist(String, Vec<String>), // playlist_id, track_ids
+    RequestRemoveFromPlaylist(String, Vec<String>),
     RequestToggleLike(Vec<String>),
     RequestAddToPlaylist(String, Vec<String>),
     CreatePlaylistRequested,
+    RequestReorder(String, usize, usize),
+}
+
+struct DragState {
+    source_index: usize,
+    current_index: usize,
+    grab_offset: f32,
 }
 
 pub struct PlaylistsView {
     pub current_subview: PlaylistsSubView,
 
-    // Estado efímero para la vista de detalle
     search_query: String,
     filtered_indices: Vec<usize>,
     sort: SortState<SortColumn>,
@@ -135,6 +153,10 @@ pub struct PlaylistsView {
     context_menu: ContextMenu<String>,
     scroll: ScrollTracker,
     epoch: u64,
+
+    hovered_point: Option<iced::Point>,
+    pending_drag_start_point: Option<iced::Point>,
+    drag_state: Option<DragState>,
 }
 
 impl Default for PlaylistsView {
@@ -150,6 +172,9 @@ impl Default for PlaylistsView {
             context_menu: ContextMenu::new(),
             scroll: ScrollTracker::default(),
             epoch: 1,
+            hovered_point: None,
+            pending_drag_start_point: None,
+            drag_state: None,
         }
     }
 }
@@ -159,8 +184,13 @@ impl PlaylistsView {
         Self::default()
     }
 
-    /// Resetea el estado para evitar panics por índices desfasados o leaks de memoria
-    /// visual al cambiar entre playlists con distintas longitudes.
+    /// `true` mientras el usuario está arrastrando una fila para
+    /// reordenarla. Usado por el padre para decidir si mantener viva
+    /// la subscripción de auto-scroll.
+    pub fn is_dragging(&self) -> bool {
+        self.drag_state.is_some()
+    }
+
     fn reset_detail_state(&mut self) {
         self.search_query.clear();
         self.filtered_indices.clear();
@@ -169,6 +199,9 @@ impl PlaylistsView {
         self.last_click = None;
         self.context_menu.dismiss();
         self.scroll.reset();
+        self.hovered_point = None;
+        self.pending_drag_start_point = None;
+        self.drag_state = None;
         self.epoch = self.epoch.wrapping_add(1);
     }
 
@@ -198,7 +231,6 @@ impl PlaylistsView {
             .collect()
     }
 
-    /// Recupera los Tracks reales seleccionados manteniendo el orden del filtro actual (vital para Enqueue masivo)
     fn get_selected_tracks(&self, store: &CatalogStore) -> Vec<Track> {
         let tracks = self.current_playlist_tracks(store);
         self.filtered_indices
@@ -221,7 +253,7 @@ impl PlaylistsView {
         let asc = self.sort.is_asc();
 
         match self.sort.column() {
-            SortColumn::DefaultOrder => { /* SQLite native position already kept via index */ },
+            SortColumn::DefaultOrder => {},
             SortColumn::Title => track_sort::by_title(&mut self.filtered_indices, &tracks),
             SortColumn::Artist => track_sort::by_artist(&mut self.filtered_indices, &tracks),
             SortColumn::Album => track_sort::by_album(&mut self.filtered_indices, &tracks),
@@ -303,7 +335,6 @@ impl PlaylistsView {
                 (Task::none(), PlaylistsViewOutMessage::Idle)
             }
             PlaylistsViewMessage::PlayPlaylist(id) => {
-                // Reproduce desde el inicio, respetando filtros y orden actuales
                 if let PlaylistsSubView::Detail(current_id) = &self.current_subview {
                     if current_id == &id {
                         let context = self.context_tracks(store);
@@ -316,13 +347,11 @@ impl PlaylistsView {
                 (Task::none(), PlaylistsViewOutMessage::CreatePlaylistRequested)
             }
 
-            // --- Interacciones de tabla (Detail) ---
             PlaylistsViewMessage::SortByKey(key) => {
                 if !self.sort.click(key) {
                     return (Task::none(), PlaylistsViewOutMessage::Idle);
                 }
-
-                self.selection.clear(); // Limpiamos para evitar Shift+Clicks inválidos
+                self.selection.clear();
                 self.apply_sort(store);
                 let thumb_task = self.invalidate_and_reload_thumbnails(store, thumbnails);
                 (thumb_task, PlaylistsViewOutMessage::Idle)
@@ -356,8 +385,6 @@ impl PlaylistsView {
                 self.context_menu.dismiss();
 
                 if is_double_click {
-                    // Doble clic: destruimos la selección múltiple (convención SO) y reproducimos
-                    // el contexto completo (esta playlist) desde este track.
                     self.selection.select_single(track.id.clone(), index);
                     let context_tracks = self.context_tracks(store);
                     let start_idx = context_tracks.iter().position(|t| t.id == track.id).unwrap_or(0);
@@ -379,11 +406,121 @@ impl PlaylistsView {
             }
 
             PlaylistsViewMessage::ViewportMouseMoved(point) => {
+                self.hovered_point = Some(point);
                 self.context_menu.note_mouse_position(point);
+
+                if let Some(start_pos) = self.pending_drag_start_point {
+                    if self.drag_state.is_none() {
+                        let dist = (point.y - start_pos.y).abs() + (point.x - start_pos.x).abs();
+                        // 5 píxeles de holgura para no iniciar drag por error si te tiembla el click
+                        if dist > 5.0 {
+                            if self.sort.column() == SortColumn::DefaultOrder && self.search_query.is_empty() {
+                                let absolute_y = start_pos.y + self.scroll.offset_y;
+                                let source_idx = (absolute_y / ROW_HEIGHT).floor() as isize;
+                                let max_index = self.filtered_indices.len().saturating_sub(1) as isize;
+                                let clamped = source_idx.clamp(0, max_index) as usize;
+
+                                // Validamos que hayamos clickeado en una zona con pistas reales, no en el padding
+                                if (clamped as f32 * ROW_HEIGHT) <= absolute_y && absolute_y <= ((clamped + 1) as f32 * ROW_HEIGHT) {
+                                    let row_top = clamped as f32 * ROW_HEIGHT;
+                                    self.drag_state = Some(DragState {
+                                        source_index: clamped,
+                                        current_index: clamped,
+                                        grab_offset: absolute_y - row_top,
+                                    });
+                                }
+                            }
+                            self.pending_drag_start_point = None;
+                        }
+                    }
+                }
+
+                if let Some(drag) = &mut self.drag_state {
+                    let absolute_y = point.y + self.scroll.offset_y;
+                    let hovered_index = (absolute_y / ROW_HEIGHT).floor() as isize;
+                    let max_index = self.filtered_indices.len().saturating_sub(1) as isize;
+                    drag.current_index = hovered_index.clamp(0, max_index) as usize;
+                }
+
                 (Task::none(), PlaylistsViewOutMessage::Idle)
             }
+
+            PlaylistsViewMessage::ViewportMouseExited => {
+                self.hovered_point = None;
+                (Task::none(), PlaylistsViewOutMessage::Idle)
+            }
+
+            PlaylistsViewMessage::AutoScrollTick => {
+                if self.drag_state.is_none() {
+                    return (Task::none(), PlaylistsViewOutMessage::Idle);
+                }
+                let Some(point) = self.hovered_point else {
+                    return (Task::none(), PlaylistsViewOutMessage::Idle);
+                };
+
+                let Some(delta_y) = self.scroll.autoscroll_delta(
+                    point.y,
+                    AUTOSCROLL_ZONE_PX,
+                    AUTOSCROLL_MAX_SPEED_PX,
+                ) else {
+                    return (Task::none(), PlaylistsViewOutMessage::Idle);
+                };
+
+                // Actualizamos nuestro propio offset optimistamente para que
+                // el cálculo de current_index (que depende de scroll.offset_y)
+                // no se quede un frame atrás del scroll real; on_scroll lo
+                // corrige de todos modos en el próximo evento de scrollable.
+                self.scroll.offset_y = (self.scroll.offset_y + delta_y).max(0.0);
+
+                if let Some(drag) = &mut self.drag_state {
+                    let absolute_y = point.y + self.scroll.offset_y;
+                    let hovered_index = (absolute_y / ROW_HEIGHT).floor() as isize;
+                    let max_index = self.filtered_indices.len().saturating_sub(1) as isize;
+                    drag.current_index = hovered_index.clamp(0, max_index) as usize;
+                }
+
+                let task = scroll_by(
+                    Id::new(SCROLLABLE_ID),
+                    AbsoluteOffset { x: 0.0, y: delta_y },
+                );
+                (task, PlaylistsViewOutMessage::Idle)
+            }
+
+            PlaylistsViewMessage::GlobalMousePress => {
+                if let Some(point) = self.hovered_point {
+                    // Si el clic cayó sobre la franja del scrollbar, lo ignoramos:
+                    // de lo contrario un drag del scrollbar se confunde con un
+                    // intento de reordenar filas.
+                    if self.scroll.is_within_content(point.x) {
+                        self.pending_drag_start_point = Some(point);
+                    }
+                }
+                (Task::none(), PlaylistsViewOutMessage::Idle)
+            }
+
+            PlaylistsViewMessage::GlobalMouseRelease => {
+                self.pending_drag_start_point = None;
+                let out = if let Some(drag) = self.drag_state.take() {
+                    if drag.source_index != drag.current_index {
+                        if let PlaylistsSubView::Detail(playlist_id) = &self.current_subview {
+                            PlaylistsViewOutMessage::RequestReorder(
+                                playlist_id.clone(),
+                                drag.source_index,
+                                drag.current_index,
+                            )
+                        } else {
+                            PlaylistsViewOutMessage::Idle
+                        }
+                    } else {
+                        PlaylistsViewOutMessage::Idle
+                    }
+                } else {
+                    PlaylistsViewOutMessage::Idle
+                };
+                (Task::none(), out)
+            }
+
             PlaylistsViewMessage::RowRightClicked(track_id) => {
-                // Si haces clic derecho en algo que NO está en la selección, se descarta lo anterior
                 if !self.selection.is_selected(&track_id) {
                     let idx = self.filtered_indices.iter()
                         .position(|&i| self.current_playlist_tracks(store).get(i).map(|t| &t.id) == Some(&track_id))
@@ -477,7 +614,6 @@ impl PlaylistsView {
 
         let mut list = column![].spacing(10).padding(20);
 
-        // Extraer id y name ignorando el cover (el tercer elemento de la tupla)
         for (id, name, _) in store.playlists_metadata() {
             let tracks = store.tracks_for_playlist(id);
             let count = tracks.len();
@@ -524,14 +660,12 @@ impl PlaylistsView {
         store: &'a CatalogStore,
         thumbnails: &'a ThumbnailCache,
     ) -> Element<'a, PlaylistsViewMessage> {
-        // Encontramos la playlist en la metadata para sacar su nombre
         let meta = store.playlists_metadata().iter().find(|(pid, _, _)| pid == id);
         let name = meta.map(|(_, n, _)| n.as_str()).unwrap_or("Playlist Desconocida");
 
         let all_playlist_tracks = store.tracks_for_playlist(id);
         let total_duration: i64 = all_playlist_tracks.iter().map(|t| t.duration_seconds as i64).sum();
 
-        // Obtener cover (primer track) delegando la resolución del Handle al cache
         let cover_handle = all_playlist_tracks.first().and_then(|t| {
             thumbnails.peek_for_render(t)
         });
@@ -566,8 +700,20 @@ impl PlaylistsView {
         } else if self.visible_count() == 0 {
             catalog_status_message("No se encontraron pistas que coincidan con tu búsqueda.", StatusTone::Muted)
         } else {
-            let tracks = self.visible_tracks(store);
+            let mut tracks = self.visible_tracks(store);
             let fields = Self::fields();
+
+            // Mientras se arrastra una fila, reordenamos el vector que se
+            // renderiza (no el estado real) para que las filas se corran
+            // visualmente y quede claro dónde caería la pista al soltar.
+            // El reorder real solo ocurre al soltar (GlobalMouseRelease).
+            if let Some(drag) = &self.drag_state {
+                if drag.source_index < tracks.len() && drag.source_index != drag.current_index {
+                    let moved = tracks.remove(drag.source_index);
+                    let insert_at = drag.current_index.min(tracks.len());
+                    tracks.insert(insert_at, moved);
+                }
+            }
 
             let config = TrackListConfig {
                 columns: fields.columns(),
@@ -575,33 +721,101 @@ impl PlaylistsView {
                 sort_direction_asc: self.sort.is_asc(),
                 row_height: ROW_HEIGHT,
                 buffer_rows: BUFFER_ROWS,
+                dragging_row_index: self.drag_state.as_ref().map(|d| d.current_index),
             };
 
-            let overlay = self.context_menu.render_target(|t_id| store.track_by_id(t_id)).map(|(anchor, track)| {
-                let items = track_context_menu::build(
-                    track,
-                    store,
-                    LikeSlot::Toggle(ContextMenuAction::ToggleLike),
-                    ContextMenuAction::AddToPlaylist,
-                    Some(id),
-                    SUBMENU_ADD_TO_PLAYLIST,
-                    ContextMenuAction::PlayNow,
-                    ContextMenuAction::AddToQueue,
-                    ContextMenuAction::AddToFrontQueue,
-                    ContextMenuAction::StartRadio,
-                    ContextMenuAction::CopyId,
-                    ContextMenuItem::new("Quitar de playlist", ContextMenuAction::RemoveFromPlaylist).icon(Icon::Delete),
-                );
+            let overlay = if let Some(drag) = &self.drag_state {
+                if let Some(track) = self.track_at(store, drag.source_index) {
+                    let handle = thumbnails.peek_for_render(track);
 
-                self.context_menu.view(
-                    anchor,
-                    items,
-                    track,
-                    PlaylistsViewMessage::ContextMenuAction,
-                    PlaylistsViewMessage::DismissContextMenu,
-                    PlaylistsViewMessage::ContextMenuSubmenuHover,
-                )
-            });
+                    // 1. Reconstruimos la fila COMPLETA usando la misma definición de las columnas
+                    let mut row_children: Vec<Element<'_, PlaylistsViewMessage>> = Vec::with_capacity(fields.columns().len());
+                    let cells = fields.row_cells(track, drag.source_index + 1);
+
+                    for (col, cell) in fields.columns().iter().zip(cells.into_iter()) {
+                        let width = match col {
+                            Column::Index { width, .. } => Length::Fixed(*width),
+                            Column::Thumbnail { width, .. } => Length::Fixed(*width),
+                            Column::Sortable { width, .. } => *width,
+                        };
+
+                        let element: Element<'_, PlaylistsViewMessage> = match cell {
+                            Cell::Index(i) => container(text(i.to_string()).font(SF_PRO).size(12).color(Color::from_rgb(0.45, 0.45, 0.5)))
+                                .width(width).into(),
+                            Cell::Thumbnail(_) => container(crate::ui::widgets::track_row::track_thumbnail_sized(handle.clone(), 44.0))
+                                .width(width).align_y(Alignment::Center).into(),
+                            Cell::Text(s) => container(text(s).font(SF_PRO).size(13.5).color(Color::from_rgb(0.7, 0.7, 0.75)))
+                                .width(width).into(),
+                            Cell::ColoredText(s, c) => container(text(s).font(SF_PRO).size(13.5).color(c))
+                                .width(width).into(),
+                            Cell::Custom(el) => container(el).width(width).into(),
+                        };
+                        row_children.push(element);
+                    }
+
+                    let ghost_row = row(row_children)
+                        .spacing(10)
+                        .align_y(Alignment::Center)
+                        .padding(iced::Padding { top: 0.0, bottom: 0.0, left: 10.0, right: 16.0 });
+
+                    let ghost_content = container(ghost_row)
+                        .width(Length::Fill)
+                        .height(Length::Fixed(ROW_HEIGHT))
+                        .style(|_theme: &iced::Theme| {
+                            container::Style {
+                                background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
+                                border: iced::border::rounded(6)
+                                    .color(Color::from_rgba(1.0, 1.0, 1.0, 0.15))
+                                    .width(1.0),
+                                ..Default::default()
+                            }
+                        });
+
+                    let raw_mouse_y = self.hovered_point.map(|p| p.y).unwrap_or_default();
+                    let y_pos = (raw_mouse_y - drag.grab_offset).max(0.0);
+
+                    Some(
+                        container(ghost_content)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .padding(iced::Padding {
+                                top: y_pos,
+                                bottom: 0.0,
+                                left: 0.0,  // Bloqueado a la izquierda para que ocupe todo el ancho real
+                                right: 0.0, // Bloqueado a la derecha
+                            })
+                            .into()
+                    )
+                } else {
+                    None
+                }
+            } else {
+                self.context_menu.render_target(|t_id| store.track_by_id(t_id)).map(|(anchor, track)| {
+                    let items = track_context_menu::build(
+                        track,
+                        store,
+                        LikeSlot::Toggle(ContextMenuAction::ToggleLike),
+                        ContextMenuAction::AddToPlaylist,
+                        Some(id),
+                        SUBMENU_ADD_TO_PLAYLIST,
+                        ContextMenuAction::PlayNow,
+                        ContextMenuAction::AddToQueue,
+                        ContextMenuAction::AddToFrontQueue,
+                        ContextMenuAction::StartRadio,
+                        ContextMenuAction::CopyId,
+                        ContextMenuItem::new("Quitar de playlist", ContextMenuAction::RemoveFromPlaylist).icon(Icon::Delete),
+                    );
+
+                    self.context_menu.view(
+                        anchor,
+                        items,
+                        track,
+                        PlaylistsViewMessage::ContextMenuAction,
+                        PlaylistsViewMessage::DismissContextMenu,
+                        PlaylistsViewMessage::ContextMenuSubmenuHover,
+                    )
+                })
+            };
 
             track_list(
                 config,
@@ -616,7 +830,8 @@ impl PlaylistsView {
                     PlaylistsViewMessage::SortByKey,
                     PlaylistsViewMessage::ViewportMouseMoved,
                     PlaylistsViewMessage::RowRightClicked,
-                ),
+                )
+                    .with_exit(PlaylistsViewMessage::ViewportMouseExited),
                 |track, idx| fields.row_cells(track, idx),
                 overlay,
             )

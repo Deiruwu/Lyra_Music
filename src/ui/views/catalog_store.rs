@@ -90,9 +90,14 @@ pub enum CatalogStoreMessage {
     TrackAddedToPlaylist(String, String, Result<(), String>),
 
     /// Resultado de quitar un track de una playlist CUSTOM.
-    /// `(playlist_id, track_id, result)`. Si falla, se revierte la
-    /// eliminación optimista de `playlist_order`.
     TrackRemovedFromPlaylist(String, String, Result<(), String>),
+
+    /// Resultado de reordenar tracks en una playlist CUSTOM.
+    TrackReordered(String, Result<(), String>),
+
+    /// Un nuevo track fue descargado exitosamente desde el buscador.
+    /// Se inyecta en el catálogo en tiempo real para evitar recargar todo.
+    TrackDownloadedAndCached(Track),
 }
 
 pub struct CatalogStore {
@@ -365,6 +370,45 @@ impl CatalogStore {
         )
     }
 
+    /// Reordena un track dentro de una playlist CUSTOM.
+    /// Muta `playlist_order` de forma optimista (trasladando el elemento
+    /// de `from_idx` a `to_idx`) y persiste el nuevo orden O(N) en SQLite
+    /// en background usando un gap constante de 1024.0.
+    pub fn reorder_track_in_playlist(&mut self, playlist_id: &str, from_idx: usize, to_idx: usize) -> Task<CatalogStoreMessage> {
+        let Some(ids) = self.playlist_order.get_mut(playlist_id) else {
+            return Task::none();
+        };
+
+        if from_idx >= ids.len() || to_idx >= ids.len() || from_idx == to_idx {
+            return Task::none();
+        }
+
+        // Mutación optimista en memoria: sacamos el track de su posición original
+        // y lo reinsertamos en el nuevo índice.
+        let track_id = ids.remove(from_idx);
+        ids.insert(to_idx, track_id);
+
+        // Generamos el payload para el batch UPDATE en SQLite.
+        // Multiplicamos por 1024.0 para mantener consistencia con cómo
+        // insertas posiciones en `like_track`.
+        let updates: Vec<(String, f64)> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), (i as f64) * 1024.0))
+            .collect();
+
+        let manager = Arc::clone(&self.playlist_manager);
+        let playlist_id_clone = playlist_id.to_string();
+
+        Task::perform(
+            async move {
+                let result = manager.reorder_tracks(&playlist_id_clone, &updates).await;
+                (playlist_id_clone, result.map_err(|e| e.to_string()))
+            },
+            |(pid, res)| CatalogStoreMessage::TrackReordered(pid, res),
+        )
+    }
+
     // ── CARGA (chunking) ─────────────────────────────────────────────────────
 
     pub fn update(&mut self, msg: CatalogStoreMessage) -> Task<CatalogStoreMessage> {
@@ -568,6 +612,24 @@ impl CatalogStore {
                     self.last_error = Some(e);
                 } else {
                     self.last_error = None;
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::TrackReordered(_playlist_id, result) => {
+                if let Err(e) = result {
+                    self.last_error = Some(e);
+                } else {
+                    self.last_error = None;
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::TrackDownloadedAndCached(track) => {
+                if !self.index_by_id.contains_key(&track.id) {
+                    let next_idx = self.all_tracks.len();
+                    self.index_by_id.insert(track.id.clone(), next_idx);
+                    self.all_tracks.push(track);
                 }
                 Task::none()
             }

@@ -132,7 +132,15 @@ impl VirtualWindow {
 pub struct ScrollTracker {
     pub offset_y: f32,
     pub viewport_height: f32,
+    pub viewport_width: f32,
 }
+
+/// Ancho aproximado, en píxeles, de la franja donde vive el scrollbar
+/// nativo de iced (thumb + su padding lateral). Se usa para distinguir
+/// un click sobre el contenido real de la lista de un click sobre el
+/// scrollbar, ya que ambos son reportados por el mismo `mouse_area`
+/// que envuelve el `scrollable`.
+pub const SCROLLBAR_MARGIN_PX: f32 = 16.0;
 
 impl ScrollTracker {
 
@@ -143,7 +151,16 @@ impl ScrollTracker {
     pub fn update(&mut self, viewport: iced::widget::scrollable::Viewport) {
         let offset = viewport.absolute_offset();
         self.offset_y = offset.y;
-        self.viewport_height = viewport.bounds().height;
+        let bounds = viewport.bounds();
+        self.viewport_height = bounds.height;
+        self.viewport_width = bounds.width;
+    }
+
+    /// `true` si el punto (en coordenadas relativas al área del
+    /// scrollable) cae dentro del contenido real, es decir, fuera de
+    /// la franja donde vive el scrollbar.
+    pub fn is_within_content(&self, point_x: f32) -> bool {
+        self.viewport_width <= 0.0 || point_x < (self.viewport_width - SCROLLBAR_MARGIN_PX)
     }
 
     pub fn window(&self, row_height: f32, total_items: usize, buffer_rows: usize) -> VirtualWindow {
@@ -154,6 +171,34 @@ impl ScrollTracker {
             total_items,
             buffer_rows,
         )
+    }
+
+    /// Calcula cuántos píxeles habría que desplazar el scroll en este
+    /// frame si el mouse (en coordenadas relativas al viewport, `local_y`)
+    /// está dentro de la zona "caliente" de auto-scroll cerca del borde
+    /// superior o inferior mientras se arrastra algo.
+    ///
+    /// Devuelve `None` si el punto está fuera de ambas zonas calientes.
+    /// El signo indica dirección: negativo = subir, positivo = bajar.
+    ///
+    /// `zone_px`: alto de la franja sensible desde cada borde.
+    /// `max_speed_px_per_tick`: velocidad máxima de scroll por tick,
+    /// alcanzada cuando el mouse está pegado al borde extremo.
+    pub fn autoscroll_delta(&self, local_y: f32, zone_px: f32, max_speed_px_per_tick: f32) -> Option<f32> {
+        if self.viewport_height <= 0.0 || zone_px <= 0.0 {
+            return None;
+        }
+
+        if local_y < zone_px {
+            // Cerca del borde superior: entre más pegado a y=0, más rápido.
+            let intensity = ((zone_px - local_y) / zone_px).clamp(0.0, 1.0);
+            Some(-max_speed_px_per_tick * intensity)
+        } else if local_y > self.viewport_height - zone_px {
+            let intensity = ((local_y - (self.viewport_height - zone_px)) / zone_px).clamp(0.0, 1.0);
+            Some(max_speed_px_per_tick * intensity)
+        } else {
+            None
+        }
     }
 }
 

@@ -19,19 +19,11 @@
 //! ```ignore
 //! use crate::ui::widgets::track_fields::Field;
 //!
-//! let fields = Field::index(30.0)
+//! let fields = Field::drag_handle(30.0)
+//!     .index_sortable(40.0, SORT_KEY_DEFAULT_ORDER)
 //!     .thumbnail(THUMBNAIL_SIZE + 12.0, THUMBNAIL_SIZE)
 //!     .title(SORT_KEY_TITLE)
-//!     .artist(SORT_KEY_ARTIST)
-//!     .album(SORT_KEY_ALBUM)
-//!     .duration(SORT_KEY_DURATION)
-//!     .bpm(SORT_KEY_BPM)
-//!     .camelot_key(SORT_KEY_KEY)
-//!     .added_at(SORT_KEY_ADDED_AT);
-//!
-//! // en vez de Self::columns() + Self::row_cells():
-//! let config = TrackListConfig { columns: fields.columns(), ...};
-//! track_list(config, &tracks, ..., |track, idx| fields.row_cells(track, idx), overlay)
+//!     // ...
 //! ```
 //!
 //! Favorites (sin AGREGADO) simplemente no encadena `.added_at(...)`;
@@ -54,26 +46,16 @@ use iced::{Color, Length};
 use crate::model::Track;
 use crate::ui::widgets::track_list::{format_added_at, format_duration, Cell, Column};
 
-/// Un campo = un header (`Column`) + una forma de extraer su `Cell` de
-/// un `Track`. `extract` es un `Box<dyn Fn>` (no genérico por campo)
-/// para poder guardar una `Vec<Field<Message>>` homogénea — el costo de
-/// la indirección es irrelevante frente al de reconstruir la vista
-/// completa cada frame.
 pub struct Field<'a, Message> {
     column: Column,
     extract: Box<dyn Fn(&Track) -> Cell<'a, Message> + 'a>,
 }
 
-/// Punto de entrada. Cada método `Field::xxx(...)` crea la lista con un
-/// primer campo; los siguientes se encadenan con los métodos de
-/// instancia de abajo. Se separa de `FieldList::new()` vacío porque en
-/// la práctica toda tabla arranca con `index` o `index_sortable`, y
-/// encadenar desde ahí lee mejor que `FieldList::new().index(...)`.
 impl<'a, Message: 'a> Field<'a, Message> {
     pub fn index(width: f32) -> FieldList<'a, Message> {
         FieldList(vec![Field {
             column: Column::index(width),
-            extract: Box::new(|_track| Cell::Index(0)), // el índice real lo inyecta track_list en tiempo de render; ver FieldList::row_cells
+            extract: Box::new(|_track| Cell::Index(0)),
         }])
     }
 
@@ -85,19 +67,12 @@ impl<'a, Message: 'a> Field<'a, Message> {
     }
 }
 
-/// Lista encadenable de `Field`s. Cada método de instancia agrega un
-/// campo y devuelve `self` para seguir encadenando — es la
-/// "concatenación de llamadas" que arma la tabla completa en una sola
-/// expresión.
 pub struct FieldList<'a, Message>(Vec<Field<'a, Message>>);
 
 impl<'a, Message: 'a> FieldList<'a, Message> {
     pub fn thumbnail(mut self, width: f32, size: f32) -> Self {
         self.0.push(Field {
             column: Column::thumbnail(width, size),
-            // El widget reemplaza este placeholder con el Handle real
-            // cacheado (ver `track_list::track_list`, match sobre
-            // `Cell::Thumbnail(_)`) — igual que hacían las vistas antes.
             extract: Box::new(|_track| Cell::Thumbnail(None)),
         });
         self
@@ -166,10 +141,6 @@ impl<'a, Message: 'a> FieldList<'a, Message> {
         self
     }
 
-    /// Escape hatch para columnas que no encajan en los atajos de
-    /// arriba (formato específico de una vista, un campo nuevo del
-    /// modelo que aún no tiene atajo aquí, etc.) sin tener que crecer
-    /// este builder por cada caso puntual.
     pub fn custom(
         mut self,
         column: Column,
@@ -179,20 +150,10 @@ impl<'a, Message: 'a> FieldList<'a, Message> {
         self
     }
 
-    /// Extrae la lista de `Column` para `TrackListConfig::columns`.
     pub fn columns(&self) -> Vec<Column> {
         self.0.iter().map(|f| f.column.clone()).collect()
     }
 
-    /// Construye las `Cell` de una fila en el mismo orden que
-    /// `columns()`. Firma calzada con el parámetro `row_cells` que
-    /// espera `track_list(...)` (`impl Fn(&'a Track, usize) -> Vec<Cell<'a, Message>>`),
-    /// así que se pasa directo: `|track, idx| fields.row_cells(track, idx)`.
-    ///
-    /// El primer campo de índice recibe `idx` (1-based, igual que antes)
-    /// en vez del placeholder `Cell::Index(0)` de su `extract` — el
-    /// índice de fila es el único dato que no sale del `Track`, así que
-    /// se resuelve aquí en vez de en el closure de cada campo.
     pub fn row_cells(&self, track: &'a Track, index: usize) -> Vec<Cell<'a, Message>> {
         self.0
             .iter()

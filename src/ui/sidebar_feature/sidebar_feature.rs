@@ -29,7 +29,6 @@ const EXPANDED_WIDTH: f32 = 200.0;
 const ANIMATION_SPEED: f32 = 12.0;
 const SNAP_EPSILON: f32 = 0.5;
 
-// ── REGISTRO ESTÁTICO DE VISTAS PRIMARIAS ───────────────────────────────────
 const PRIMARY_VIEWS: &[ViewData] = &[
     home_view::VIEW_DATA,
     explorer_view::VIEW_DATA,
@@ -42,7 +41,6 @@ pub enum ActiveSelection {
     PlaylistDetail(String),
 }
 
-/// Acción disponible en el menú contextual de una fila de playlist.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlaylistContextAction {
     Delete,
@@ -52,9 +50,12 @@ pub enum PlaylistContextAction {
 pub enum SidebarFeatureMessage {
     ToggleExpanded,
     AnimationTick,
-    /// Propaga el estado de Shift/Ctrl/Cmd a la vista activa para selección
-    /// múltiple (range-select con Shift, toggle con Ctrl/Cmd).
     ModifiersChanged(Modifiers),
+
+    // Trackers Globales de Mouse
+    GlobalMousePress,
+    GlobalMouseRelease,
+
     SelectNav(NavId),
     SelectPlaylist(String),
     CreatePlaylistRequested,
@@ -64,37 +65,16 @@ pub enum SidebarFeatureMessage {
     Favorites(FavoritesViewMessage),
     Playlists(PlaylistsViewMessage),
 
-    // ── Crear playlist (input inline en el sidebar) ─────────────────────
-    /// El "+" fue presionado: muestra el campo de texto inline.
     ShowCreatePlaylistInput,
-    /// El usuario tipea en el campo inline.
     NewPlaylistNameChanged(String),
-    /// Enter o click en confirmar: crea la playlist si el nombre no está vacío.
     SubmitNewPlaylist,
-    /// Esc o click fuera: cierra el campo sin crear nada.
     CancelNewPlaylist,
 
-    // ── Eliminar playlist (click derecho + confirmación) ────────────────
-    /// Right-click sobre una fila de playlist. La posición real se toma
-    /// del último `ViewportMouseMoved` recibido (ver `ContextMenu::toggle`).
     PlaylistRowRightClicked(String),
-    /// Tracking de mouse/viewport requerido por `ContextMenu`. Debe venir
-    /// de un `mouse_area` que envuelva TODO `view_sidebar` (no cada fila),
-    /// para que las coordenadas ya sean relativas al viewport.
     ViewportMouseMoved(Point),
-    /// TODO: `mouse_area` no expone tamaño de viewport directamente. Falta
-    /// conectar esto a un evento real (p. ej. `window::resize_events()` o
-    /// un `on_resize` de `scrollable`) para que `ContextMenu::clamp_anchor`
-    /// tenga datos reales; por ahora el menú puede quedar sin clamping.
     ViewportResized(Size),
     PlaylistContextMenuAction(PlaylistContextAction, String),
     DismissPlaylistContextMenu,
-    /// El menú de playlist del sidebar no tiene ningún `Submenu` hoy
-    /// (solo "Eliminar playlist"), pero `ContextMenu::view` ahora pide
-    /// siempre un callback de hover de submenú — este mensaje solo
-    /// existe para satisfacer esa firma; su `update()` es un no-op real
-    /// (`set_open_submenu` nunca tendrá efecto visible sin un
-    /// `ContextMenuItem::submenu` en la lista).
     DismissPlaylistContextMenuSubmenuHover(Option<usize>),
     ConfirmDeletePlaylist,
     CancelDeletePlaylist,
@@ -113,8 +93,6 @@ pub struct SidebarFeature {
     pub catalog_store: CatalogStore,
     manager: Arc<TrackManager>,
 
-    /// `Some(texto_actual)` mientras el campo inline de "nueva playlist"
-    /// está visible; `None` cuando está oculto (estado por defecto).
     new_playlist_input: Option<String>,
 
     playlist_context_menu: ContextMenu<String>,
@@ -161,13 +139,18 @@ impl SidebarFeature {
             iced::Subscription::none()
         };
 
-        // Necesaria para que RowClicked en ExplorerView/FavoritesView/PlaylistsView
-        // sepa si Shift/Ctrl/Cmd están presionados (selección múltiple).
-        // Se usa el listener genérico de eventos (en vez de keyboard::on_key_press,
-        // que no existe en esta versión de iced) y se filtra KeyPressed/KeyReleased;
-        // ambos actualizan el mismo estado para que soltar Shift no deje el
-        // range-select "pegado".
-        let modifiers_sub = iced::event::listen_with(|event, _status, _window| match event {
+        // Mientras el usuario arrastra una fila en la playlist para
+        // reordenarla, mantenemos un tick de 16ms para poder autoscrollear
+        // aunque el mouse deje de moverse cerca del borde del viewport.
+        let autoscroll_sub = if self.playlists_view.is_dragging() {
+            iced::time::every(std::time::Duration::from_millis(16))
+                .map(|_| SidebarFeatureMessage::Playlists(PlaylistsViewMessage::AutoScrollTick))
+        } else {
+            iced::Subscription::none()
+        };
+
+        // Unificamos el rastreo del teclado y del ratón en una sola sub global
+        let global_events_sub = iced::event::listen_with(|event, _status, _window| match event {
             iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { modifiers, .. }) => {
                 Some(SidebarFeatureMessage::ModifiersChanged(modifiers))
             }
@@ -177,10 +160,16 @@ impl SidebarFeature {
             iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                 Some(SidebarFeatureMessage::ModifiersChanged(modifiers))
             }
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
+                Some(SidebarFeatureMessage::GlobalMousePress)
+            }
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                Some(SidebarFeatureMessage::GlobalMouseRelease)
+            }
             _ => None,
         });
 
-        iced::Subscription::batch(vec![animation_sub, modifiers_sub])
+        iced::Subscription::batch(vec![animation_sub, autoscroll_sub, global_events_sub])
     }
 
     pub fn update(
@@ -206,9 +195,6 @@ impl SidebarFeature {
             }
 
             SidebarFeatureMessage::ModifiersChanged(modifiers) => {
-                // Se propaga a las tres vistas (no solo a la activa): son baratas
-                // de actualizar y así evitamos estado obsoleto si el usuario
-                // suelta Shift mientras cambia de vista.
                 let (explorer_task, _out) = self.explorer_view.update(
                     ExplorerViewMessage::ModifiersChanged(modifiers),
                     &self.catalog_store,
@@ -231,6 +217,33 @@ impl SidebarFeature {
                     playlists_task.map(SidebarFeatureMessage::Playlists),
                 ]);
                 (task, SidebarFeatureOutMessage::Idle)
+            }
+
+            // Derivamos los clicks globales al orquestador de Playlists
+            SidebarFeatureMessage::GlobalMousePress => {
+                let (task, _out) = self.playlists_view.update(
+                    PlaylistsViewMessage::GlobalMousePress,
+                    &self.catalog_store,
+                    thumbnails,
+                );
+                (task.map(SidebarFeatureMessage::Playlists), SidebarFeatureOutMessage::Idle)
+            }
+
+            SidebarFeatureMessage::GlobalMouseRelease => {
+                let (task, out_msg) = self.playlists_view.update(
+                    PlaylistsViewMessage::GlobalMouseRelease,
+                    &self.catalog_store,
+                    thumbnails,
+                );
+
+                let mut extra_tasks = vec![task.map(SidebarFeatureMessage::Playlists)];
+
+                if let PlaylistsViewOutMessage::RequestReorder(playlist_id, from, to) = out_msg {
+                    let reorder_task = self.catalog_store.reorder_track_in_playlist(&playlist_id, from, to);
+                    extra_tasks.push(reorder_task.map(SidebarFeatureMessage::Catalog));
+                }
+
+                (Task::batch(extra_tasks), SidebarFeatureOutMessage::Idle)
             }
 
             SidebarFeatureMessage::SelectNav(nav_id) => {
@@ -393,7 +406,6 @@ impl SidebarFeature {
                 (task, SidebarFeatureOutMessage::Idle)
             }
 
-            // ── BUBBLE-UP DE MENSAJES ───────────────────────────────────────
             SidebarFeatureMessage::Home(msg) => {
                 let (task, out_msg) = self.home_view.update(msg);
                 let out = match out_msg {
@@ -420,8 +432,6 @@ impl SidebarFeature {
                     }
 
                     ExplorerViewOutMessage::RequestFrontEnqueue(tracks) => {
-                        // Orden inverso para que, tras encolar uno por uno al frente,
-                        // el primer track seleccionado quede efectivamente primero.
                         for track in tracks.into_iter().rev() {
                             self.manager.enqueue_front(track);
                         }
@@ -472,9 +482,6 @@ impl SidebarFeature {
                         }
                     }
                     FavoritesViewOutMessage::RequestFrontEnqueue(tracks) => {
-                        // Se insertan en orden inverso para que, tras encolar todos
-                        // al frente uno por uno, el primer track seleccionado quede
-                        // efectivamente primero en la cola (mismo criterio que Explorer).
                         for track in tracks.into_iter().rev() {
                             self.manager.enqueue_front(track);
                         }
@@ -520,8 +527,6 @@ impl SidebarFeature {
                         }
                     }
                     PlaylistsViewOutMessage::RequestFrontEnqueue(tracks) => {
-                        // Ver comentario equivalente en el handler de Favorites: orden
-                        // inverso para preservar el orden de selección al frente de la cola.
                         for track in tracks.into_iter().rev() {
                             self.manager.enqueue_front(track);
                         }
@@ -548,6 +553,8 @@ impl SidebarFeature {
                             extra_tasks.push(add_task.map(SidebarFeatureMessage::Catalog));
                         }
                     }
+                    // La llamada al RequestReorder se atiende directamente en SidebarFeatureMessage::GlobalMouseRelease
+                    PlaylistsViewOutMessage::RequestReorder(_, _, _) => {}
                     PlaylistsViewOutMessage::CreatePlaylistRequested => {
                         self.new_playlist_input = Some(String::new());
                         if !self.is_expanded {
@@ -652,7 +659,6 @@ impl SidebarFeature {
         self.view_sidebar_with_overlays(tracked)
     }
 
-    /// EL ENRUTADOR DE CONTENIDO: Cada distrito renderiza su propio DOM.
     pub fn view_content<'a>(&'a self, thumbnails: &'a ThumbnailCache) -> Element<'a, SidebarFeatureMessage> {
         match &self.active_selection {
             ActiveSelection::Nav(NavId::Home) => {
