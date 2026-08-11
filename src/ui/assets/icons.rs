@@ -73,6 +73,12 @@ pub enum Icon {
 
     #[strum(serialize = "...")]
     VolumeUp,
+
+    #[strum(serialize = "")]
+    Return,
+
+    #[strum(serialize = "")]
+    BurgerMenu,
 }
 
 impl Icon {

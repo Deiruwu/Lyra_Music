@@ -4,6 +4,7 @@ mod audio;
 mod ui;
 pub mod tray;
 pub mod db;
+pub mod utils;
 
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::Ordering;
@@ -23,9 +24,10 @@ use crate::tray::TrayFlags;
 
 use crate::ui::playback_feature::playback_feature::{PlaybackFeature, PlaybackFeatureMessage, PlaybackOutMessage};
 use crate::ui::search_feature::search_feature::{SearchFeature, SearchFeatureMessage, SearchFeatureOutMessage};
-use crate::ui::sidebar_feature::sidebar_feature::{
-    SidebarFeature, SidebarFeatureMessage
+use crate::ui::sidebar_feature::sidebar_feature_v2::{
+    SidebarFeatureV2 as SidebarFeature, SidebarMessage as SidebarFeatureMessage
 };
+use crate::ui::views::view_coordinator::CoordinatorMessage;
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::views::catalog_store::CatalogStoreMessage;
 
@@ -83,7 +85,7 @@ impl App {
         let sidebar_client = Arc::clone(&client);
 
         let radio = RadioWorker::new(Arc::clone(&manager), client).spawn();
-        radio.set_enabled(true);
+        radio.set_enabled(false);
         radio.set_queue_target(15);
 
         let (window_id, open_task) = window::open(window::Settings {
@@ -92,19 +94,6 @@ impl App {
             ..Default::default()
         });
 
-        // `PlaylistManager` necesita el pool de SQLite ya conectado (init_db
-        // corre las migraciones) antes de poder construirse (cachea el id
-        // de la playlist SYSTEM con una query). Ambos pasos son async, pero
-        // `App::init()` es síncrono.
-        //
-        // `iced` está compilado con el feature "tokio" (ver Cargo.toml), lo
-        // que significa que ya arranca su propio runtime tokio multi-thread
-        // para ejecutar `Task::perform` — es el mismo runtime que hace
-        // funcionar el `tokio::spawn` de `CatalogStore::delete_track`. Por
-        // eso `block_in_place` es seguro aquí: el runtime activo es
-        // multi-thread (rt-multi-thread está en Cargo.toml). El fallback a
-        // `Runtime::new()` queda solo como red de seguridad; en la práctica
-        // nunca debería activarse dado este setup.
         let database_url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "sqlite://music_center.db".into());
 
@@ -213,16 +202,14 @@ impl App {
                         iced::Task::none()
                     }
                     PlaybackOutMessage::RequestToggleLike(track_id) => {
-                        // El estado de like vive en `CatalogStore`, dueño de
-                        // `SidebarFeature`; `PlaybackFeature` no lo conoce,
-                        // así que el toggle se resuelve aquí y el resultado
-                        // (LikeToggled) se enruta como un CatalogStoreMessage
-                        // normal hacia el sidebar.
                         self.sidebar_feature
+                            .coordinator
                             .catalog_store
                             .toggle_like(&track_id)
                             .map(|catalog_msg| {
-                                AppMessage::SidebarFeature(SidebarFeatureMessage::Catalog(catalog_msg))
+                                AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
+                                    CoordinatorMessage::Catalog(catalog_msg)
+                                ))
                             })
                     }
                     PlaybackOutMessage::Idle => iced::Task::none(),
@@ -235,13 +222,7 @@ impl App {
             }
 
             AppMessage::SidebarFeature(msg) => {
-                // `SidebarFeature` resuelve internamente play/enqueue y el
-                // flujo de creación/eliminación de playlists contra sus
-                // propios distritos (Explorer/Playlists) y `CatalogStore`.
-                // Main ya no necesita reaccionar a ningún out-message por
-                // ahora.
-                let (task, _out_msg) = self.sidebar_feature.update(msg, &mut self.view_thumbnails);
-
+                let task = self.sidebar_feature.update(msg);
                 task.map(AppMessage::SidebarFeature)
             }
 
@@ -260,9 +241,9 @@ impl App {
                     feature_task = t;
 
                     catalog_task = iced::Task::done(AppMessage::SidebarFeature(
-                        SidebarFeatureMessage::Catalog(
+                        SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(
                             CatalogStoreMessage::TrackDownloadedAndCached(track_metadata)
-                        )
+                        ))
                     ));
                 }
 
@@ -279,7 +260,7 @@ impl App {
         let center_content: Element<'_, AppMessage> = if self.is_theater_mode {
             self.playback_feature.view_theater().map(AppMessage::PlaybackFeature)
         } else {
-            self.sidebar_feature.view_content(&self.view_thumbnails).map(AppMessage::SidebarFeature)
+            self.sidebar_feature.view_content().map(AppMessage::SidebarFeature)
         };
 
         let center_view = container(center_content)
@@ -295,12 +276,10 @@ impl App {
                 ..Default::default()
             });
 
-        // La Queue ahora es un contenedor directo, desprovisto de alineación absoluta
         let queue_view = container(
             self.playback_feature.view_queue(&self.player_thumbnails).map(AppMessage::PlaybackFeature)
         );
 
-        // Añadimos la Queue al final de la fila. Al expandirse, empujará naturalmente a center_view.
         let content_layer = row![
             self.sidebar_feature.view_sidebar().map(AppMessage::SidebarFeature),
             space().width(15),
@@ -310,7 +289,6 @@ impl App {
         ]
             .width(Length::Fill)
             .height(Length::Fill)
-            // Ajustamos el padding general para no pegarnos a los bordes de la ventana
             .padding(Padding {
                 top: 10.0,
                 right: 15.0,
@@ -318,11 +296,12 @@ impl App {
                 left: 0.0,
             });
 
-        // El stack central ahora solo tiene la capa base de layouts (sin overlay de queue)
+        // 1. EXTRAEMOS los overlays de aquí. Este stack ahora es netamente estructural
+        // para el cuerpo de la aplicación y ya no mezcla popups.
         let layout_stack = stack![content_layer];
 
         let is_current_liked = self.playback_feature.current_track_id()
-            .and_then(|id| self.sidebar_feature.catalog_store.track_by_id(id))
+            .and_then(|id| self.sidebar_feature.coordinator.catalog_store.track_by_id(id))
             .map(|t| t.liked)
             .unwrap_or(false);
 
@@ -347,11 +326,23 @@ impl App {
                 ..Default::default()
             });
 
-        stack![
-            app_root,
+        // 2. CONSTRUIMOS EL STACK RAÍZ ABSOLUTO.
+        // El origen (0,0) de este stack coincide milimétricamente con el (0,0) de la ventana nativa
+        // y del evento global iced::mouse::Event::CursorMoved.
+        let mut absolute_root_layers: Vec<Element<'_, AppMessage>> = vec![
+            app_root.into(),
             search_overlay,
-        ]
-            .into()
+        ];
+
+        // 3. INYECTAMOS LOS OVERLAYS DEL SIDEBAR (Menús y Diálogos) EN LA CÚSPIDE.
+        absolute_root_layers.extend(
+            self.sidebar_feature
+                .view_overlays()
+                .into_iter()
+                .map(|layer| layer.map(AppMessage::SidebarFeature)),
+        );
+
+        stack(absolute_root_layers).into()
     }
     pub fn subscription(&self) -> iced::Subscription<AppMessage> {
         let search_sub   = self.search_feature.subscription().map(AppMessage::SearchFeature);
