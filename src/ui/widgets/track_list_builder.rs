@@ -8,7 +8,7 @@ use strum_macros::AsRefStr;
 use crate::model::Track;
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 use crate::ui::styles::styles::{minimal_button, selected_row_container, transparent_button, RowSelectionShape};
-use crate::ui::utils::thumbnail_cache::ThumbnailCache;
+use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
 use crate::utils::formatting::{format_added_at, format_duration};
@@ -118,12 +118,6 @@ fn active_columns(show_added_at: bool) -> Vec<TrackColumn> {
 /// Ordena `tracks` in-place según `sort_key` (índice de TrackColumn) y
 /// dirección. `sort_key == Index` (0) o `None` deja el orden tal cual llega
 /// — es el caso "sin ordenar" de Favoritos/Playlist.
-///
-/// Vive acá porque el orden real es puramente de presentación (no hay
-/// filtrado/orden en CatalogStore); cada vista guarda su propio
-/// (active_sort_key, sort_direction_asc) y llama esto antes de pasarle los
-/// tracks al builder, para que el orden visual y el orden que ve
-/// TrackBuilder.sort(...) (solo pinta la flechita) sean consistentes.
 pub fn sort_tracks(tracks: &mut [&Track], sort_key: Option<usize>, ascending: bool) {
     let Some(key) = sort_key else { return };
     if key == TrackColumn::Index.as_usize() {
@@ -149,41 +143,25 @@ pub fn sort_tracks(tracks: &mut [&Track], sort_key: Option<usize>, ascending: bo
     });
 }
 
-/// Dado el ScrollTracker de una vista y los tracks que tiene renderizados
-/// AHORA, calcula qué está en la ventana visible (+buffer) — separado en
-/// las dos claves distintas que usa ThumbnailCache: `thumb_key(track)`
-/// (album-first, la que pide/valida el caché de COLOR) y `track.id`
-/// (la que pide/valida el caché de GRIS). Un solo HashSet para ambos es
-/// un bug real y sutil — request_gray/on_gray_finished usan track.id
-/// directo, nunca thumb_key, así que compararlos contra el mismo set
-/// compara cosas de tipos distintos y casi siempre da falso negativo.
-///
-/// Pensada para dos momentos distintos, con la MISMA función:
-/// - Dentro de TrackEvent::Scrolled (en cada *View::update), para armar
-///   ThumbnailsNeeded.
-/// - Dentro del sidebar, al recibir ThumbnailColorLoaded/GrayLoaded, para
-///   decidir si un resultado que llegó tarde sigue siendo relevante o si
-///   la ventana visible ya cambió (scroll rápido) y hay que descartarlo
-///   sin insertarlo — insertar un resultado ya-no-visible desplaza en el
-///   LRU algo que sí se ve ahora mismo.
-pub struct VisibleTrackKeys {
-    pub color_keys: HashSet<String>,
-    pub track_ids: HashSet<String>,
-}
-
-pub fn visible_track_keys(
+/// Dado el ScrollTracker de una vista y los tracks renderizados AHORA,
+/// calcula el universo `(key, url)` de la ventana visible (+buffer) que
+/// AsyncThumbnail::sync() debe mantener vivo. Reemplaza tanto
+/// `pending_thumbnail_requests` como `visible_track_keys` del sistema
+/// anterior — sync() ya decide internamente qué falta pedir y qué podar,
+/// así que solo hace falta darle el universo deseado completo.
+pub fn visible_thumbnail_targets(
     scroll: &ScrollTracker,
     tracks: &[&Track],
     row_height: f32,
     buffer_rows: usize,
-) -> VisibleTrackKeys {
+) -> Vec<(String, String)> {
     let window = scroll.window(row_height, tracks.len(), buffer_rows);
     let visible = &tracks[window.start..window.end.min(tracks.len())];
 
-    VisibleTrackKeys {
-        color_keys: visible.iter().map(|t| crate::ui::utils::thumbnail_cache::thumb_key(t)).collect(),
-        track_ids: visible.iter().map(|t| t.id.clone()).collect(),
-    }
+    visible
+        .iter()
+        .filter_map(|t| t.thumbnail_small.clone().map(|url| (thumb_key(t), url)))
+        .collect()
 }
 
 // ── Drag visual (solo pintar; el estado vive en la vista) ─────────
@@ -199,7 +177,7 @@ struct DragVisual {
 pub struct TrackBuilder<'a, Message> {
     tracks: Vec<&'a Track>,
     scroll: &'a ScrollTracker,
-    thumbnails: &'a ThumbnailCache,
+    thumbnails: &'a AsyncThumbnail,
     selected_ids: &'a HashSet<String>,
     scrollable_id: &'static str,
 
@@ -226,7 +204,7 @@ where
     pub fn new(
         tracks: Vec<&'a Track>,
         scroll: &'a ScrollTracker,
-        thumbnails: &'a ThumbnailCache,
+        thumbnails: &'a AsyncThumbnail,
         selected_ids: &'a HashSet<String>,
         scrollable_id: &'static str,
     ) -> Self {
@@ -426,7 +404,7 @@ where
     fn ghost_overlay(&self, fields: &[TrackColumn]) -> Option<Element<'a, Message>> {
         let drag = self.drag.as_ref()?;
         let track = *self.tracks.get(drag.source_index)?;
-        let handle = self.thumbnails.peek_for_render(track);
+        let handle = self.thumbnails.get(&thumb_key(track)).cloned();
         let display_index = drag.source_index + 1;
 
         let mut row_children: Vec<Element<'a, Message>> = Vec::with_capacity(fields.len() + 2);
@@ -484,23 +462,8 @@ where
         let selected_ids = self.selected_ids;
         let dragging_index = self.drag.as_ref().map(|d| d.source_index);
 
-        let mut current_frame_log = String::new();
-
         for visible_idx in window.start..window.end {
             let Some(track) = self.tracks.get(visible_idx).copied() else { continue };
-
-            if visible_idx < window.start + 30 {
-                let thumb_key = crate::ui::utils::thumbnail_cache::thumb_key(track);
-                let handle = self.thumbnails.peek_for_render(track);
-                current_frame_log.push_str(&format!(
-                    "Idx: {} | ID: {} | Titulo: {} | Key: {} | Handle: {}\n",
-                    visible_idx,
-                    track.id,
-                    track.title,
-                    thumb_key,
-                    handle.is_some()
-                ));
-            }
 
             let is_dragging_this_row = dragging_index == Some(visible_idx);
 
@@ -510,7 +473,7 @@ where
                     .height(Length::Fixed(self.row_height))
                     .into()
             } else {
-                let handle = self.thumbnails.peek_for_render(track);
+                let handle = self.thumbnails.get(&thumb_key(track)).cloned();
                 let is_selected = selected_ids.contains(track.id.as_str());
                 let prev_selected = visible_idx > 0
                     && self.tracks.get(visible_idx - 1).is_some_and(|t| selected_ids.contains(t.id.as_str()));
@@ -522,36 +485,7 @@ where
             };
 
             rows = rows.push(rendered_row);
-        } // <-- Cierre del for loop
-
-        // ── ESCRITURA EXPLÍCITA LEYENDO EL ARCHIVO ──
-        let file_path = "debug_render.txt";
-        let separator = "\n--- CAMBIO EN EL BUILDER ---\n";
-        let mut should_write = true;
-
-        // 1. Leemos todo el archivo y comprobamos el último bloque explícitamente
-        if let Ok(content) = std::fs::read_to_string(file_path) {
-            if let Some(last_block) = content.split(separator).last() {
-                if last_block.trim() == current_frame_log.trim() {
-                    should_write = false; // Es idéntico a lo que ya está en disco
-                }
-            }
         }
-
-        // 2. Si el bloque es nuevo (o el archivo no existe), lo agregamos al final
-        if should_write {
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(file_path)
-            {
-                use std::io::Write;
-                let _ = write!(file, "{}{}", separator, current_frame_log);
-            }
-        }
-        // ────────────────────────────────────────────
-
-        rows = rows.push(space().height(window.bottom_spacer_height(self.row_height, self.tracks.len())));
 
         rows = rows.push(space().height(window.bottom_spacer_height(self.row_height, self.tracks.len())));
 

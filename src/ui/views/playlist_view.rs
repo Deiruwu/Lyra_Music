@@ -7,7 +7,7 @@ use crate::ui::widgets::catalog_search_input::catalog_search_input;
 use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
 use crate::ui::widgets::playlist_header::{playlist_header, PlaylistHeaderData};
 use crate::ui::widgets::track_list_builder::{sort_tracks, TrackBuilder, TrackEvent};
-use crate::ui::utils::thumbnail_cache::ThumbnailCache;
+use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::widgets::track_list_out_message::TrackListOutMessage;
 use crate::ui::widgets::track_context_builder::TrackContextMenuBuilder;
 
@@ -79,18 +79,16 @@ impl PlaylistView {
         msg: PlaylistMessage,
         rendered_tracks: &[&Track],
         playlists: &[(String, String)],
-        thumbnails: &ThumbnailCache,
     ) -> (Task<PlaylistMessage>, PlaylistOutMessage) {
         let mut out = PlaylistOutMessage::Idle;
 
         match &msg {
             // ─── EVENTOS DE LA TABLA (TrackBuilder) ────────────────────────
             PlaylistMessage::Table(event) => {
-                let action = self.list.process_event(event.clone(), rendered_tracks, thumbnails);
+                let action = self.list.process_event(event.clone(), rendered_tracks);
 
                 out = match action {
                     ListAction::PlayContext(id) => PlaylistOutMessage::RequestPlayContext { start_track_id: id },
-                    ListAction::ThumbnailsNeeded(missing) => PlaylistOutMessage::ThumbnailsNeeded(missing),
                     ListAction::None => PlaylistOutMessage::Idle,
 
                     ListAction::SortChanged(key) => {
@@ -98,7 +96,7 @@ impl PlaylistView {
                         PlaylistOutMessage::RequestChangeSort(key)
                     }
 
-                    ListAction::OpenContextMenu { anchor_id, selected_ids } => {
+                    ListAction::OpenContextMenu { anchor_id, selected_ids: _ } => {
                         let is_liked = rendered_tracks
                             .iter()
                             .find(|t| t.id == anchor_id)
@@ -193,7 +191,7 @@ impl PlaylistView {
         &'a self,
         playlist_name: &'a str,
         rendered_tracks: Vec<&'a Track>,
-        thumbnails: &'a ThumbnailCache,
+        thumbnails: &'a AsyncThumbnail,
     ) -> Element<'a, PlaylistMessage> {
         let track_count = rendered_tracks.len();
         let total_duration_seconds: i64 =

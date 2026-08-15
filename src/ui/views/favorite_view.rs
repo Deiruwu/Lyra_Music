@@ -6,8 +6,7 @@ use crate::JETBRAINS_MONO;
 use crate::model::Track;
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;
-use crate::ui::utils::thumbnail_cache::ThumbnailCache;
-use crate::ui::views::explorer_view_v2::ExplorerOutMessage;
+use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::views::states_view::{ListAction, TrackViewState};
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
@@ -57,22 +56,20 @@ impl FavoritesView {
         msg: FavoritesMessage,
         rendered_tracks: &[&Track],
         playlists: &[(String, String)],
-        thumbnails: &ThumbnailCache,
     ) -> (Task<FavoritesMessage>, FavoritesOutMessage) {
         let mut out = FavoritesOutMessage::Idle;
 
         match &msg {
             // ─── EVENTOS DE LA TABLA (TrackBuilder) ────────────────────────
             FavoritesMessage::Table(event) => {
-                let action = self.list.process_event(event.clone(), rendered_tracks, thumbnails);
+                let action = self.list.process_event(event.clone(), rendered_tracks);
 
                 out = match action {
                     ListAction::PlayContext(id) => FavoritesOutMessage::RequestPlayContext { start_track_id: id },
-                    ListAction::ThumbnailsNeeded(missing) => FavoritesOutMessage::ThumbnailsNeeded(missing),
                     ListAction::SortChanged(key) => FavoritesOutMessage::RequestChangeSort(key),
                     ListAction::None => FavoritesOutMessage::Idle,
 
-                    ListAction::OpenContextMenu { anchor_id, selected_ids } => {
+                    ListAction::OpenContextMenu { anchor_id, selected_ids: _ } => {
                         let is_liked = true;
 
                         let items = TrackContextMenuBuilder::new(is_liked)
@@ -105,7 +102,7 @@ impl FavoritesView {
     pub fn view<'a>(
         &'a self,
         rendered_tracks: Vec<&'a Track>,
-        thumbnails: &'a ThumbnailCache,
+        thumbnails: &'a AsyncThumbnail,
     ) -> Element<'a, FavoritesMessage> {
         let title = text("Me gusta")
             .size(28)

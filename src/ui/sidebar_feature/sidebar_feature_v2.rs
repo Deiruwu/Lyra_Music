@@ -218,7 +218,7 @@ impl SidebarFeatureV2 {
                         let name = self.coordinator
                             .playlists_metadata()
                             .iter()
-                            .find(|(pid, _, _)| pid == &playlist_id)
+                            .find(|(id, _, _)| id == &playlist_id)
                             .map(|(_, name, _)| name.clone())
                             .unwrap_or_else(|| "esta playlist".to_string());
                         self.delete_playlist_dialog.request(
@@ -306,7 +306,7 @@ impl SidebarFeatureV2 {
         let playlists_section: Element<'_, SidebarMessage> = if is_expanded_visual {
             self.render_expanded_playlists()
         } else {
-            space().into()
+            self.render_collapsed_playlists()
         };
 
         let sidebar_scroll = scrollable(column![
@@ -460,14 +460,35 @@ impl SidebarFeatureV2 {
             let id_for_click = playlist_id.clone();
             let id_for_right_click = playlist_id.clone();
 
+            let icon_box = container(
+                text(Icon::Playlist.as_str())
+                    .font(JETBRAINS_MONO)
+                    .size(16)
+                    .color(Color::from_rgb(0.5, 0.53, 0.6)),
+            )
+                .width(Length::Fixed(36.0))
+                .height(Length::Fixed(36.0))
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center)
+                .style(|_theme: &iced::Theme| container::Style {
+                    background: Some(Color::from_rgb(0.18, 0.18, 0.18).into()),
+                    border: iced::border::rounded(6.0),
+                    ..Default::default()
+                });
+
             let row_button = button(
-                text(playlist_name.as_str())
-                    .size(13)
-                    .font(SF_PRO)
-                    .color(row_color),
+                row![
+                    icon_box,
+                    space().width(10),
+                    text(playlist_name.as_str())
+                        .size(13)
+                        .font(SF_PRO)
+                        .color(row_color),
+                ]
+                    .align_y(Alignment::Center),
             )
                 .width(Length::Fill)
-                .padding(Padding { top: 8.0, bottom: 8.0, left: 26.0, right: 12.0 })
+                .padding(Padding { top: 8.0, bottom: 8.0, left: 14.0, right: 12.0 })
                 .style(transparent_button)
                 .on_press(SidebarMessage::SelectPlaylist(id_for_click));
 
@@ -475,6 +496,39 @@ impl SidebarFeatureV2 {
                 .on_right_press(SidebarMessage::PlaylistRowRightClicked(id_for_right_click));
 
             section = section.push(row_area);
+        }
+
+        section.into()
+    }
+
+    fn render_collapsed_playlists(&self) -> Element<'_, SidebarMessage> {
+        let mut section = column![].spacing(6).width(Length::Fill).align_x(Horizontal::Center);
+
+        for (playlist_id, _name, _cover) in self.coordinator.playlists_metadata() {
+            let id_for_select = playlist_id.clone();
+
+            let icon_box = container(
+                text(Icon::Playlist.as_str())
+                    .font(JETBRAINS_MONO)
+                    .size(18)
+                    .color(Color::from_rgb(0.5, 0.53, 0.6)),
+            )
+                .width(Length::Fixed(40.0))
+                .height(Length::Fixed(40.0))
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center)
+                .style(|_theme: &iced::Theme| container::Style {
+                    background: Some(Color::from_rgb(0.18, 0.18, 0.18).into()),
+                    border: iced::border::rounded(8.0),
+                    ..Default::default()
+                });
+
+            let btn = button(icon_box)
+                .padding(0)
+                .style(transparent_button)
+                .on_press(SidebarMessage::SelectPlaylist(id_for_select));
+
+            section = section.push(btn);
         }
 
         section.into()

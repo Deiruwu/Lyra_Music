@@ -3,12 +3,10 @@ use std::time::Instant;
 use iced::keyboard::Modifiers;
 use iced::Point;
 use crate::model::Track;
-use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 use crate::ui::utils::virtual_list::{ScrollTracker, VirtualWindow};
 use crate::ui::widgets::selection_state::SelectionState;
 use crate::ui::widgets::track_list_builder;
-use crate::ui::widgets::track_list_builder::{TrackEvent, VisibleTrackKeys};
-use crate::ui::widgets::track_list_out_message::VisibleTrackRef;
+use crate::ui::widgets::track_list_builder::TrackEvent;
 
 const ROW_HEIGHT: f32 = 60.0;
 const BUFFER_ROWS: usize = 15;
@@ -17,7 +15,6 @@ const BUFFER_ROWS: usize = 15;
 #[derive(Debug, Clone)]
 pub enum ListAction {
     PlayContext(String),
-    ThumbnailsNeeded(Vec<VisibleTrackRef>),
     SortChanged(usize),
     OpenContextMenu { anchor_id: String, selected_ids: HashSet<String> },
     None,
@@ -63,26 +60,12 @@ impl TrackViewState {
         self.scroll.window(ROW_HEIGHT, total_items, BUFFER_ROWS)
     }
 
-    pub fn pending_thumbnail_requests(
-        &self,
-        rendered_tracks: &[&Track],
-        thumbnails: &ThumbnailCache,
-    ) -> Vec<VisibleTrackRef> {
-        let window = self.visible_index_range(rendered_tracks.len());
-        rendered_tracks[window.start..window.end.min(rendered_tracks.len())]
-            .iter()
-            .filter(|t| thumbnails.peek_for_render(t).is_none())
-            .map(|t| VisibleTrackRef {
-                track_id: t.id.clone(),
-                color_key: thumb_key(t),
-                artwork_url: t.thumbnail_small.clone(),
-                state: t.state.clone(),
-            })
-            .collect()
-    }
-
-    pub fn visible_track_keys(&self, rendered_tracks: &[&Track]) -> VisibleTrackKeys {
-        track_list_builder::visible_track_keys(
+    /// Universo `(key, url)` de la ventana visible actual (+buffer),
+    /// listo para pasar a `AsyncThumbnail::sync()`. El coordinator llama
+    /// esto al final de su `update()`, sin importar qué evento llegó —
+    /// no hace falta invocarlo desde cada rama de `process_event`.
+    pub fn visible_thumbnail_targets(&self, rendered_tracks: &[&Track]) -> Vec<(String, String)> {
+        track_list_builder::visible_thumbnail_targets(
             &self.scroll,
             rendered_tracks,
             ROW_HEIGHT,
@@ -120,12 +103,10 @@ impl TrackViewState {
         is_double_click
     }
 
-
     pub fn process_event(
         &mut self,
         event: TrackEvent,
         rendered_tracks: &[&Track],
-        thumbnails: &ThumbnailCache
     ) -> ListAction {
         match event {
             TrackEvent::MouseMoved(p) => {
@@ -138,35 +119,11 @@ impl TrackViewState {
             }
             TrackEvent::Scrolled(viewport) => {
                 self.scroll.update(viewport);
-                let missing = self.pending_thumbnail_requests(rendered_tracks, thumbnails);
-
-                println!("pending thumbs [SCROLLED]: {}", missing.len());
-
-                if !missing.is_empty() {
-                    ListAction::ThumbnailsNeeded(missing)
-                } else {
-                    ListAction::None
-                }
+                ListAction::None
             }
             TrackEvent::Sorted(sort_key) => {
                 self.toggle_sort(sort_key);
-
-                let mut newly_sorted = rendered_tracks.to_vec();
-                track_list_builder::sort_tracks(
-                    &mut newly_sorted,
-                    self.active_sort_key,
-                    self.sort_direction_asc
-                );
-
-                let missing = self.pending_thumbnail_requests(&newly_sorted, thumbnails);
-
-                println!("pending thumbs [Sorted]: {}", missing.len());
-
-                if !missing.is_empty() {
-                    ListAction::ThumbnailsNeeded(missing)
-                } else {
-                    ListAction::None
-                }
+                ListAction::SortChanged(sort_key)
             }
             TrackEvent::Clicked(track, index) => {
                 if self.register_click(&track.id) {

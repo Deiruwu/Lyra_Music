@@ -6,7 +6,7 @@ use crate::JETBRAINS_MONO;
 use crate::model::Track;
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;
-use crate::ui::utils::thumbnail_cache::ThumbnailCache;
+use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::views::states_view::{ListAction, TrackViewState};
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
@@ -59,7 +59,6 @@ impl ExplorerView {
         msg: ExplorerMessage,
         rendered_tracks: &[&Track],
         playlists: &[(String, String)],
-        thumbnails: &ThumbnailCache,
     ) -> (Task<ExplorerMessage>, ExplorerOutMessage) {
         let mut out = ExplorerOutMessage::Idle;
 
@@ -68,15 +67,14 @@ impl ExplorerView {
                 let mut sorted_refs = rendered_tracks.to_vec();
                 sort_tracks(&mut sorted_refs, self.list.active_sort_key, self.list.sort_direction_asc);
 
-                let action = self.list.process_event(event.clone(), &sorted_refs, thumbnails);
+                let action = self.list.process_event(event.clone(), &sorted_refs);
 
                 out = match action {
                     ListAction::PlayContext(id) => ExplorerOutMessage::RequestPlayContext { start_track_id: id },
-                    ListAction::ThumbnailsNeeded(missing) => ExplorerOutMessage::ThumbnailsNeeded(missing),
                     ListAction::SortChanged(key) => ExplorerOutMessage::RequestChangeSort(key),
                     ListAction::None => ExplorerOutMessage::Idle,
 
-                    ListAction::OpenContextMenu { anchor_id, selected_ids } => {
+                    ListAction::OpenContextMenu { anchor_id, selected_ids: _ } => {
                         let is_liked = sorted_refs.iter().find(|t| t.id == anchor_id).map(|t| t.liked).unwrap_or(false);
 
                         let items = TrackContextMenuBuilder::new(is_liked)
@@ -128,7 +126,7 @@ impl ExplorerView {
     pub fn view<'a>(
         &'a self,
         rendered_tracks: Vec<&'a Track>,
-        thumbnails: &'a ThumbnailCache,
+        thumbnails: &'a AsyncThumbnail,
     ) -> Element<'a, ExplorerMessage> {
         let title = text("Catálogo de Pistas")
             .size(28)
