@@ -679,6 +679,7 @@ impl PlaylistsView {
             },
             cover_handle,
             PlaylistsViewMessage::PlayPlaylist(id.to_string()),
+            None,
         );
 
         let search_bar = catalog_search_input(

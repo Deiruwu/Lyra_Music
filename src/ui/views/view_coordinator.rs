@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use iced::{Element, Size, Task};
 
@@ -6,6 +7,7 @@ use crate::db::playlist_manager::PlaylistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
+use crate::ui::utils::cover_manager::CoverManager;
 use crate::ui::utils::search::SearchQuery;
 use crate::ui::views::catalog_store::{CatalogStore, CatalogStoreMessage};
 use crate::ui::views::home_view::{HomeView, HomeViewMessage};
@@ -47,7 +49,14 @@ pub enum CoordinatorMessage {
 
     // ─── Miniaturas ──────────────────────────────────────────────
     ThumbnailLoaded(String, Vec<u8>),
-    WindowResized(Size)
+    WindowResized(Size),
+
+    // ─── Portadas de playlists ──────────────────────────────────
+    /// Resultado del file-picker de portada: `(playlist_id, Option<path>)`.
+    /// `None` si el usuario canceló el diálogo.
+    CoverPicked { playlist_id: String, path: Option<PathBuf> },
+    /// Portada local leída/decodificada por `CoverManager`.
+    CoverLoaded(String, Vec<u8>),
 }
 
 /// Dueño de todo lo que las 3 vistas de tracks (Explorer/Favorites/
@@ -65,6 +74,9 @@ pub struct ViewCoordinator {
     pub manager: Arc<TrackManager>,
 
     pub thumbnails: AsyncThumbnail,
+
+    /// Portadas de playlists (archivos locales, keyed por playlist_id).
+    pub covers: CoverManager,
 
     pub home_view: HomeView,
     pub explorer_view: ExplorerView,
@@ -93,6 +105,7 @@ impl ViewCoordinator {
             catalog_store,
             manager,
             thumbnails: AsyncThumbnail::new(),
+            covers: CoverManager::new(),
             home_view: HomeView::new(),
             explorer_view: ExplorerView::new(),
             favorites_view: FavoritesView::new(),
@@ -115,7 +128,10 @@ impl ViewCoordinator {
         let wanted = self.active_view_thumbnail_targets();
         let sync_task = self.thumbnails.sync(&wanted, CoordinatorMessage::ThumbnailLoaded);
 
-        Task::batch([route_task, sync_task])
+        let wanted_covers = self.active_cover_targets();
+        let cover_task = self.covers.sync(&wanted_covers, CoordinatorMessage::CoverLoaded);
+
+        Task::batch([route_task, sync_task, cover_task])
     }
 
     fn update_route(&mut self, msg: CoordinatorMessage) -> Task<CoordinatorMessage> {
@@ -215,6 +231,12 @@ impl ViewCoordinator {
                             .collect();
                         Task::batch(tasks)
                     }
+                    PlaylistExtra::RequestCoverChange { playlist_id } => {
+                        Task::perform(
+                            crate::ui::utils::cover_picker::pick_cover_image(),
+                            move |path| CoordinatorMessage::CoverPicked { playlist_id: playlist_id.clone(), path },
+                        )
+                    }
                 });
 
                 Task::batch([view_task, out_task])
@@ -246,6 +268,33 @@ impl ViewCoordinator {
             CoordinatorMessage::ThumbnailLoaded(key, bytes) => {
                 self.thumbnails.on_loaded(key, bytes);
                 Task::none()
+            }
+
+            CoordinatorMessage::CoverLoaded(key, bytes) => {
+                self.covers.on_loaded(key, bytes);
+                Task::none()
+            }
+
+            CoordinatorMessage::CoverPicked { playlist_id, path } => {
+                if let Some(path) = path {
+                    match self.covers.import_cover(&playlist_id, &path) {
+                        Ok(cover_path) => {
+                            let cover_path_str = cover_path.to_string_lossy().into_owned();
+                            // 1. Persistir en DB + actualizar playlists_metadata
+                            //    en memoria para que el sidebar/header lo reflejen
+                            //    ya mismo (asincrónico, vía CatalogStore).
+                            self.catalog_store
+                                .update_playlist_cover(&playlist_id, &cover_path_str)
+                                .map(CoordinatorMessage::Catalog)
+                        }
+                        Err(e) => {
+                            eprintln!("No se pudo importar la portada de {playlist_id}: {e}");
+                            Task::none()
+                        }
+                    }
+                } else {
+                    Task::none()
+                }
             }
 
             CoordinatorMessage::WindowResized(size) => {
@@ -441,13 +490,39 @@ impl ViewCoordinator {
                     view.list.sort_direction_asc,
                 );
 
-                // Las portadas ya viven pre-codificadas en `playlists_metadata`
-                // (son locales; no pasan por el caché de thumbnails ni el
-                // semáforo), así que aquí solo entran las miniaturas de track.
+                // Las portadas de playlists ya viven pre-codificadas en
+                // `playlists_metadata` (son locales; no pasan por el caché de
+                // thumbnails ni el semáforo), así que aquí solo entran las
+                // miniaturas de track.
                 view.list.visible_thumbnail_targets(&tracks)
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Universo `(key, local_path)` de portadas que la UI quiere tener vivas
+    /// ahora mismo. Se resuelve siempre contra `playlists_metadata()` (todos
+    /// los covers del sidebar + el de la vista activa). Cada playlist pide
+    /// DOS variantes con claves separadas: la `Large` (header/detalle) y la
+    /// `Small` (sidebar ~40px), para que `CoverManager` las cachee por
+    /// separado a su propia resolución. `CoverManager` se encarga de retener
+    /// solo estas y cargar de disco las que falten.
+    fn active_cover_targets(&self) -> Vec<(String, String)> {
+        use crate::ui::utils::cover_manager::{covers_path, CoverVariant};
+        self.catalog_store
+            .playlists_metadata()
+            .iter()
+            .flat_map(|(id, _name, cover_url)| {
+                let large_path = cover_url.clone().unwrap_or_else(|| {
+                    covers_path(id, CoverVariant::Large).to_string_lossy().into_owned()
+                });
+                let small_path = covers_path(id, CoverVariant::Small).to_string_lossy().into_owned();
+                vec![
+                    (CoverVariant::Large.key(id), large_path),
+                    (CoverVariant::Small.key(id), small_path),
+                ]
+            })
+            .collect()
     }
 
     /// Compone el contenido de la vista activa (Home/Explorer/Favorites/
@@ -500,7 +575,9 @@ impl ViewCoordinator {
                         let tracks_refs = self.catalog_store.tracks_for_playlist(id);
                         let tracks_refs = filter_tracks(&tracks_refs, &view.list.search_filter);
 
-                        view.view(&meta.1, tracks_refs, &self.thumbnails)
+                        let cover_handle = self.covers.get(&crate::ui::utils::cover_manager::CoverVariant::Large.key(id)).cloned();
+
+                        view.view(&meta.1, cover_handle, tracks_refs, &self.thumbnails)
                             .map(CoordinatorMessage::PlaylistDetail)
                     } else {
                         iced::widget::space().into()
@@ -543,6 +620,26 @@ impl ViewCoordinator {
     /// al pedir confirmación de borrado.
     pub fn playlists_metadata(&self) -> &[(String, String, Option<String>)] {
         self.catalog_store.playlists_metadata()
+    }
+
+    /// Handle de la portada de una playlist si ya terminó de cargar/decodificar.
+    /// `None` mientras carga o si no hay memoria viva para esa clave.
+    /// `variant` elige si pedimos la grande (header/detalle) o la pequeña
+    /// (sidebar).
+    pub fn cover_handle(
+        &self,
+        playlist_id: &str,
+        variant: crate::ui::utils::cover_manager::CoverVariant,
+    ) -> Option<iced::widget::image::Handle> {
+        self.covers.get(&variant.key(playlist_id)).cloned()
+    }
+
+    /// Metadata de una playlist a partir de sus tracks: `(cantidad de
+    /// canciones, duración total en segundos)`. Lo usa el sidebar para
+    /// pintar la línea secundaria de cada fila.
+    pub fn playlist_track_stats(&self, playlist_id: &str) -> (usize, i64) {
+        let tracks = self.catalog_store.tracks_for_playlist(playlist_id);
+        crate::ui::utils::playlist_metadata::track_stats(tracks)
     }
 
     pub fn create_playlist(&mut self, name: &str) {

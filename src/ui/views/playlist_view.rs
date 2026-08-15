@@ -20,6 +20,9 @@ pub enum PlaylistMessage {
 
     Table(TrackEvent),
 
+    /// El usuario pulsó el overlay "cambiar portada" del header.
+    RequestCoverChange,
+
     // Drag & Drop (Pura UI)
     GlobalMousePress,
     GlobalMouseRelease,
@@ -32,6 +35,7 @@ pub enum PlaylistMessage {
 pub enum PlaylistExtra {
     RequestReorder { playlist_id: String, from: usize, to: usize },
     RequestRemoveTracks { playlist_id: String, track_ids: Vec<String> },
+    RequestCoverChange { playlist_id: String },
 }
 
 pub type PlaylistOutMessage = TrackListOutMessage<PlaylistExtra>;
@@ -126,6 +130,15 @@ impl PlaylistView {
                 self.list.keybinds_press = *modifiers;
             }
 
+            PlaylistMessage::RequestCoverChange => {
+                // El picker (I/O de sistema) no vive en la vista: solo
+                // burbujeamos el pedido al coordinator, que es el dueño del
+                // import/persistencia (mismo patrón que RequestReorder).
+                out = PlaylistOutMessage::extra(PlaylistExtra::RequestCoverChange {
+                    playlist_id: self.playlist_id.clone(),
+                });
+            }
+
             // ─── DRAG & DROP GLOBALES ──────────────────────────────────────
             PlaylistMessage::GlobalMousePress => {
                 if !self.drag_enabled() {
@@ -190,6 +203,7 @@ impl PlaylistView {
     pub fn view<'a>(
         &'a self,
         playlist_name: &'a str,
+        cover: Option<iced::widget::image::Handle>,
         rendered_tracks: Vec<&'a Track>,
         thumbnails: &'a AsyncThumbnail,
     ) -> Element<'a, PlaylistMessage> {
@@ -204,8 +218,9 @@ impl PlaylistView {
                 track_count,
                 total_duration_seconds,
             },
-            None,
+            cover,
             PlaylistMessage::GlobalMouseRelease,
+            Some(PlaylistMessage::RequestCoverChange),
         );
 
         let search_bar = catalog_search_input(

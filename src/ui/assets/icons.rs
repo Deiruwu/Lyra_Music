@@ -79,6 +79,10 @@ pub enum Icon {
 
     #[strum(serialize = "")]
     BurgerMenu,
+
+    // Covers
+    #[strum(serialize = "")]
+    Camera,
 }
 
 impl Icon {

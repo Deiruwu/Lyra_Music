@@ -39,9 +39,11 @@
 //! track) — este widget no descarga nada, solo pinta lo que le pasan.
 
 use iced::widget::image::Handle;
-use iced::widget::{button, column, container, row, space, text};
-use iced::{Alignment, Color, Element, Font, Length, Padding};
+use iced::widget::{button, column, container, radio, row, space, stack, text, Container};
+use iced::{Alignment, Color, Element, Font, Length, Padding, Theme};
+use iced::border::rounded;
 use crate::ui::assets::icons::Icon;
+use crate::ui::utils::playlist_metadata::{format_track_count, format_total_duration};
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 
 pub const SF_PRO: Font = Font::with_name("SF Pro Display");
@@ -63,46 +65,77 @@ pub struct PlaylistHeaderData<'a> {
     pub total_duration_seconds: i64,
 }
 
-/// Formatea segundos totales al estilo Spotify: "3 h 24 min" si hay
-/// horas, o "42 min" si dura menos de una hora. Nunca muestra segundos
-/// sueltos en el total (a diferencia de la duración por track, que sí
-/// usa mm:ss) — así se ve la convención habitual de "duración de
-/// colección" en vez de "duración de una canción".
-pub fn format_total_duration(total_seconds: i64) -> String {
-    let total_minutes = total_seconds / 60;
-    let hours = total_minutes / 60;
-    let minutes = total_minutes % 60;
-
-    if hours > 0 {
-        format!("{} h {} min", hours, minutes)
-    } else {
-        format!("{} min", minutes)
-    }
-}
-
-fn format_track_count(count: usize) -> String {
-    if count == 1 {
-        "1 canción".to_string()
-    } else {
-        format!("{} canciones", count)
-    }
-}
-
 /// Construye el banner completo. `on_play` es el mensaje disparado al
 /// presionar el botón ▶ grande (reproducir la playlist completa desde
 /// el principio) — la vista decide qué significa eso (p. ej.
 /// `RequestPlayContext(tracks, 0)`, mismo patrón que ya usa
 /// `FavoritesView::PlayTrack`).
+///
+/// `on_cover_click` es opcional: si es `Some`, la portada se envuelve en
+/// un overlay de "cambiar portada" que aparece al hacer hover; si es
+/// `None` (p. ej. para "Me gusta", que no tiene portada editable) el
+/// comportamiento es idéntico a no tener overlay.
 pub fn playlist_header<'a, Message: Clone + 'a>(
     data: PlaylistHeaderData<'a>,
     cover: Option<Handle>,
     on_play: Message,
+    on_cover_click: Option<Message>,
 ) -> Element<'a, Message> {
     let cover_state = match cover {
         Some(handle) => ThumbnailState::Loaded(handle),
         None => ThumbnailState::Loading,
     };
-    let cover_element = async_thumbnail(cover_state, COVER_SIZE);
+    let cover_element = async_thumbnail(cover_state, COVER_SIZE, 16.0);
+
+    let cover_element: Element<'a, Message> = if let Some(on_click) = on_cover_click {
+        let hover_button = button(
+            container(
+                container(
+                    text(Icon::Camera.as_ref()).font(JETBRAINS_MONO_ICON).size(24),
+                )
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill),
+            )
+                .width(Length::Fixed(COVER_SIZE))
+                .height(Length::Fixed(COVER_SIZE)),
+        )
+            .width(Length::Fixed(COVER_SIZE))
+            .height(Length::Fixed(COVER_SIZE))
+            .style(|_theme: &Theme, status| {
+                let bg = match status {
+                    button::Status::Hovered => Color::from_rgba(0.0, 0.0, 0.0, 0.55),
+                    _ => Color::TRANSPARENT,
+                };
+                button::Style {
+                    background: Some(bg.into()),
+                    text_color: match status {
+                        button::Status::Hovered => Color::WHITE,
+                        _ => Color::TRANSPARENT,
+                    },
+                    border: rounded(13.5),
+                    ..Default::default()
+                }
+            })
+            .on_press(on_click);
+
+
+        let hover_overlay = container(hover_button)
+            .width(Length::Fixed(COVER_SIZE))
+            .height(Length::Fixed(COVER_SIZE));
+
+
+        container(
+            stack![
+                cover_element,
+                hover_overlay,
+            ],
+        )
+            .width(Length::Fixed(COVER_SIZE))
+            .height(Length::Fixed(COVER_SIZE))
+            .into()
+    } else {
+        cover_element
+    };
 
     let kicker: Element<'a, Message> = match data.kicker {
         Some(k) => text(k)
@@ -137,14 +170,14 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
             .align_y(Alignment::Center),
     )
         .padding(0)
-        .style(|_theme: &iced::Theme, status| {
+        .style(|_theme: &Theme, status| {
             let bg = match status {
                 button::Status::Hovered => Color::from_rgb(0.85, 0.68, 1.0),
                 _ => Color::from_rgb(0.74, 0.58, 0.98),
             };
             button::Style {
                 background: Some(bg.into()),
-                border: iced::border::rounded(PLAY_BUTTON_SIZE / 2.0),
+                border: rounded(PLAY_BUTTON_SIZE / 2.0),
                 ..Default::default()
             }
         })
@@ -171,7 +204,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
 
     container(content)
         .width(Length::Fill)
-        .style(|_theme: &iced::Theme| container::Style {
+        .style(|_theme: &Theme| container::Style {
             background: Some(
                 iced::gradient::Linear::new(std::f32::consts::PI * 1.5)
                     .add_stop(0.0, Color::from_rgb(0.22, 0.16, 0.28))

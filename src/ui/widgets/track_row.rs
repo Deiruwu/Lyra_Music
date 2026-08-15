@@ -25,7 +25,7 @@ where
         Some(handle) => ThumbnailState::Loaded(handle),
         None => ThumbnailState::Loading,
     };
-    async_thumbnail(state, size)
+    async_thumbnail(state, size, 6.0)
 }
 
 pub fn track_thumbnail<'a, Message>(thumbnail: Option<Handle>) -> Element<'a, Message>

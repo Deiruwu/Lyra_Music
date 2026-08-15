@@ -95,6 +95,10 @@ pub enum CatalogStoreMessage {
     /// Resultado de reordenar tracks en una playlist CUSTOM.
     TrackReordered(String, Result<(), String>),
 
+    /// Resultado de persistir un cambio de portada en SQLite.
+    /// `(playlist_id, cover_url, result)`.
+    PlaylistCoverChanged(String, Option<String>, Result<(), String>),
+
     /// Un nuevo track fue descargado exitosamente desde el buscador.
     /// Se inyecta en el catálogo en tiempo real para evitar recargar todo.
     TrackDownloadedAndCached(Track),
@@ -284,6 +288,29 @@ impl CatalogStore {
                 (id_clone, result.map_err(|e| e.to_string()))
             },
             |(id, result)| CatalogStoreMessage::PlaylistDeleted(id, result),
+        )
+    }
+
+    /// Actualiza la portada de una playlist CUSTOM: muta
+    /// `playlists_metadata` de forma optimista (reemplazando el cover_url
+    /// en memoria para que el sidebar/header lo reflejen ya mismo) y
+    /// persiste en SQLite en background. `cover_url` es el camino local del
+    /// archivo de portada recién importado.
+    pub fn update_playlist_cover(&mut self, playlist_id: &str, cover_url: &str) -> Task<CatalogStoreMessage> {
+        if let Some(entry) = self.playlists_metadata.iter_mut().find(|(id, _, _)| id == playlist_id) {
+            entry.2 = Some(cover_url.to_string());
+        }
+
+        let manager = Arc::clone(&self.playlist_manager);
+        let id_clone = playlist_id.to_string();
+        let cover_clone = cover_url.to_string();
+
+        Task::perform(
+            async move {
+                let result = manager.update_playlist_cover(&id_clone, Some(&cover_clone)).await;
+                (id_clone, Some(cover_clone), result.map_err(|e| e.to_string()))
+            },
+            |(id, cover, result)| CatalogStoreMessage::PlaylistCoverChanged(id, cover, result),
         )
     }
 
@@ -617,6 +644,15 @@ impl CatalogStore {
             }
 
             CatalogStoreMessage::TrackReordered(_playlist_id, result) => {
+                if let Err(e) = result {
+                    self.last_error = Some(e);
+                } else {
+                    self.last_error = None;
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::PlaylistCoverChanged(_playlist_id, _cover, result) => {
                 if let Err(e) = result {
                     self.last_error = Some(e);
                 } else {

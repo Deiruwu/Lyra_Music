@@ -116,8 +116,6 @@ impl ThumbnailCache {
         to_message: impl Fn(String, Vec<u8>, u64) -> Message + Send + Sync + 'static,
     ) -> Option<Task<Message>> {
 
-        println!("[ThumbnailCache] request_color: {}", key);
-
         if self.color.contains(&key) {
             return None;
         }
@@ -132,8 +130,6 @@ impl ThumbnailCache {
         epoch: u64,
         to_message: impl Fn(String, Vec<u8>, u64) -> Message + Send + Sync + 'static,
     ) -> Option<Task<Message>> {
-
-        println!("[ThumbnailCache] request_gray: {}", track_id);
 
         if self.gray.contains(&track_id) {
             return None;

@@ -3,7 +3,7 @@ use iced::{Alignment, Color, Element, Length, Padding, Point, Size, Subscription
 use iced::alignment::{Horizontal, Vertical};
 use iced::Event::Mouse;
 use iced::mouse::Event::CursorMoved;
-use iced::widget::{button, column, container, mouse_area, row, scrollable, space, text, text_input};
+use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
 
 use crate::audio::manager::manager::TrackManager;
 use crate::db::playlist_manager::PlaylistManager;
@@ -11,6 +11,7 @@ use crate::microservices::client::MicroserviceClient;
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 use crate::ui::assets::icons::Icon;
 use crate::ui::styles::styles::{minimal_button, transparent_button};
+use crate::ui::utils::cover_manager::CoverVariant;
 use crate::ui::views::view_coordinator::{ActiveRoute, CoordinatorMessage, ViewCoordinator};
 use crate::ui::views::home_view;
 use crate::ui::views::explorer_view_v2;
@@ -18,6 +19,7 @@ use crate::ui::views::favorite_view;
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
 use crate::ui::widgets::context_menu_V2::{ContextMenu, ContextMenuEvent, ContextMenuItem};
+use crate::ui::widgets::playlist_row::{playlist_row, PlaylistRowData};
 
 const COLLAPSED_WIDTH: f32 = 60.0;
 const EXPANDED_WIDTH: f32 = 200.0;
@@ -451,51 +453,26 @@ impl SidebarFeatureV2 {
                 &self.coordinator.active_route,
                 ActiveRoute::Playlist(active_id) if active_id == playlist_id
             );
-            let row_color = if is_row_active {
-                Color::from_rgb(0.74, 0.58, 0.98)
-            } else {
-                Color::WHITE
-            };
 
             let id_for_click = playlist_id.clone();
             let id_for_right_click = playlist_id.clone();
+            let cover_handle = self.coordinator.cover_handle(playlist_id, CoverVariant::Small);
+            let (track_count, total_duration_seconds) = self.coordinator.playlist_track_stats(playlist_id);
 
-            let icon_box = container(
-                text(Icon::Playlist.as_str())
-                    .font(JETBRAINS_MONO)
-                    .size(16)
-                    .color(Color::from_rgb(0.5, 0.53, 0.6)),
-            )
-                .width(Length::Fixed(36.0))
-                .height(Length::Fixed(36.0))
-                .align_x(Horizontal::Center)
-                .align_y(Vertical::Center)
-                .style(|_theme: &iced::Theme| container::Style {
-                    background: Some(Color::from_rgb(0.18, 0.18, 0.18).into()),
-                    border: iced::border::rounded(6.0),
-                    ..Default::default()
-                });
+            let row = playlist_row(
+                PlaylistRowData {
+                    name: playlist_name,
+                    is_active: is_row_active,
+                    track_count,
+                    total_duration_seconds,
+                },
+                cover_handle,
+                true,
+                SidebarMessage::SelectPlaylist(id_for_click),
+                SidebarMessage::PlaylistRowRightClicked(id_for_right_click),
+            );
 
-            let row_button = button(
-                row![
-                    icon_box,
-                    space().width(10),
-                    text(playlist_name.as_str())
-                        .size(13)
-                        .font(SF_PRO)
-                        .color(row_color),
-                ]
-                    .align_y(Alignment::Center),
-            )
-                .width(Length::Fill)
-                .padding(Padding { top: 8.0, bottom: 8.0, left: 14.0, right: 12.0 })
-                .style(transparent_button)
-                .on_press(SidebarMessage::SelectPlaylist(id_for_click));
-
-            let row_area = mouse_area(row_button)
-                .on_right_press(SidebarMessage::PlaylistRowRightClicked(id_for_right_click));
-
-            section = section.push(row_area);
+            section = section.push(row);
         }
 
         section.into()
@@ -504,31 +481,29 @@ impl SidebarFeatureV2 {
     fn render_collapsed_playlists(&self) -> Element<'_, SidebarMessage> {
         let mut section = column![].spacing(6).width(Length::Fill).align_x(Horizontal::Center);
 
-        for (playlist_id, _name, _cover) in self.coordinator.playlists_metadata() {
+        for (playlist_id, playlist_name, _cover) in self.coordinator.playlists_metadata() {
             let id_for_select = playlist_id.clone();
+            let id_for_right_click = playlist_id.clone();
+            let is_row_active = matches!(
+                &self.coordinator.active_route,
+                ActiveRoute::Playlist(active_id) if active_id == playlist_id
+            );
+            let cover_handle = self.coordinator.cover_handle(playlist_id, CoverVariant::Small);
 
-            let icon_box = container(
-                text(Icon::Playlist.as_str())
-                    .font(JETBRAINS_MONO)
-                    .size(18)
-                    .color(Color::from_rgb(0.5, 0.53, 0.6)),
-            )
-                .width(Length::Fixed(40.0))
-                .height(Length::Fixed(40.0))
-                .align_x(Horizontal::Center)
-                .align_y(Vertical::Center)
-                .style(|_theme: &iced::Theme| container::Style {
-                    background: Some(Color::from_rgb(0.18, 0.18, 0.18).into()),
-                    border: iced::border::rounded(8.0),
-                    ..Default::default()
-                });
+            let row = playlist_row(
+                PlaylistRowData {
+                    name: playlist_name,
+                    is_active: is_row_active,
+                    track_count: 0,
+                    total_duration_seconds: 0,
+                },
+                cover_handle,
+                false,
+                SidebarMessage::SelectPlaylist(id_for_select),
+                SidebarMessage::PlaylistRowRightClicked(id_for_right_click),
+            );
 
-            let btn = button(icon_box)
-                .padding(0)
-                .style(transparent_button)
-                .on_press(SidebarMessage::SelectPlaylist(id_for_select));
-
-            section = section.push(btn);
+            section = section.push(row);
         }
 
         section.into()
