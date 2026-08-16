@@ -36,6 +36,7 @@ pub enum ActiveRoute {
 pub enum CoordinatorMessage {
     SelectNav(NavId),
     SelectPlaylist(String),
+    CreatePlaylist(String),
 
     Catalog(CatalogStoreMessage),
     Home(HomeViewMessage),
@@ -146,6 +147,12 @@ impl ViewCoordinator {
                 self.active_route = ActiveRoute::Playlist(id.clone());
                 self.playlist_view = Some(PlaylistView::new(id));
                 Task::none()
+            }
+
+            CoordinatorMessage::CreatePlaylist(name) => {
+                self.catalog_store
+                    .create_playlist(&name)
+                    .map(CoordinatorMessage::Catalog)
             }
 
             // ─── EXPLORER ────────────────────────────────────────────────
@@ -640,10 +647,6 @@ impl ViewCoordinator {
     pub fn playlist_track_stats(&self, playlist_id: &str) -> (usize, i64) {
         let tracks = self.catalog_store.tracks_for_playlist(playlist_id);
         crate::ui::utils::playlist_metadata::track_stats(tracks)
-    }
-
-    pub fn create_playlist(&mut self, name: &str) {
-        let _ = self.catalog_store.create_playlist(name);
     }
 
     /// Borra una playlist y, si era la que estaba activa, saca al

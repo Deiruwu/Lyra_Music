@@ -192,7 +192,9 @@ impl SidebarFeatureV2 {
             SidebarMessage::SubmitNewPlaylist => {
                 if let Some(name) = self.new_playlist_input.take() {
                     if !name.trim().is_empty() {
-                        self.coordinator.create_playlist(&name);
+                        return self.coordinator
+                            .update(CoordinatorMessage::CreatePlaylist(name))
+                            .map(SidebarMessage::Content);
                     }
                 }
                 Task::none()
