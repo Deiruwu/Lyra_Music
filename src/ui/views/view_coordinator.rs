@@ -157,11 +157,15 @@ impl ViewCoordinator {
 
             // ─── EXPLORER ────────────────────────────────────────────────
             CoordinatorMessage::Explorer(inner) => {
-                let rendered_tracks: Vec<Track> = self.catalog_store.all_tracks().to_vec();
-                let all_refs: Vec<&Track> = rendered_tracks.iter().collect();
+                let needs_context = match &inner {
+                    ExplorerMessage::Table(event) => event.needs_track_context(),
+                    _ => true,
+                };
 
+                let all_tracks = self.catalog_store.all_tracks();
+                let all_refs: Vec<&Track> = if needs_context { all_tracks.iter().collect() } else { Vec::new() };
                 let rendered_refs = filter_tracks(&all_refs, &self.explorer_view.list.search_filter);
-                let play_context = filter_tracks_owned(&rendered_tracks, &self.explorer_view.list.search_filter);
+                let play_context: Vec<Track> = rendered_refs.iter().map(|t| (*t).clone()).collect();
                 let playlists = playlist_pairs(self.catalog_store.playlists_metadata());
 
                 let (task, out) = self.explorer_view.update(inner, &rendered_refs, &playlists);
@@ -183,14 +187,18 @@ impl ViewCoordinator {
 
             // ─── FAVORITES ───────────────────────────────────────────────
             CoordinatorMessage::Favorites(inner) => {
-                let rendered_tracks: Vec<Track> = self.catalog_store
-                    .tracks_for_playlist(self.catalog_store.system_playlist_id())
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                let all_refs: Vec<&Track> = rendered_tracks.iter().collect();
-                let rendered_refs = filter_tracks(&all_refs, &self.favorites_view.list.search_filter);
-                let play_context = filter_tracks_owned(&rendered_tracks, &self.favorites_view.list.search_filter);
+                let needs_context = match &inner {
+                    FavoritesMessage::Table(event) => event.needs_track_context(),
+                    _ => true,
+                };
+
+                let liked: Vec<&Track> = if needs_context {
+                    self.catalog_store.tracks_for_playlist(self.catalog_store.system_playlist_id())
+                } else {
+                    Vec::new()
+                };
+                let rendered_refs = filter_tracks(&liked, &self.favorites_view.list.search_filter);
+                let play_context: Vec<Track> = rendered_refs.iter().map(|t| (*t).clone()).collect();
                 let playlists = playlist_pairs(self.catalog_store.playlists_metadata());
 
                 let (task, out) = self.favorites_view.update(inner, &rendered_refs, &playlists);
@@ -208,14 +216,19 @@ impl ViewCoordinator {
                 };
                 let playlist_id = playlist_view.playlist_id.clone();
 
-                let rendered_tracks: Vec<Track> = self.catalog_store
-                    .tracks_for_playlist(&playlist_id)
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                let all_refs: Vec<&Track> = rendered_tracks.iter().collect();
-                let rendered_refs = filter_tracks(&all_refs, &playlist_view.list.search_filter);
-                let play_context = filter_tracks_owned(&rendered_tracks, &playlist_view.list.search_filter);
+                let needs_context = match &inner {
+                    PlaylistMessage::Table(event) => event.needs_track_context() || playlist_view.is_dragging(),
+                    PlaylistMessage::GlobalMouseRelease => false,
+                    _ => true,
+                };
+
+                let all_tracks: Vec<&Track> = if needs_context {
+                    self.catalog_store.tracks_for_playlist(&playlist_id)
+                } else {
+                    Vec::new()
+                };
+                let rendered_refs = filter_tracks(&all_tracks, &playlist_view.list.search_filter);
+                let play_context: Vec<Track> = rendered_refs.iter().map(|t| (*t).clone()).collect();
                 let playlists = playlist_pairs(self.catalog_store.playlists_metadata());
 
                 let (task, out) = playlist_view.update(inner, &rendered_refs, &playlists);
@@ -682,15 +695,6 @@ fn filter_tracks<'a>(tracks: &[&'a Track], raw_query: &str) -> Vec<&'a Track> {
             query.matches_any(&[&t.title, &t.format_artists(), album_name])
         })
         .collect()
-}
-
-/// Igual que `filter_tracks` pero devuelve `Vec<Track>` clonado en vez de
-/// referencias — lo usan los call-sites de `update()` para armar
-/// `play_context`, que necesita ownership propio (se lo pasa a
-/// `TrackManager::play_context`, que lo consume).
-fn filter_tracks_owned(tracks: &[Track], raw_query: &str) -> Vec<Track> {
-    let refs: Vec<&Track> = tracks.iter().collect();
-    filter_tracks(&refs, raw_query).into_iter().cloned().collect()
 }
 
 /// Las vistas (Explorer/Favorites/Playlist) esperan `&[(String, String)]`

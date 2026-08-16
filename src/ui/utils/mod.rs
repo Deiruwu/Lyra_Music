@@ -8,3 +8,4 @@ pub mod data_dir;
 pub mod cover_manager;
 pub mod cover_picker;
 pub mod playlist_metadata;
+pub mod row_animator;

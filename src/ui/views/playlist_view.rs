@@ -1,3 +1,4 @@
+use std::time::Instant;
 use iced::{Element, Length, Task};
 use iced::widget::{column, space};
 use iced::keyboard::Modifiers;
@@ -8,6 +9,7 @@ use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusT
 use crate::ui::widgets::playlist_header::{playlist_header, PlaylistHeaderData};
 use crate::ui::widgets::track_list_builder::{sort_tracks, TrackBuilder, TrackEvent};
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
+use crate::ui::utils::row_animator::RowAnimator;
 use crate::ui::widgets::track_list_out_message::TrackListOutMessage;
 use crate::ui::widgets::track_context_builder::TrackContextMenuBuilder;
 
@@ -23,10 +25,14 @@ pub enum PlaylistMessage {
     /// El usuario pulsó el overlay "cambiar portada" del header.
     RequestCoverChange,
 
+    /// Botón ▶ del header: reproduce la playlist completa desde el primer track visible.
+    PlayAll,
+
     // Drag & Drop (Pura UI)
     GlobalMousePress,
     GlobalMouseRelease,
     AutoScrollTick,
+    AnimationFrame(Instant),
 }
 
 // ─── LO PROPIO DE PLAYLIST ────────────────────────────────────────
@@ -42,11 +48,23 @@ pub type PlaylistOutMessage = TrackListOutMessage<PlaylistExtra>;
 
 // ─── ESTADO DE LA VISTA ─────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy)]
+const DRAG_ROW_HEIGHT: f32 = 60.0;
+const DRAG_THRESHOLD_PX: f32 = 5.0;
+
+#[derive(Debug, Clone)]
 pub struct DragState {
     pub source_index: usize,
     pub current_index: usize,
     pub grab_offset: f32,
+    pub track_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingDrag {
+    pub source_index: usize,
+    pub grab_offset: f32,
+    pub start_y: f32,
+    pub track_id: String,
 }
 
 pub struct PlaylistView {
@@ -57,6 +75,8 @@ pub struct PlaylistView {
     pub list: TrackViewState,
 
     pub drag_state: Option<DragState>,
+    pending_drag: Option<PendingDrag>,
+    pub row_animator: RowAnimator,
 }
 
 // ─── IMPLEMENTACIÓN ─────────────────────────────────────────────
@@ -67,6 +87,8 @@ impl PlaylistView {
             playlist_id,
             list: TrackViewState::new(),
             drag_state: None,
+            pending_drag: None,
+            row_animator: RowAnimator::new(DRAG_ROW_HEIGHT),
         }
     }
 
@@ -74,8 +96,30 @@ impl PlaylistView {
         self.drag_state.is_some()
     }
 
+    fn sync_row_animator(&mut self, rendered_tracks: &[&Track], now: Instant) {
+        let Some(drag) = &self.drag_state else { return };
+        if drag.source_index >= rendered_tracks.len() {
+            return;
+        }
+
+        let mut order: Vec<&Track> = rendered_tracks.to_vec();
+        if drag.source_index != drag.current_index {
+            let item = order.remove(drag.source_index);
+            let insert_at = drag.current_index.min(order.len());
+            order.insert(insert_at, item);
+        }
+
+        let current_index = drag.current_index;
+        for (i, track) in order.iter().enumerate() {
+            if i == current_index {
+                continue;
+            }
+            self.row_animator.sync_target(&track.id, i, now);
+        }
+    }
+
     fn drag_enabled(&self) -> bool {
-        matches!(self.list.active_sort_key, None | Some(0))
+        matches!(self.list.active_sort_key, None | Some(0)) && self.list.search_filter.trim().is_empty()
     }
 
     pub fn update(
@@ -89,6 +133,28 @@ impl PlaylistView {
         match &msg {
             // ─── EVENTOS DE LA TABLA (TrackBuilder) ────────────────────────
             PlaylistMessage::Table(event) => {
+                if let TrackEvent::MouseMoved(p) = event {
+                    if let Some(pending) = self.pending_drag.clone() {
+                        if (p.y - pending.start_y).abs() > DRAG_THRESHOLD_PX {
+                            self.drag_state = Some(DragState {
+                                source_index: pending.source_index,
+                                current_index: pending.source_index,
+                                grab_offset: pending.grab_offset,
+                                track_id: pending.track_id,
+                            });
+                            self.pending_drag = None;
+                        }
+                    }
+
+                    if let Some(drag) = &mut self.drag_state {
+                        let absolute_y = p.y + self.list.scroll.offset_y;
+                        let hovered_index = (absolute_y / DRAG_ROW_HEIGHT).floor().max(0.0) as usize;
+                        let max_index = rendered_tracks.len().saturating_sub(1);
+                        drag.current_index = hovered_index.min(max_index);
+                    }
+                    self.sync_row_animator(rendered_tracks, Instant::now());
+                }
+
                 let action = self.list.process_event(event.clone(), rendered_tracks);
 
                 out = match action {
@@ -97,6 +163,7 @@ impl PlaylistView {
 
                     ListAction::SortChanged(key) => {
                         self.drag_state = None;
+                        self.pending_drag = None;
                         PlaylistOutMessage::RequestChangeSort(key)
                     }
 
@@ -122,6 +189,7 @@ impl PlaylistView {
             // ─── EVENTOS INTERNOS ───────────────────────────────
             PlaylistMessage::SearchInputChanged(query) => {
                 self.drag_state = None;
+                self.pending_drag = None;
                 self.list.apply_search_filter(query.clone());
                 out = PlaylistOutMessage::RequestSearch(query.clone());
             }
@@ -139,34 +207,49 @@ impl PlaylistView {
                 });
             }
 
+            PlaylistMessage::PlayAll => {
+                if let Some(first) = rendered_tracks.first() {
+                    out = PlaylistOutMessage::RequestPlayContext { start_track_id: first.id.clone() };
+                }
+            }
+
             // ─── DRAG & DROP GLOBALES ──────────────────────────────────────
             PlaylistMessage::GlobalMousePress => {
                 if !self.drag_enabled() {
                     // Sort de columna activo — ver drag_enabled().
                 } else if let Some(pos) = self.list.mouse_position {
-                    if self.list.scroll.is_within_content(pos.x) {
+                    if self.list.scroll.is_within_content(pos.x) && !rendered_tracks.is_empty() {
                         let absolute_y = pos.y + self.list.scroll.offset_y;
-                        let clicked_index = (absolute_y / 60.0).floor() as usize;
+                        let clicked_index = ((absolute_y / DRAG_ROW_HEIGHT).floor() as usize)
+                            .min(rendered_tracks.len() - 1);
+                        let row_top_y = (clicked_index as f32 * DRAG_ROW_HEIGHT) - self.list.scroll.offset_y;
 
-                        if clicked_index < rendered_tracks.len() {
-                            let row_top_y = (clicked_index as f32 * 60.0) - self.list.scroll.offset_y;
-
-                            self.drag_state = Some(DragState {
-                                source_index: clicked_index,
-                                current_index: clicked_index,
-                                grab_offset: pos.y - row_top_y,
-                            });
-                        }
+                        self.pending_drag = Some(PendingDrag {
+                            source_index: clicked_index,
+                            grab_offset: pos.y - row_top_y,
+                            start_y: pos.y,
+                            track_id: rendered_tracks[clicked_index].id.clone(),
+                        });
                     }
                 }
             }
             PlaylistMessage::GlobalMouseRelease => {
+                self.pending_drag = None;
+
                 if let Some(drag) = self.drag_state.take() {
-                    if drag.source_index != drag.current_index {
+                    let safe_current_index = if rendered_tracks.is_empty() {
+                        drag.current_index
+                    } else {
+                        drag.current_index.min(rendered_tracks.len() - 1)
+                    };
+
+                    self.row_animator.snap_to_target(&drag.track_id, safe_current_index);
+
+                    if drag.source_index != safe_current_index {
                         out = PlaylistOutMessage::extra(PlaylistExtra::RequestReorder {
                             playlist_id: self.playlist_id.clone(),
                             from: drag.source_index,
-                            to: drag.current_index,
+                            to: safe_current_index,
                         });
                     }
                 }
@@ -175,14 +258,19 @@ impl PlaylistView {
                 if self.drag_state.is_some() {
                     if let Some(pos) = self.list.mouse_position {
                         if let Some(delta_y) = self.list.scroll.autoscroll_delta(pos.y, 50.0, 18.0) {
-                            self.list.scroll.offset_y = (self.list.scroll.offset_y + delta_y).max(0.0);
+
+                            let max_offset = (rendered_tracks.len() as f32 * DRAG_ROW_HEIGHT
+                                - self.list.scroll.viewport_height)
+                                .max(0.0);
+                            self.list.scroll.offset_y = (self.list.scroll.offset_y + delta_y).clamp(0.0, max_offset);
 
                             if let Some(drag) = &mut self.drag_state {
                                 let absolute_y = pos.y + self.list.scroll.offset_y;
-                                let hovered_index = (absolute_y / 60.0).floor() as usize;
+                                let hovered_index = (absolute_y / DRAG_ROW_HEIGHT).floor() as usize;
                                 let max_index = rendered_tracks.len().saturating_sub(1);
                                 drag.current_index = hovered_index.clamp(0, max_index);
                             }
+                            self.sync_row_animator(rendered_tracks, Instant::now());
 
                             return (
                                 iced::widget::operation::scroll_by(
@@ -195,6 +283,7 @@ impl PlaylistView {
                     }
                 }
             }
+            PlaylistMessage::AnimationFrame(_now) => {}
         };
 
         (Task::none(), out)
@@ -219,7 +308,7 @@ impl PlaylistView {
                 total_duration_seconds,
             },
             cover,
-            PlaylistMessage::GlobalMouseRelease,
+            PlaylistMessage::PlayAll,
             Some(PlaylistMessage::RequestCoverChange),
         );
 
@@ -235,6 +324,14 @@ impl PlaylistView {
             let mut tracks_refs: Vec<&Track> = rendered_tracks.iter().copied().collect();
             sort_tracks(&mut tracks_refs, self.list.active_sort_key, self.list.sort_direction_asc);
 
+            if let Some(drag) = &self.drag_state {
+                if self.drag_enabled() && drag.source_index != drag.current_index && drag.source_index < tracks_refs.len() {
+                    let item = tracks_refs.remove(drag.source_index);
+                    let insert_at = drag.current_index.min(tracks_refs.len());
+                    tracks_refs.insert(insert_at, item);
+                }
+            }
+
             let mut builder = TrackBuilder::new(
                 tracks_refs,
                 &self.list.scroll,
@@ -248,7 +345,9 @@ impl PlaylistView {
 
             if let Some(drag) = &self.drag_state {
                 if self.drag_enabled() {
-                    builder = builder.dragging(drag.source_index, self.list.mouse_position, drag.grab_offset);
+                    builder = builder
+                        .dragging(drag.current_index, self.list.mouse_position, drag.grab_offset)
+                        .animator(&self.row_animator);
                 }
             }
 

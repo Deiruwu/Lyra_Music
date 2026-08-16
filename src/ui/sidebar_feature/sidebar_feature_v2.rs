@@ -16,6 +16,7 @@ use crate::ui::views::view_coordinator::{ActiveRoute, CoordinatorMessage, ViewCo
 use crate::ui::views::home_view;
 use crate::ui::views::explorer_view_v2;
 use crate::ui::views::favorite_view;
+use crate::ui::views::playlist_view::PlaylistMessage;
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
@@ -137,11 +138,41 @@ impl SidebarFeatureV2 {
                 iced::Event::Window(iced::window::Event::Resized(size)) => {
                     Some(SidebarMessage::GlobalWindowResized(size))
                 }
+                Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
+                    Some(SidebarMessage::Content(CoordinatorMessage::PlaylistDetail(
+                        PlaylistMessage::GlobalMousePress,
+                    )))
+                }
+                Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(SidebarMessage::Content(CoordinatorMessage::PlaylistDetail(
+                        PlaylistMessage::GlobalMouseRelease,
+                    )))
+                }
                 _ => None
             }
         });
 
-        Subscription::batch(vec![animation_sub, global_events_sub])
+        let mut subs = vec![animation_sub, global_events_sub];
+        
+        if self.coordinator.playlist_view.as_ref().is_some_and(|v| v.is_dragging()) {
+            subs.push(
+                iced::time::every(std::time::Duration::from_millis(16))
+                    .map(|_| SidebarMessage::Content(CoordinatorMessage::PlaylistDetail(
+                        PlaylistMessage::AutoScrollTick,
+                    ))),
+            );
+        }
+
+        if self.coordinator.playlist_view.as_ref().is_some_and(|v| v.row_animator.is_animating(std::time::Instant::now())) {
+            subs.push(
+                iced::window::frames()
+                    .map(|instant| SidebarMessage::Content(CoordinatorMessage::PlaylistDetail(
+                        PlaylistMessage::AnimationFrame(instant),
+                    ))),
+            );
+        }
+
+        Subscription::batch(subs)
     }
 
     fn target_width(&self) -> f32 {

@@ -157,6 +157,25 @@ impl QueuePanel {
         track.id.to_string()
     }
 
+    fn move_dragged_item(&mut self, hovered_index: usize, now: Instant) {
+        let Some(drag) = self.drag.as_mut() else { return };
+        if hovered_index == drag.current_index {
+            return;
+        }
+
+        let item = self.queue.remove(drag.current_index);
+        self.queue.insert(hovered_index, item);
+        drag.current_index = hovered_index;
+
+        let ids: Vec<String> = self.queue.iter().map(|t| Self::track_id_of(t)).collect();
+        for (i, id) in ids.iter().enumerate() {
+            if i == hovered_index {
+                continue;
+            }
+            self.animator.sync_target(id, i, now);
+        }
+    }
+
     pub fn update(&mut self, msg: QueueMessage) -> (Task<QueueMessage>, QueueOutMessage) {
         match msg {
             QueueMessage::Toggle => {
@@ -195,9 +214,7 @@ impl QueuePanel {
             // contenido (absolutas). Para `autoscroll_delta` necesitamos la
             // posición local al viewport, de ahí restar `offset_y`.
             QueueMessage::AutoScrollTick => {
-                if self.drag.is_none() {
-                    return (Task::none(), QueueOutMessage::Idle);
-                }
+                let now = Instant::now();
 
                 let Some(drag) = self.drag.as_mut() else {
                     return (Task::none(), QueueOutMessage::Idle);
@@ -212,15 +229,16 @@ impl QueuePanel {
                     return (Task::none(), QueueOutMessage::Idle);
                 };
 
-                self.scroll.offset_y = (self.scroll.offset_y + delta_y).max(0.0);
+                let max_offset = (self.queue.len() as f32 * ROW_STRIDE - self.scroll.viewport_height).max(0.0);
+                self.scroll.offset_y = (self.scroll.offset_y + delta_y).clamp(0.0, max_offset);
 
-                // El ghost se dibuja en coordenadas de contenido: sumamos delta
-                // para que siga al viewport (se quede debajo del cursor).
+
                 drag.cursor_y += delta_y;
 
-                let hovered_index = (drag.cursor_y / ROW_STRIDE).floor() as isize;
-                let max_index = self.queue.len().saturating_sub(1) as isize;
-                drag.current_index = hovered_index.clamp(0, max_index) as usize;
+                let hovered_index = ((drag.cursor_y / ROW_STRIDE).floor() as isize)
+                    .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize;
+
+                self.move_dragged_item(hovered_index, now);
 
                 (
                     scroll_by(Id::new(QUEUE_SCROLL_ID), AbsoluteOffset { x: 0.0, y: delta_y }),
@@ -266,19 +284,7 @@ impl QueuePanel {
                 let hovered_index = ((cursor_y / ROW_STRIDE).floor() as isize)
                     .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize;
 
-                if hovered_index != drag.current_index {
-                    let item = self.queue.remove(drag.current_index);
-                    self.queue.insert(hovered_index, item);
-                    drag.current_index = hovered_index;
-
-                    let ids: Vec<String> = self.queue.iter().map(|t| Self::track_id_of(t)).collect();
-                    for (i, id) in ids.iter().enumerate() {
-                        if i == hovered_index {
-                            continue;
-                        }
-                        self.animator.sync_target(id, i, now);
-                    }
-                }
+                self.move_dragged_item(hovered_index, now);
 
                 (Task::none(), QueueOutMessage::Idle)
             }

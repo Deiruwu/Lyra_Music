@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::time::Instant;
 use iced::widget::image::Handle;
 use iced::widget::scrollable::Viewport;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, space, stack, text, Id};
@@ -9,6 +10,7 @@ use crate::model::Track;
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 use crate::ui::styles::styles::{minimal_button, selected_row_container, transparent_button, RowSelectionShape};
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
+use crate::ui::utils::row_animator::RowAnimator;
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
 use crate::utils::formatting::{format_added_at, format_duration};
@@ -27,6 +29,12 @@ pub enum TrackEvent {
     MouseMoved(Point),
     RightClicked(String),
     ViewportExited,
+}
+
+impl TrackEvent {
+    pub fn needs_track_context(&self) -> bool {
+        !matches!(self, TrackEvent::MouseMoved(_) | TrackEvent::ViewportExited | TrackEvent::Scrolled(_))
+    }
 }
 
 // ── La fila de fábrica ────────────────────────────────────────────
@@ -167,7 +175,7 @@ pub fn visible_thumbnail_targets(
 // ── Drag visual (solo pintar; el estado vive en la vista) ─────────
 
 struct DragVisual {
-    source_index: usize,
+    hole_index: usize,
     mouse_position: Option<Point>,
     grab_offset: f32,
 }
@@ -191,6 +199,7 @@ pub struct TrackBuilder<'a, Message> {
     sort_direction_asc: bool,
 
     drag: Option<DragVisual>,
+    animator: Option<&'a RowAnimator>,
 
     on_event: Option<Rc<dyn Fn(TrackEvent) -> Message + 'a>>,
 
@@ -221,6 +230,7 @@ where
             active_sort_key: Some(TrackColumn::Index.as_usize()),
             sort_direction_asc: true,
             drag: None,
+            animator: None,
             on_event: None,
             overlay: None,
         }
@@ -259,11 +269,21 @@ where
     }
 
     /// Activa el pintado del ghost row de reordenamiento.
-    /// `source_index` es la fila (dentro del vector visual ya
+    /// `hole_index` es la fila (dentro del vector visual ya
     /// reordenado que se pasó al builder) que se está arrastrando.
     /// Puramente visual — la vista decide CUÁNDO llamar esto.
-    pub fn dragging(mut self, source_index: usize, mouse_position: Option<Point>, grab_offset: f32) -> Self {
-        self.drag = Some(DragVisual { source_index, mouse_position, grab_offset });
+    pub fn dragging(mut self, hole_index: usize, mouse_position: Option<Point>, grab_offset: f32) -> Self {
+        self.drag = Some(DragVisual { hole_index, mouse_position, grab_offset });
+        self
+    }
+
+    /// Activa el renderizado animado/absoluto (filas deslizan a su nueva
+    /// posición en vez de saltar de golpe), igual que `QueuePanel`. Solo
+    /// tiene sentido junto con `.dragging(...)` — sin drag activo no hay
+    /// nada que animar, así que las vistas sin reordenamiento (Explorer,
+    /// Favorites) nunca la llaman y siguen con el `column!` simple.
+    pub fn animator(mut self, animator: &'a RowAnimator) -> Self {
+        self.animator = Some(animator);
         self
     }
 
@@ -399,13 +419,35 @@ where
             .into()
     }
 
+    /// Resuelve thumbnail/selección/vecinos y arma la fila en `visible_idx`
+    /// — compartido entre el layout `column!` (Explorer/Favorites/Playlist
+    /// sin drag) y el `stack!` animado (Playlist arrastrando), que solo
+    /// difieren en CÓMO envuelven este elemento, no en cómo se arma.
+    fn render_visible_row(
+        &self,
+        fields: &[TrackColumn],
+        emit: &Rc<dyn Fn(TrackEvent) -> Message + 'a>,
+        visible_idx: usize,
+    ) -> Option<Element<'a, Message>> {
+        let track = self.tracks.get(visible_idx).copied()?;
+        let handle = self.thumbnails.get(&thumb_key(track)).cloned();
+        let is_selected = self.selected_ids.contains(track.id.as_str());
+        let prev_selected = visible_idx > 0
+            && self.tracks.get(visible_idx - 1).is_some_and(|t| self.selected_ids.contains(t.id.as_str()));
+        let next_selected = self.tracks.get(visible_idx + 1).is_some_and(|t| self.selected_ids.contains(t.id.as_str()));
+        let shape = RowSelectionShape::from_neighbors(is_selected, prev_selected, next_selected);
+
+        let display_index = visible_idx + 1;
+        Some(self.render_row(fields, track, display_index, handle, shape, emit))
+    }
+
     // ── Ghost row (drag) ──────────────────────────────────────────
 
     fn ghost_overlay(&self, fields: &[TrackColumn]) -> Option<Element<'a, Message>> {
         let drag = self.drag.as_ref()?;
-        let track = *self.tracks.get(drag.source_index)?;
+        let track = *self.tracks.get(drag.hole_index)?;
         let handle = self.thumbnails.get(&thumb_key(track)).cloned();
-        let display_index = drag.source_index + 1;
+        let display_index = drag.hole_index + 1;
 
         let mut row_children: Vec<Element<'a, Message>> = Vec::with_capacity(fields.len() + 2);
         row_children.push(self.render_cell(DisplayValue::Index(display_index), Length::Fixed(INDEX_COL_WIDTH)));
@@ -455,45 +497,65 @@ where
         let header = self.render_header(&fields, &emit);
 
         let window = self.scroll.window(self.row_height, self.tracks.len(), self.buffer_rows);
+        let dragging_index = self.drag.as_ref().map(|d| d.hole_index);
 
-        let mut rows = column![].width(Length::Fill);
-        rows = rows.push(space().height(window.top_spacer_height(self.row_height)));
+        let body_rows: Element<'a, Message> = if let Some(animator) = self.animator {
+            // Layout absoluto/animado: cada fila visible se posiciona vía
+            // padding-top interpolado por el animator, en vez de fluir
+            // secuencialmente — así puede DESLIZAR a su nueva posición en
+            // vez de saltar de golpe (mismo mecanismo que QueuePanel).
+            let now = Instant::now();
+            let mut layers: Vec<Element<'a, Message>> = Vec::with_capacity(window.len());
 
-        let selected_ids = self.selected_ids;
-        let dragging_index = self.drag.as_ref().map(|d| d.source_index);
+            for visible_idx in window.start..window.end {
+                if dragging_index == Some(visible_idx) {
+                    continue;
+                }
+                let Some(row_el) = self.render_visible_row(&fields, &emit, visible_idx) else { continue };
+                let track_id = self.tracks[visible_idx].id.as_str();
+                let y = animator.visual_y_of(track_id, now, visible_idx);
 
-        for visible_idx in window.start..window.end {
-            let Some(track) = self.tracks.get(visible_idx).copied() else { continue };
+                layers.push(
+                    container(row_el)
+                        .width(Length::Fill)
+                        .padding(Padding::new(0.0).top(y))
+                        .into(),
+                );
+            }
 
-            let is_dragging_this_row = dragging_index == Some(visible_idx);
+            let total_height = self.tracks.len() as f32 * self.row_height;
+            stack(layers).width(Length::Fill).height(Length::Fixed(total_height)).into()
+        } else {
+            let mut rows = column![].width(Length::Fill);
+            rows = rows.push(space().height(window.top_spacer_height(self.row_height)));
 
-            let rendered_row: Element<'a, Message> = if is_dragging_this_row {
-                container(space().height(Length::Fixed(self.row_height)))
-                    .width(Length::Fill)
-                    .height(Length::Fixed(self.row_height))
-                    .into()
-            } else {
-                let handle = self.thumbnails.get(&thumb_key(track)).cloned();
-                let is_selected = selected_ids.contains(track.id.as_str());
-                let prev_selected = visible_idx > 0
-                    && self.tracks.get(visible_idx - 1).is_some_and(|t| selected_ids.contains(t.id.as_str()));
-                let next_selected = self.tracks.get(visible_idx + 1).is_some_and(|t| selected_ids.contains(t.id.as_str()));
-                let shape = RowSelectionShape::from_neighbors(is_selected, prev_selected, next_selected);
+            for visible_idx in window.start..window.end {
+                let is_dragging_this_row = dragging_index == Some(visible_idx);
 
-                let display_index = visible_idx + 1;
-                self.render_row(&fields, track, display_index, handle, shape, &emit)
-            };
+                let rendered_row: Element<'a, Message> = if is_dragging_this_row {
+                    container(space().height(Length::Fixed(self.row_height)))
+                        .width(Length::Fill)
+                        .height(Length::Fixed(self.row_height))
+                        .into()
+                } else {
+                    match self.render_visible_row(&fields, &emit, visible_idx) {
+                        Some(el) => el,
+                        None => continue,
+                    }
+                };
 
-            rows = rows.push(rendered_row);
-        }
+                rows = rows.push(rendered_row);
+            }
 
-        rows = rows.push(space().height(window.bottom_spacer_height(self.row_height, self.tracks.len())));
+            rows = rows.push(space().height(window.bottom_spacer_height(self.row_height, self.tracks.len())));
+            rows.into()
+        };
 
         let emit_scroll = emit.clone();
         let emit_move = emit.clone();
         let emit_exit = emit.clone();
 
-        let scroll_area: Element<'a, Message> = scrollable(rows)
+        let scroll_area: Element<'a, Message> = scrollable(body_rows)
             .id(Id::new(self.scrollable_id))
             .width(Length::Fill)
             .height(Length::Fill)

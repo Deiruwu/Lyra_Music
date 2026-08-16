@@ -12,7 +12,7 @@ use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
 use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
-use crate::ui::widgets::track_list_builder::{sort_tracks, TrackBuilder, TrackEvent};
+use crate::ui::widgets::track_list_builder::{sort_tracks, TrackBuilder, TrackColumn, TrackEvent};
 use crate::ui::widgets::track_list_out_message::TrackListOutMessage;
 use crate::ui::widgets::track_context_builder::TrackContextMenuBuilder;
 
@@ -48,8 +48,12 @@ pub struct ExplorerView {
 
 impl ExplorerView {
     pub fn new() -> Self {
+        let mut list = TrackViewState::new();
+        list.active_sort_key = Some(TrackColumn::AddedAt.as_usize());
+        list.sort_direction_asc = true;
+
         Self {
-            list: TrackViewState::new(),
+            list,
             confirm_dialog: ConfirmDialog::new(),
         }
     }
