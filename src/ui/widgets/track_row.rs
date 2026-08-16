@@ -7,8 +7,6 @@ use crate::ui::styles::styles::transparent_button;
 use crate::JETBRAINS_MONO;
 use crate::ui::assets::icons::Icon;
 
-const SPINNER: [&str; 6] = ["", "", "", "", "", ""];
-
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() > max {
         format!("{}…", s.chars().take(max).collect::<String>())
@@ -147,17 +145,17 @@ where
 }
 
 // ── Thumbnail con overlay ─────────────────────────────────────────────────────
-
-pub enum QueueThumbnailState {
-    Normal,
-    Downloading(u8),
-}
+//
+// Nota: antes existía `QueueThumbnailState::Downloading(u8)`, que pintaba
+// un SPINNER sobre la miniatura cuando la canción aún se estaba descargando
+// pero ya aparecía en la cola. Se eliminó junto con su flujo (ver el
+// comentario "FEAT FUTURO: canción en descarga visible en la cola" en
+// queue_panel.rs) para reimplementarse como feature más adelante.
 
 fn thumbnail_with_overlay<'a, Message>(
     thumbnail: Option<Handle>,
     on_play: Message,
     hovered: bool,
-    state: QueueThumbnailState,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -179,49 +177,28 @@ where
             .into(),
     };
 
-    match state {
-        QueueThumbnailState::Downloading(frame) => {
-            let spinner_char = SPINNER[frame as usize % 6];
-            let overlay = container(
-                text(spinner_char).font(JETBRAINS_MONO).size(20).color(iced::Color::WHITE)
+    if hovered {
+        let play_btn = button(
+            container(
+                text(Icon::Play.as_ref()).font(JETBRAINS_MONO).size(18).color(iced::Color::WHITE)
             )
                 .width(Length::Fixed(55.0))
                 .height(Length::Fixed(55.0))
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
-                .style(|_: &Theme| container::Style {
-                    background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.55).into()),
-                    ..Default::default()
-                });
+        )
+            .on_press(on_play)
+            .width(Length::Fixed(55.0))
+            .height(Length::Fixed(55.0))
+            .padding(0)
+            .style(|_: &Theme, _| button::Style {
+                background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                ..Default::default()
+            });
 
-            stack![base, overlay].into()
-        }
-
-        QueueThumbnailState::Normal => {
-            if hovered {
-                let play_btn = button(
-                    container(
-                        text(Icon::Play.as_ref()).font(JETBRAINS_MONO).size(18).color(iced::Color::WHITE)
-                    )
-                        .width(Length::Fixed(55.0))
-                        .height(Length::Fixed(55.0))
-                        .align_x(Alignment::Center)
-                        .align_y(Alignment::Center)
-                )
-                    .on_press(on_play)
-                    .width(Length::Fixed(55.0))
-                    .height(Length::Fixed(55.0))
-                    .padding(0)
-                    .style(|_: &Theme, _| button::Style {
-                        background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
-                        ..Default::default()
-                    });
-
-                stack![base, play_btn].into()
-            } else {
-                base
-            }
-        }
+        stack![base, play_btn].into()
+    } else {
+        base
     }
 }
 
@@ -266,13 +243,12 @@ pub fn queue_track_row<'a, Message>(
     delete_hovered: bool,
     on_delete_hover: Message,
     on_delete_leave: Message,
-    queue_state: QueueThumbnailState,
     drag: DragRowParams<Message>,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
 {
-    let thumb = thumbnail_with_overlay(thumbnail, on_play, row_hovered, queue_state);
+    let thumb = thumbnail_with_overlay(thumbnail, on_play, row_hovered);
 
     let info = track_info(track, Length::Fill);
 

@@ -15,7 +15,7 @@ use crate::ui::views::explorer_view_v2::{ExplorerView, ExplorerMessage, Explorer
 use crate::ui::views::favorite_view::{FavoritesView, FavoritesMessage};
 use crate::ui::views::playlist_view::{PlaylistView, PlaylistMessage, PlaylistExtra};
 use crate::ui::views::view_data::NavId;
-use crate::ui::widgets::context_menu_V2::{ContextMenu, ContextMenuEvent, ContextMenuItem};
+use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::ui::widgets::track_context_builder::TrackContextAction;
 use crate::ui::widgets::track_list_out_message::TrackListOutMessage;
 

@@ -39,8 +39,7 @@
 
 use iced::{Alignment, Color, Element, Length, Padding};
 use iced::widget::{button, column, container, mouse_area, row, text};
-
-use crate::ui::sidebar_feature::sidebar_feature::SF_PRO;
+use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::styles::styles::{context_menu_container, context_menu_item};
 
 #[derive(Debug, Clone)]

@@ -1,5 +1,5 @@
 use crate::ui::assets::icons::Icon;
-use crate::ui::widgets::context_menu_V2::ContextMenuItem;
+use crate::ui::widgets::context_menu::ContextMenuItem;
 
 const ADD_TO_PLAYLIST_SUBMENU_ID: usize = 0;
 

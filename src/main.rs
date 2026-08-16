@@ -52,9 +52,7 @@ struct App {
     search_feature: SearchFeature,
     playback_feature: PlaybackFeature,
     sidebar_feature: SidebarFeature,
-    player_thumbnails: ThumbnailCache,
     view_thumbnails: ThumbnailCache,
-    radio: Arc<RadioWorker>,
     tray_flags: Arc<TrayFlags>,
     main_window: Option<window::Id>,
     is_theater_mode: bool,
@@ -127,9 +125,7 @@ impl App {
             search_feature: SearchFeature::new(),
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
             sidebar_feature,
-            player_thumbnails: ThumbnailCache::new(250, 50),
             view_thumbnails: ThumbnailCache::new(100, 50),
-            radio,
             tray_flags,
             main_window: Some(window_id),
             manager,
@@ -185,7 +181,7 @@ impl App {
                 let position_task = self.playback_feature.position_updated(position);
 
                 let (tick_task, _out) = self.playback_feature
-                    .update(PlaybackFeatureMessage::Tick, &mut self.player_thumbnails);
+                    .update(PlaybackFeatureMessage::Tick);
 
                 iced::Task::batch(vec![
                     position_task.map(AppMessage::PlaybackFeature),
@@ -194,7 +190,7 @@ impl App {
             }
 
             AppMessage::PlaybackFeature(msg) => {
-                let (task, out_msg) = self.playback_feature.update(msg, &mut self.player_thumbnails);
+                let (task, out_msg) = self.playback_feature.update(msg);
 
                 let like_task = match out_msg {
                     PlaybackOutMessage::ToggleTheaterMode => {
@@ -236,7 +232,6 @@ impl App {
 
                     let (t, _out) = self.playback_feature.update(
                         PlaybackFeatureMessage::Play(playable),
-                        &mut self.player_thumbnails,
                     );
                     feature_task = t;
 
@@ -277,7 +272,7 @@ impl App {
             });
 
         let queue_view = container(
-            self.playback_feature.view_queue(&self.player_thumbnails).map(AppMessage::PlaybackFeature)
+            self.playback_feature.view_queue().map(AppMessage::PlaybackFeature)
         );
 
         let content_layer = row![
@@ -305,7 +300,7 @@ impl App {
             .map(|t| t.liked)
             .unwrap_or(false);
 
-        let playback_view  = self.playback_feature.view(&self.player_thumbnails, self.is_theater_mode, is_current_liked).map(AppMessage::PlaybackFeature);
+        let playback_view  = self.playback_feature.view(self.is_theater_mode, is_current_liked).map(AppMessage::PlaybackFeature);
         let search_view    = self.search_feature.view().map(AppMessage::SearchFeature);
         let search_overlay = self.search_feature.view_dropdown(&self.view_thumbnails).map(AppMessage::SearchFeature);
 

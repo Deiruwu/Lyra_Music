@@ -15,14 +15,7 @@ use crate::ui::playback_feature::queue::queue_panel::{QueueMessage, QueueOutMess
 use crate::ui::playback_feature::theater::theater_panel::{TheaterMessage, TheaterOutMessage, TheaterPanel};
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
 use crate::ui::styles::styles::minimal_button;
-use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
-
-/// Epoch fijo para este feature. La cola de reproducción y la canción
-/// actual no tienen un concepto de "vista invalidada" como el scroll del
-/// Explorer — un thumbnail que llega tarde para una canción que sigue en
-/// cola sigue siendo válido. Se usa 0 constante solo porque la firma de
-/// `request_color` ahora lo exige.
-const EPOCH: u64 = 0;
+use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 
 #[derive(Debug, Clone)]
 pub enum PlaybackFeatureMessage {
@@ -31,9 +24,8 @@ pub enum PlaybackFeatureMessage {
     Queue(QueueMessage),
     Theater(TheaterMessage),
     QueueChanged,
-    DownloadingStarted(String),
-    DownloadingFinished(String),
-    ThumbnailColorLoaded { key: String, bytes: Vec<u8>, epoch: u64 },
+    QueueThumbnailLoaded { key: String, bytes: Vec<u8> },
+    SmallThumbnailLoaded { track_id: String, bytes: Vec<u8> },
     LargeThumbnailLoaded { track_id: String, bytes: Vec<u8> },
     Play(PlayableTrack),
     ToggleTheaterMode,
@@ -54,11 +46,10 @@ pub struct PlaybackFeature {
     player: Player,
     volume: Volume,
     theater: TheaterPanel,
-    spinner_frame: u8,
-    is_predownloading: bool,
-    downloading_track_id: Option<String>,
     current_track_id: Option<String>,
+    current_small_thumbnail: Option<(String, Handle)>,
     current_large_thumbnail: Option<(String, Handle)>,
+    queue_thumbnails: AsyncThumbnail,
 }
 
 impl PlaybackFeature {
@@ -71,15 +62,16 @@ impl PlaybackFeature {
             volume: Volume::default(),
             theater: TheaterPanel::default(),
             manager,
-            spinner_frame: 0,
-            is_predownloading: false,
-            downloading_track_id: None,
             current_track_id: None,
+            current_small_thumbnail: None,
             current_large_thumbnail: None,
+            queue_thumbnails: AsyncThumbnail::new(),
         }
     }
 
     pub fn subscription(&self, is_theater_visible: bool) -> Subscription<PlaybackFeatureMessage> {
+        // El tick de 40ms sigue vivo: es el que provoca el re-render
+        // periódico que mantiene al día la barra de progreso del seek bar.
         let tick_sub = iced::time::every(Duration::from_millis(40))
             .map(|_| PlaybackFeatureMessage::Tick);
 
@@ -105,6 +97,15 @@ impl PlaybackFeature {
             );
         }
 
+        // Mientras se arrastra una fila, mantenemos un tick de 16ms para
+        // poder autoscrollear aunque el mouse deje de moverse cerca del borde.
+        if self.queue.is_dragging() {
+            subs.push(
+                iced::time::every(Duration::from_millis(16))
+                    .map(|_| PlaybackFeatureMessage::Queue(QueueMessage::AutoScrollTick)),
+            );
+        }
+
         if is_theater_visible && self.theater.is_animating(Instant::now()) {
             subs.push(
                 iced::window::frames().map(PlaybackFeatureMessage::AnimationFrame),
@@ -114,14 +115,27 @@ impl PlaybackFeature {
         Subscription::batch(subs)
     }
 
-    fn is_downloading(&self) -> bool {
-        self.manager.state.is_downloading() || self.is_predownloading
-    }
-
     pub fn update(
         &mut self,
         msg: PlaybackFeatureMessage,
-        thumbnails: &mut ThumbnailCache,
+    ) -> (Task<PlaybackFeatureMessage>, PlaybackOutMessage) {
+        let (task, out) = self.update_inner(msg);
+
+        // Sincronización de miniaturas de la cola (AsyncThumbnail): el
+        // universo pedido = la ventana visible actual (+buffer). Corre en
+        // cada update sin importar qué evento llegó, igual que hace
+        // ViewCoordinator con sus vistas.
+        let wanted = self.queue.visible_thumbnail_targets();
+        let sync_task = self.queue_thumbnails.sync(&wanted, |key, bytes| {
+            PlaybackFeatureMessage::QueueThumbnailLoaded { key, bytes }
+        });
+
+        (Task::batch([task, sync_task]), out)
+    }
+
+    fn update_inner(
+        &mut self,
+        msg: PlaybackFeatureMessage,
     ) -> (Task<PlaybackFeatureMessage>, PlaybackOutMessage) {
         match msg {
             PlaybackFeatureMessage::Play(track) => {
@@ -131,41 +145,20 @@ impl PlaybackFeature {
 
             PlaybackFeatureMessage::QueueChanged => {
                 let tracks = self.manager.get_queue_snapshot();
-                self.queue.queue_update(tracks.clone());
-
-                let tasks: Vec<Task<_>> = tracks.into_iter().filter_map(|t| {
-                    let url = t.thumbnail_small.clone()?;
-                    let key = thumb_key(&t);
-                    thumbnails.request_color(key, url, EPOCH, |key, bytes, epoch| {
-                        PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes, epoch }
-                    })
-                }).collect();
-
-                (Task::batch(tasks), PlaybackOutMessage::Idle)
-            }
-
-            PlaybackFeatureMessage::DownloadingStarted(track_id) => {
-                self.is_predownloading = true;
-                self.downloading_track_id = Some(track_id);
+                self.queue.queue_update(tracks);
                 (Task::none(), PlaybackOutMessage::Idle)
             }
 
-            PlaybackFeatureMessage::DownloadingFinished(track_id) => {
-                self.is_predownloading = false;
-                if self.downloading_track_id.as_deref() == Some(track_id.as_str()) {
-                    self.downloading_track_id = None;
+            PlaybackFeatureMessage::QueueThumbnailLoaded { key, bytes } => {
+                self.queue_thumbnails.on_loaded(key, bytes);
+                (Task::none(), PlaybackOutMessage::Idle)
+            }
+
+            PlaybackFeatureMessage::SmallThumbnailLoaded { track_id, bytes } => {
+                if self.current_track_id.as_deref() == Some(track_id.as_str()) && !bytes.is_empty() {
+                    self.current_small_thumbnail = Some((track_id, Handle::from_bytes(bytes)));
                 }
                 (Task::none(), PlaybackOutMessage::Idle)
-            }
-
-            PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes, .. } => {
-                thumbnails.insert_color(key.clone(), bytes);
-                // Libera el slot de concurrencia y arranca el siguiente
-                // pendiente en la cola (si hay alguno).
-                let next = thumbnails.on_color_finished(&key, |key, bytes, epoch| {
-                    PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes, epoch }
-                });
-                (next, PlaybackOutMessage::Idle)
             }
 
             PlaybackFeatureMessage::LargeThumbnailLoaded { track_id, bytes } => {
@@ -176,10 +169,10 @@ impl PlaybackFeature {
             }
 
             PlaybackFeatureMessage::Tick => {
-                if self.is_downloading() {
-                    self.spinner_frame = (self.spinner_frame + 1) % 6;
-                    let _ = self.queue.update(QueueMessage::Tick);
-                }
+                // El spinner de descarga (canción en cola con símbolo de
+                // espera) se movió a featur futuro — ver comentario en
+                // queue_panel.rs. El Tick se conserva para que main.rs
+                // pueda sondear tray flags y actualizar la posición.
                 (Task::none(), PlaybackOutMessage::Idle)
             }
 
@@ -213,17 +206,24 @@ impl PlaybackFeature {
                 let mut extra_tasks = vec![];
 
                 if let PlayerMessage::BackendEvent(TrackEvent::TrackChanged(ref playable)) = msg {
-                    let key = thumb_key(&playable.track);
-                    if let Some(url) = playable.track.thumbnail_small.clone() {
-                        if let Some(t) = thumbnails.request_color(key, url, EPOCH, |key, bytes, epoch| {
-                            PlaybackFeatureMessage::ThumbnailColorLoaded { key, bytes, epoch }
-                        }) {
-                            extra_tasks.push(t);
-                        }
-                    }
-
                     self.current_track_id = Some(playable.track.id.clone());
+                    self.current_small_thumbnail = None; // reset inmediato al cambiar de track
                     self.current_large_thumbnail = None; // reset inmediato al cambiar de track
+
+                    // Miniatura "chica" del track actual (patrón teatro pero
+                    // small): se descarga directo y se guarda como tupla
+                    // `(track_id, Handle)` para evitar condiciones de carrera
+                    // si el track cambia mientras la imagen llega.
+                    if let Some(url) = playable.track.thumbnail_small.clone() {
+                        let track_id = playable.track.id.clone();
+                        extra_tasks.push(Task::perform(
+                            crate::ui::utils::image::download_thumbnail(url),
+                            move |result| {
+                                let bytes = result.unwrap_or_default();
+                                PlaybackFeatureMessage::SmallThumbnailLoaded { track_id: track_id.clone(), bytes }
+                            },
+                        ));
+                    }
 
                     let theater_task = self.theater
                         .track_changed(playable)
@@ -299,18 +299,16 @@ impl PlaybackFeature {
         self.theater.position_updated(position).map(PlaybackFeatureMessage::Theater)
     }
 
-    pub fn view(&self, thumbnails: &ThumbnailCache, is_theater_mode: bool, is_current_liked: bool) -> Element<'_, PlaybackFeatureMessage> {
+    pub fn view(&self, is_theater_mode: bool, is_current_liked: bool) -> Element<'_, PlaybackFeatureMessage> {
         let current_position = self.manager.get_position().as_secs_f32();
         let vol              = self.manager.get_volume();
         let has_track        = self.player.has_track();
         let has_history      = self.manager.history_len() != 0;
-        let is_downloading   = self.is_downloading();
 
-        let current_thumbnail = self.player.current_track.as_ref()
-            .and_then(|p| thumbnails.peek_color(&thumb_key(&p.track)));
+        let current_thumbnail = self.current_small_thumbnail.as_ref().map(|(_, h)| h).cloned();
 
         let current_track = self.player
-            .view_current_play(current_thumbnail, is_downloading, self.spinner_frame, is_current_liked)
+            .view_current_play(current_thumbnail, is_current_liked)
             .map(PlaybackFeatureMessage::Player);
 
         let play_center  = self.player.view(self.manager.state.is_playing(), has_track, has_history).map(PlaybackFeatureMessage::Player);
@@ -358,9 +356,9 @@ impl PlaybackFeature {
             .into()
     }
 
-    pub fn view_queue(&self, thumbnails: &ThumbnailCache) -> Element<'_, PlaybackFeatureMessage> {
+    pub fn view_queue(&self) -> Element<'_, PlaybackFeatureMessage> {
         self.queue
-            .view(thumbnails, self.downloading_track_id.as_deref())
+            .view(&self.queue_thumbnails)
             .map(PlaybackFeatureMessage::Queue)
     }
 
@@ -391,9 +389,12 @@ fn queue_events() -> impl futures::Stream<Item = PlaybackFeatureMessage> {
         loop {
             match rx.recv().await {
                 Ok(QueueEvent::QueueChanged) => { let _ = output.send(PlaybackFeatureMessage::QueueChanged).await; }
-                Ok(QueueEvent::DownloadStarted(track)) => { let _ = output.send(PlaybackFeatureMessage::DownloadingStarted(track.id.clone())).await; }
-                Ok(QueueEvent::DownloadFinished(track)) => { let _ = output.send(PlaybackFeatureMessage::DownloadingFinished(track.id.clone())).await; }
-                Ok(QueueEvent::DownloadRequired(_)) => {}
+                // ── FEAT FUTURO: descarga visible en cola ──────────────────────
+                // Cuando se reintroduzca el spinner de descarga en la cola,
+                // aquí se vuelven a mapear:
+                //   Ok(QueueEvent::DownloadStarted(track)) => { let _ = output.send(PlaybackFeatureMessage::DownloadingStarted(track.id.clone())).await; }
+                //   Ok(QueueEvent::DownloadFinished(track)) => { let _ = output.send(PlaybackFeatureMessage::DownloadingFinished(track.id.clone())).await; }
+                Ok(_) => {}
                 Err(_) => continue,
             }
         }

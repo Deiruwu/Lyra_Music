@@ -18,7 +18,7 @@ use crate::ui::views::explorer_view_v2;
 use crate::ui::views::favorite_view;
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
-use crate::ui::widgets::context_menu_V2::{ContextMenu, ContextMenuEvent, ContextMenuItem};
+use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::ui::widgets::playlist_row::{playlist_row, PlaylistRowData};
 
 const COLLAPSED_WIDTH: f32 = 60.0;

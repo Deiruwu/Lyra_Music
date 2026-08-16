@@ -1,76 +1,9 @@
-//! # ContextMenu — menú contextual genérico anclado a click derecho
-//!
-//!
-//! ## Cómo se consume
-//!
-//! ```ignore
-//! // 1. Un campo en tu vista:
-//! context_menu: ContextMenu<String>,
-//!
-//! // 2. El tracking de mouse Y el tamaño del viewport deben ir en un
-//! //    mouse_area/container que envuelva TODO el área visible con
-//! //    scroll (no cada fila por separado), para que el punto que
-//! //    llega ya sea relativo al viewport y el clamping funcione:
-//! mouse_area(scroll_area)
-//!     .on_move(ExplorerViewMessage::ViewportMouseMoved)
-//! // y en el update:
-//! ViewportMouseMoved(point) => self.context_menu.note_mouse_position(point),
-//! // El tamaño del viewport se puede obtener de un on_resize / Viewport
-//! // de scrollable, o simplemente del tamaño de ventana:
-//! ViewportResized(size) => self.context_menu.note_viewport_size(size),
-//!
-//! // 3. Al hacer right-click sobre una fila (el mensaje de click puede
-//! //    seguir viniendo de un mouse_area por fila, solo el tracking de
-//! //    posición necesita ser a nivel viewport):
-//! self.context_menu.toggle(track_id, item_count);
-//!
-//! // 4. En tu update(), delegar dismiss:
-//! ContextMenuMessage::Dismiss => self.context_menu.dismiss(),
-//!
-//! // 5. En tu view(), resolver el id abierto a un ítem completo y pedir
-//! //    el render. `render_target` regresa `None` si no hay nada
-//! //    abierto O si el id abierto ya no resuelve a nada (p. ej. el
-//! //    track desapareció del catálogo mientras el menú estaba abierto).
-//! //    El ítem "Agregar a playlist" es un `ContextMenuItem::submenu`:
-//! //    no dispara `Action` por sí mismo, sus `children` sí:
-//! if let Some((anchor, track)) = self.context_menu.render_target(|id| store.track_by_id(id)) {
-//!     let playlist_children = store.playlists_metadata().iter().map(|(id, name, _)| {
-//!         ContextMenuItem::new(name, ContextMenuAction::AddToPlaylist(id.clone()))
-//!     }).collect();
-//!
-//!     let menu = self.context_menu.view(
-//!         anchor,
-//!         vec![
-//!             ContextMenuItem::new("Reproducir ahora", ContextMenuAction::PlayNow)
-//!                 .icon("▶"),
-//!             ContextMenuItem::new("Agregar a cola", ContextMenuAction::Enqueue)
-//!                 .icon("＋"),
-//!             ContextMenuItem::submenu("Agregar a playlist", 0, playlist_children)
-//!                 .icon("󰐕"),
-//!             ContextMenuItem::new("Eliminar canción", ContextMenuAction::Delete)
-//!                 .icon(""),
-//!         ],
-//!         track,
-//!         MyMsg::ContextMenuAction,
-//!         MyMsg::DismissContextMenu,
-//!         MyMsg::ContextMenuSubmenuHover,
-//!     );
-//!     stack![tu_contenido, menu].into()
-//! }
-//! // y en el update():
-//! ContextMenuSubmenuHover(id) => self.context_menu.set_open_submenu(id),
-//! ```
-//!
-//! La confirmación antes de ejecutar una acción (p. ej. eliminar) ya no
-//! vive en este widget: usa `ConfirmDialog` (mismo módulo padre) como
-//! overlay centrado independiente del menú.
-
 use std::borrow::Cow;
 
 use iced::{Alignment, Color, Element, Length, Padding, Point, Size};
-use iced::widget::{button, column, container, mouse_area, row, space, text};
+use iced::widget::{button, column, container, mouse_area, pin, row, space, stack, text};
+use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;
-use crate::ui::sidebar_feature::sidebar_feature::SF_PRO;
 use crate::ui::styles::styles::{context_menu_container, context_menu_item};
 
 const ICON_COLUMN_WIDTH: f32 = 20.0;
@@ -80,20 +13,9 @@ const ITEM_HEIGHT: f32 = 34.0;
 const MENU_PADDING: f32 = 8.0;
 const VIEWPORT_MARGIN: f32 = 8.0;
 
-/// Entrada de menú. `Leaf` dispara `Action` directo al click, igual que
-/// antes. `Submenu` es un caso especial para "Agregar a playlist": no
-/// dispara ninguna acción por sí sola — al pasar el mouse por encima
-/// despliega sus `children` ancladas a la derecha (estilo
-/// Spotify/Tidal). Solo se soporta un nivel de anidamiento.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum ContextMenuItem<Action> {
     Leaf {
-        /// `Cow` en vez de `&'static str`: la mayoría de los ítems son
-        /// literales estáticos ("Reproducir ahora", etc.), pero los
-        /// hijos del submenú "Agregar a playlist" son nombres de
-        /// playlist reales del usuario (`String` owned, viven en
-        /// `CatalogStore::playlists_metadata`) — `Cow` acepta ambos sin
-        /// forzar un leak de memoria (`Box::leak`) en cada render.
         label: Cow<'static, str>,
         icon: Option<&'static str>,
         action: Action,
@@ -101,10 +23,6 @@ pub enum ContextMenuItem<Action> {
     Submenu {
         label: Cow<'static, str>,
         icon: Option<&'static str>,
-        /// Id opaco del submenú. Como hoy solo existe un submenú por
-        /// menú (Agregar a playlist), basta un id fijo (p. ej. `0`);
-        /// se deja como parámetro para no cerrar la puerta a un
-        /// segundo submenú en el futuro sin romper la firma.
         id: usize,
         children: Vec<ContextMenuItem<Action>>,
     },
@@ -120,7 +38,6 @@ impl<Action: Clone> ContextMenuItem<Action> {
             ContextMenuItem::Leaf { icon: i, .. } => *i = Some(icon.into()),
             ContextMenuItem::Submenu { icon: i, .. } => *i = Some(icon.into()),
         }
-
         self
     }
 
@@ -131,6 +48,15 @@ impl<Action: Clone> ContextMenuItem<Action> {
     ) -> Self {
         ContextMenuItem::Submenu { label: label.into(), icon: None, id, children }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum ContextMenuEvent<Id> {
+    MouseMoved(Point),
+    ViewportResized(Size),
+    RightClicked(Id),
+    SubmenuHovered(Option<usize>),
+    Dismissed,
 }
 
 #[derive(Debug, Clone)]
@@ -145,47 +71,46 @@ impl<Id> Default for MenuState<Id> {
     }
 }
 
-#[derive(Clone)]
 pub struct ContextMenu<Id: PartialEq + Clone> {
     state: MenuState<Id>,
     last_mouse_in_viewport: Option<Point>,
-    viewport_size: Option<Size>,
-    /// Id del `Submenu` actualmente desplegado (hover), si hay alguno.
-    /// Se resetea cada vez que el menú principal se abre/cierra.
     open_submenu: Option<usize>,
+    viewport_size: Option<Size>,
 }
 
 impl<Id: PartialEq + Clone> Default for ContextMenu<Id> {
     fn default() -> Self {
-        Self { state: MenuState::default(), last_mouse_in_viewport: None, viewport_size: None, open_submenu: None }
+        Self {
+            state: MenuState::default(),
+            last_mouse_in_viewport: None,
+            viewport_size: None,
+            open_submenu: None,
+        }
     }
 }
 
 impl<Id: PartialEq + Clone> ContextMenu<Id> {
     pub fn new() -> Self {
-        Self { state: MenuState::Closed, last_mouse_in_viewport: None, viewport_size: None, open_submenu: None }
+        Self::default()
     }
 
-    /// Despliega (o cierra) un submenú por id. Llamado desde `on_enter`
-    /// / `on_exit` del `mouse_area` que envuelve cada `Submenu` item.
-    pub fn set_open_submenu(&mut self, id: Option<usize>) {
-        self.open_submenu = id;
+    pub fn handle(&mut self, event: ContextMenuEvent<Id>) {
+        match event {
+            ContextMenuEvent::MouseMoved(p) => {
+                self.last_mouse_in_viewport = Some(p);
+            }
+            ContextMenuEvent::ViewportResized(size) => {
+                self.viewport_size = Some(size);
+            }
+            ContextMenuEvent::RightClicked(id) => self.toggle(id),
+            ContextMenuEvent::SubmenuHovered(id) => {
+                self.open_submenu = id;
+            }
+            ContextMenuEvent::Dismissed => self.dismiss(),
+        }
     }
 
-    pub fn note_mouse_position(&mut self, viewport_relative_point: Point) {
-        self.last_mouse_in_viewport = Some(viewport_relative_point);
-    }
-
-    pub fn note_viewport_size(&mut self, size: Size) {
-        self.viewport_size = Some(size);
-    }
-
-    /// Abre (o cierra si ya estaba abierto para este `id`) el menú.
-    /// `item_count` es la cantidad de opciones que se van a mostrar,
-    /// usada para estimar la altura del menú y clampear su posición
-    /// contra el tamaño del viewport, de modo que nunca quede cortado
-    /// fuera de la pantalla.
-    pub fn toggle(&mut self, id: Id, item_count: usize) {
+    fn toggle(&mut self, id: Id) {
         if let MenuState::Open { id: open_id, .. } = &self.state {
             if open_id == &id {
                 self.dismiss();
@@ -193,12 +118,13 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
             }
         }
 
-        let raw_anchor = self.last_mouse_in_viewport
-            .unwrap_or(Point::new(200.0, 40.0));
-
-        let anchor = self.clamp_anchor(raw_anchor, item_count);
-
+        let anchor = self.last_mouse_in_viewport.unwrap_or(Point::new(200.0, 40.0));
         self.state = MenuState::Open { id, anchor };
+        self.open_submenu = None;
+    }
+
+    fn dismiss(&mut self) {
+        self.state = MenuState::Closed;
         self.open_submenu = None;
     }
 
@@ -216,9 +142,8 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
         Point::new(raw.x.min(max_x), raw.y.min(max_y))
     }
 
-    pub fn dismiss(&mut self) {
-        self.state = MenuState::Closed;
-        self.open_submenu = None;
+    pub fn is_open(&self) -> bool {
+        matches!(self.state, MenuState::Open { .. })
     }
 
     pub fn open_id(&self) -> Option<&Id> {
@@ -239,19 +164,17 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
         Some((*anchor, item))
     }
 
-    /// Renderiza el menú. `on_submenu_hover` recibe `Option<usize>`
-    /// (`Some(id)` al entrar con el mouse a un `Submenu`, `None` al
-    /// salir) — la vista lo rutea a `ContextMenu::set_open_submenu` en
-    /// su `update()`, mismo patrón que `note_mouse_position`.
     pub fn view<'a, Item: Clone + 'a, Action: Clone + 'a, Msg: Clone + 'a>(
         &self,
-        anchor: Point,
+        raw_anchor: Point,
         items: Vec<ContextMenuItem<Action>>,
         item: &'a Item,
         to_msg: impl Fn(Action, Item) -> Msg + Copy + 'a,
         dismiss_msg: Msg,
         on_submenu_hover: impl Fn(Option<usize>) -> Msg + Copy + 'a,
     ) -> Element<'a, Msg> {
+        let anchor = self.clamp_anchor(raw_anchor, items.len());
+
         let mut list = column![].spacing(2);
         let mut submenu_flyout: Option<(f32, Vec<ContextMenuItem<Action>>)> = None;
         let mut row_index: f32 = 0.0;
@@ -274,8 +197,6 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                         .align_x(Alignment::Center);
 
                     let label_cell = text(label.clone()).font(SF_PRO).size(13).color(Color::WHITE);
-
-
 
                     let row_content = row![icon_cell, label_cell]
                         .spacing(8)
@@ -305,7 +226,6 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                         .align_x(Alignment::Center);
 
                     let label_cell = text(label.clone()).font(SF_PRO).size(13).color(Color::WHITE);
-
                     let chevron = text("›").font(SF_PRO).size(14).color(Color::from_rgb(0.6, 0.6, 0.65));
 
                     let row_content = row![
@@ -317,16 +237,6 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                         .spacing(8)
                         .align_y(Alignment::Center);
 
-                    // La fila del submenú se pinta como `button` para
-                    // reutilizar exactamente el mismo estilo visual que
-                    // los `Leaf (incluye estado hover ya resuelto por
-                    // el propio widget de botón). No lleva `on_press`:
-                    // el despliegue del submenú lo maneja el
-                    // `mouse_area` que lo envuelve, vía hover — un click
-                    // sobre la fila del submenú no debe hacer nada
-                    // (ni cerrar el menú ni disparar una acción), así
-                    // que la interactuamos solo vía enter/exit.
-                    let _ = is_open; // el estado hover real lo pinta iced vía :hover del button
                     let submenu_button = button(row_content)
                         .width(Length::Fixed(MENU_WIDTH))
                         .padding(Padding { top: 8.0, bottom: 8.0, left: 12.0, right: 12.0 })
@@ -344,9 +254,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
             }
         }
 
-        let menu = container(list)
-            .padding(4)
-            .style(context_menu_container);
+        let menu = container(list).padding(4).style(context_menu_container);
 
         let mut layers: Vec<Element<'a, Msg>> = Vec::new();
 
@@ -357,7 +265,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
             .on_right_press(dismiss_msg.clone());
         layers.push(dismiss_layer.into());
 
-        let positioned_menu: Element<'a, Msg> = iced::widget::pin(menu)
+        let positioned_menu: Element<'a, Msg> = pin(menu)
             .x(anchor.x + 6.0)
             .y(anchor.y + 4.0)
             .into();
@@ -394,41 +302,32 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                             .on_press(to_msg(action, item_clone)),
                     );
                 }
-                // Un submenú anidado dentro de otro submenú no está
-                // soportado (ver comentario en `ContextMenuItem`): se
-                // ignora silenciosamente en vez de entrar en pánico.
             }
 
-            let submenu_container = container(sub_list)
-                .padding(4)
-                .style(context_menu_container);
+            let submenu_container = container(sub_list).padding(4).style(context_menu_container);
 
-            // Reafirma `on_enter` con el mismo id al entrar al flyout:
-            // sin esto, mover el mouse desde la fila "Agregar a
-            // playlist" hacia el flyout dispararía `on_exit` de la fila
-            // (id -> None) antes de que el mouse llegue al flyout,
-            // cerrándolo de inmediato y haciendo imposible hacer click
-            // en una playlist.
-            // CORRECCIÓN: El contenedor del submenú ya no cierra su propio estado al salir.
             let submenu_hoverable = mouse_area(submenu_container)
                 .on_enter(on_submenu_hover(submenu_id_for_flyout));
 
-            // Ancla el flyout a la derecha del menú principal, a la
-            // misma altura (aproximada) donde vive la fila del
-            // submenú: cada fila ocupa `ITEM_HEIGHT` + el spacing de 2
-            // que usa `list`, contados desde el padding interno del
-            // contenedor del menú.
             let submenu_anchor_y = anchor.y + 4.0 + MENU_PADDING
                 + submenu_row_index * (ITEM_HEIGHT + 2.0);
 
-            let positioned_submenu: Element<'a, Msg> = iced::widget::pin(submenu_hoverable)
-                .x(anchor.x + 6.0 + MENU_WIDTH + MENU_PADDING)
+            let mut submenu_x = anchor.x + 6.0 + MENU_WIDTH + MENU_PADDING;
+
+            if let Some(viewport) = self.viewport_size {
+                if submenu_x + SUBMENU_WIDTH > viewport.width - VIEWPORT_MARGIN {
+                    submenu_x = anchor.x + 6.0 - SUBMENU_WIDTH - MENU_PADDING;
+                }
+            }
+
+            let positioned_submenu: Element<'a, Msg> = pin(submenu_hoverable)
+                .x(submenu_x)
                 .y(submenu_anchor_y)
                 .into();
 
             layers.push(positioned_submenu);
         }
 
-        iced::widget::stack(layers).into()
+        stack(layers).into()
     }
 }

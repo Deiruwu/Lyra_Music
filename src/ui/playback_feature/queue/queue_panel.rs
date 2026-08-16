@@ -2,12 +2,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 use iced::{Element, Length, Padding, Task};
-use iced::widget::{button, container, scrollable, space, stack, text};
+use iced::widget::scrollable::Viewport;
+use iced::widget::operation::scroll_by;
+use iced::widget::scrollable::AbsoluteOffset;
+use iced::widget::{button, container, scrollable, space, stack, text, Id};
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
 use crate::ui::styles::styles::{minimal_button};
-use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
-use crate::ui::widgets::track_row::{queue_track_row, DragRowParams, QueueThumbnailState};
+use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
+use crate::ui::utils::virtual_list::ScrollTracker;
+use crate::ui::widgets::track_row::{queue_track_row, DragRowParams};
 use super::animator::QueueAnimator;
 
 pub(crate) const ROW_HEIGHT: f32 = 66.0;
@@ -19,6 +23,40 @@ pub(crate) const QUEUE_EXPANDED_WIDTH: f32 = 450.0;
 const ANIMATION_SPEED: f32 = 12.0;
 const SNAP_EPSILON: f32 = 0.5;
 
+/// Id único del `scrollable` de la cola. Necesario para que las
+/// operations de auto-scroll (`operation::scroll_by`) encuentren al
+/// widget durante el drag & drop.
+const QUEUE_SCROLL_ID: &str = "queue_scroll";
+/// Filas extra a renderizar por arriba y por abajo de la ventana
+/// estrictamente visible (`VirtualWindow`). Alineado con TrackBuilder.
+const BUFFER_ROWS: usize = 15;
+/// Zona caliente, en píxeles, desde cada borde del viewport dentro de la
+/// cual arrastrar dispara el auto-scroll (misma semántica que playlists).
+const AUTOSCROLL_ZONE_PX: f32 = 50.0;
+/// Velocidad máxima de auto-scroll por tick, en píxeles.
+const AUTOSCROLL_MAX_SPEED_PX: f32 = 18.0;
+
+// ── FEAT FUTURO: canción en descarga visible en la cola ──────────────────
+// Hoy la cola presume que todo track ya está descargado. Para mostrar una
+// canción con un símbolo de espera mientras se descarga (sin esperar a
+// que el motor la suelte), este era el flujo, hoy comentado/eliminado:
+//
+//   1. TrackManager emite QueueEvent::DownloadStarted(track) /
+//      QueueEvent::DownloadFinished(track) por el canal broadcast.
+//   2. queue_events() en playback_feature los traducía a
+//      PlaybackFeatureMessage::DownloadingStarted(id) / DownloadingFinished(id).
+//   3. La UI guardaba downloading_track_id, y view() mandaba
+//      QueueThumbnailState::Downloading(self.spinner_frame) a la fila cuyo
+//      track_id coincidía (fila + ghost).
+//   4. QueueThumbnailState::Downloading(u8) vivía en track_row.rs y
+//      thumbnail_with_overlay pintaba un SPINNER sobre la miniatura.
+//   5. El frame avanzaba con QueueMessage::Tick (40ms) vía
+//      self.spinner_frame = (self.spinner_frame + 1) % 6.
+//
+// Para reintroducirlo: volver a añadir `spinner_frame` + `Tick` en
+// `QueuePanel`, el parámetro `downloading_track_id` en `view()`, y la
+// variante `Downloading(u8)` en `QueueThumbnailState` con su overlay.
+
 #[derive(Debug, Clone)]
 pub enum QueueMessage {
     Toggle,
@@ -29,7 +67,6 @@ pub enum QueueMessage {
     UiPlayClicked(usize),
     UiRemoveClicked(usize),
     UiMoveClicked(usize, usize),
-    Tick,
 
     // ── Drag & drop ──────────────────────────────────────────────────────
     DragStarted(usize),
@@ -37,6 +74,10 @@ pub enum QueueMessage {
     DragReleased,
     CursorMoved(f32),
     AnimationFrame(Instant),
+
+    // ── Virtualización / scroll ──────────────────────────────────────────
+    Scrolled(Viewport),
+    AutoScrollTick,
 }
 
 #[derive(Debug, Clone)]
@@ -61,9 +102,9 @@ pub struct QueuePanel {
     queue: Vec<Arc<Track>>,
     hovered_row: Option<usize>,
     hovered_delete: Option<usize>,
-    spinner_frame: u8,
     drag: Option<DragState>,
     animator: QueueAnimator,
+    scroll: ScrollTracker,
 }
 
 impl Default for QueuePanel {
@@ -75,9 +116,9 @@ impl Default for QueuePanel {
             queue: Vec::new(),
             hovered_row: None,
             hovered_delete: None,
-            spinner_frame: 0,
             drag: None,
             animator: QueueAnimator::default(),
+            scroll: ScrollTracker::default(),
         }
     }
 }
@@ -90,6 +131,26 @@ impl QueuePanel {
 
     pub fn is_animating_width(&self) -> bool {
         (self.queue_width - self.target_width).abs() > SNAP_EPSILON
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// Universo `(key, url)` de la ventana visible de la cola (+buffer),
+    /// listo para `AsyncThumbnail::sync`. Espejo de
+    /// `track_list_builder::visible_thumbnail_targets` (Explorer/Playlists),
+    /// pero sobre la cola con su propio `ROW_STRIDE`.
+    pub fn visible_thumbnail_targets(&self) -> Vec<(String, String)> {
+        let window = self.scroll.window(ROW_STRIDE, self.queue.len(), BUFFER_ROWS);
+        if window.is_empty() {
+            return Vec::new();
+        }
+
+        self.queue[window.start..window.end]
+            .iter()
+            .filter_map(|t| t.thumbnail_small.clone().map(|url| (thumb_key(t), url)))
+            .collect()
     }
 
     fn track_id_of(track: &Track) -> String {
@@ -119,13 +180,53 @@ impl QueuePanel {
                 self.hovered_delete = None;
                 (Task::none(), QueueOutMessage::Idle)
             }
-            QueueMessage::Tick => {
-                self.spinner_frame = (self.spinner_frame + 1) % 6;
-                (Task::none(), QueueOutMessage::Idle)
-            }
             QueueMessage::UiPlayClicked(index) => (Task::none(), QueueOutMessage::RequestPlay(index)),
             QueueMessage::UiRemoveClicked(index) => (Task::none(), QueueOutMessage::RequestRemove(index)),
             QueueMessage::UiMoveClicked(from, to) => (Task::none(), QueueOutMessage::RequestMove(from, to)),
+
+            QueueMessage::Scrolled(viewport) => {
+                self.scroll.update(viewport);
+                (Task::none(), QueueOutMessage::Idle)
+            }
+
+            // Auto-scroll mientras se arrastra cerca de los bordes del viewport.
+            // OJO: el `mouse_area` de la cola envuelve el CONTENIDO (dentro del
+            // `scrollable`), así que `drag.cursor_y` ya viene en coordenadas de
+            // contenido (absolutas). Para `autoscroll_delta` necesitamos la
+            // posición local al viewport, de ahí restar `offset_y`.
+            QueueMessage::AutoScrollTick => {
+                if self.drag.is_none() {
+                    return (Task::none(), QueueOutMessage::Idle);
+                }
+
+                let Some(drag) = self.drag.as_mut() else {
+                    return (Task::none(), QueueOutMessage::Idle);
+                };
+
+                let local_y = drag.cursor_y - self.scroll.offset_y;
+                let Some(delta_y) = self.scroll.autoscroll_delta(
+                    local_y,
+                    AUTOSCROLL_ZONE_PX,
+                    AUTOSCROLL_MAX_SPEED_PX,
+                ) else {
+                    return (Task::none(), QueueOutMessage::Idle);
+                };
+
+                self.scroll.offset_y = (self.scroll.offset_y + delta_y).max(0.0);
+
+                // El ghost se dibuja en coordenadas de contenido: sumamos delta
+                // para que siga al viewport (se quede debajo del cursor).
+                drag.cursor_y += delta_y;
+
+                let hovered_index = (drag.cursor_y / ROW_STRIDE).floor() as isize;
+                let max_index = self.queue.len().saturating_sub(1) as isize;
+                drag.current_index = hovered_index.clamp(0, max_index) as usize;
+
+                (
+                    scroll_by(Id::new(QUEUE_SCROLL_ID), AbsoluteOffset { x: 0.0, y: delta_y }),
+                    QueueOutMessage::Idle,
+                )
+            }
 
             QueueMessage::DragStarted(index) => {
                 if index < self.queue.len() {
@@ -219,25 +320,40 @@ impl QueuePanel {
         }
     }
 
-    pub fn view(&self, cache: &ThumbnailCache, downloading_track_id: Option<&str>) -> Element<'_, QueueMessage> {
+    pub fn view<'a>(&'a self, thumbnails: &'a AsyncThumbnail) -> Element<'a, QueueMessage> {
         if self.queue_width == 0.0 {
             return space().into();
         }
 
+        let total_items = self.queue.len();
         let now = Instant::now();
         let is_dragging = self.drag.is_some();
 
-        let mut layers: Vec<Element<'_, QueueMessage>> = Vec::with_capacity(self.queue.len() + 1);
+        // 1. Qué rango de índices es realmente visible (+buffer). El stack
+        //    ya tiene la altura total fija (list_height), así que el
+        //    scrollbar funciona sin espaciadores: la ventana solo FILTRA
+        //    qué filas construimos, y el `y` absoluto del animator las
+        //    ancla en su posición real dentro del contenido.
+        let window = self.scroll.window(ROW_STRIDE, total_items, BUFFER_ROWS);
 
-        for (index, track) in self.queue.iter().enumerate() {
+        let dynamic_padding = if self.queue_width > 32.0 { 16.0 } else { self.queue_width / 2.0 };
+
+        if window.is_empty() {
+            return container(space())
+                .padding(dynamic_padding)
+                .width(Length::Fixed(self.queue_width))
+                .height(Length::Fill)
+                .style(queue_panel_style)
+                .into();
+        }
+
+        let mut layers: Vec<Element<'a, QueueMessage>> = Vec::with_capacity(window.len() + 1);
+
+        // 2. Renderizamos SOLO las filas de la ventana.
+        for index in window.start..window.end {
+            let track = &self.queue[index];
             let track_id = Self::track_id_of(track);
-            let thumbnail = cache.peek_color(&thumb_key(track.as_ref()));
-
-            let state = if downloading_track_id == Some(track_id.as_str()) {
-                QueueThumbnailState::Downloading(self.spinner_frame)
-            } else {
-                QueueThumbnailState::Normal
-            };
+            let thumbnail = thumbnails.get(&thumb_key(track.as_ref())).cloned();
 
             let row_is_dragged = self
                 .drag
@@ -259,7 +375,6 @@ impl QueuePanel {
                 self.hovered_delete == Some(index),
                 QueueMessage::DeleteHovered(index),
                 QueueMessage::DeleteUnhovered,
-                state,
                 drag_params,
             );
 
@@ -277,9 +392,10 @@ impl QueuePanel {
             );
         }
 
+        // 3. Ghost del drag & drop (siempre se pinta por encima de la lista).
         if let Some(drag) = &self.drag {
             if let Some(track) = self.queue.get(drag.current_index) {
-                let thumbnail = cache.peek_color(&thumb_key(track.as_ref()));
+                let thumbnail = thumbnails.get(&thumb_key(track.as_ref())).cloned();
                 let ghost_y = (drag.cursor_y - drag.grab_offset).max(0.0);
 
                 let drag_params = DragRowParams {
@@ -297,7 +413,6 @@ impl QueuePanel {
                     false,
                     QueueMessage::DeleteHovered(drag.current_index),
                     QueueMessage::DeleteUnhovered,
-                    QueueThumbnailState::Normal,
                     drag_params,
                 );
 
@@ -310,27 +425,25 @@ impl QueuePanel {
             }
         }
 
-        let list_height = self.animator.calculate_dynamic_height(self.queue.len(), now);
-
+        // 4. Altura total "teórica" del contenido: mantiene el scrollbar
+        //    fiel y deja el `y` absoluto del animator anclando cada fila.
+        let list_height = self.animator.calculate_dynamic_height(total_items, now);
         let content_stack = stack(layers).height(Length::Fixed(list_height));
 
-        // FIX: Se añade on_exit para limpiar el estado al abandonar el panel
         let interactive_area = iced::widget::mouse_area(content_stack)
             .on_move(|point| QueueMessage::CursorMoved(point.y))
             .on_exit(QueueMessage::Unhovered);
 
-        // Escalamos el padding dinámicamente para que no corte el contenedor durante el resize
-        let dynamic_padding = if self.queue_width > 32.0 { 16.0 } else { self.queue_width / 2.0 };
-
-        container(scrollable(interactive_area).height(Length::Fill))
+        container(
+            scrollable(interactive_area)
+                .id(Id::new(QUEUE_SCROLL_ID))
+                .height(Length::Fill)
+                .on_scroll(QueueMessage::Scrolled),
+        )
             .padding(dynamic_padding)
-            .width(Length::Fixed(self.queue_width)) // El ancho es gobernado por la animación
+            .width(Length::Fixed(self.queue_width))
             .height(Length::Fill)
-            .style(|_theme: &iced::Theme| container::Style {
-                background: Some(iced::Color::from_rgb(0.12, 0.12, 0.12).into()),
-                border: iced::border::rounded(12),
-                ..Default::default()
-            })
+            .style(queue_panel_style)
             .into()
     }
 
@@ -353,6 +466,7 @@ impl QueuePanel {
             self.show = false;
             self.target_width = QUEUE_COLLAPSED_WIDTH;
             self.animator.clear();
+            self.scroll.reset();
             return;
         }
 
@@ -370,5 +484,19 @@ impl QueuePanel {
             let track_id = Self::track_id_of(track);
             self.animator.sync_target(&track_id, index, now);
         }
+
+        // Reclampa el offset de scroll por si la lista se encogió.
+        let max_offset = (self.queue.len() as f32 * ROW_STRIDE - self.scroll.viewport_height).max(0.0);
+        self.scroll.offset_y = self.scroll.offset_y.min(max_offset);
+    }
+}
+
+/// Fondo común del panel de la cola (se usa tanto en el caso vacío como
+/// en el render normal).
+fn queue_panel_style(_theme: &iced::Theme) -> container::Style {
+    container::Style {
+        background: Some(iced::Color::from_rgb(0.12, 0.12, 0.12).into()),
+        border: iced::border::rounded(12),
+        ..Default::default()
     }
 }

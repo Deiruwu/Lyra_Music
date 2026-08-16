@@ -12,6 +12,5 @@ pub mod catalog_search_input;
 pub mod views;
 pub mod selection_state;
 pub mod track_list_builder;
-pub mod context_menu_V2;
 pub mod track_context_builder;
 pub mod track_list_out_message;
