@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 
 use crossbeam_channel::Sender;
 use tokio::sync::broadcast;
+use uuid::Uuid;
 use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
 use crate::audio::decoder::ChannelMode;
@@ -18,6 +19,29 @@ const HISTORY_CAP: usize = 100;
 
 // ── Estado consolidado ───────────────────────────────────────────────────────
 
+/// Entrada de la cola: identidad de slot (`id`) separada del `track.id`,
+/// para que dos instancias de la misma canción en cola no colisionen
+/// (animator, drag & drop, futuro undo de shuffle).
+#[derive(Clone)]
+pub struct QueueSlot {
+    pub id: Uuid,
+    pub track: Arc<Track>,
+}
+
+impl QueueSlot {
+    pub fn new(track: Arc<Track>) -> Self {
+        Self { id: Uuid::new_v4(), track }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepeatMode {
+    #[default]
+    Off,
+    Queue,
+    Track,
+}
+
 /// Todo el estado mutable de reproducción vive aquí, detrás de un único
 /// `Mutex`. Esto evita el patrón anterior de tomar y soltar locks separados
 /// para `current_track`, `queue`, `history` y `auto_advance` por turnos
@@ -25,9 +49,12 @@ const HISTORY_CAP: usize = 100;
 /// inconsistente entre un lock y el siguiente).
 pub(super) struct PlaybackState {
     pub(super) current_track: Option<Arc<PlayableTrack>>,
-    pub(super) queue: VecDeque<Arc<Track>>,
+    pub(super) queue: VecDeque<QueueSlot>,
     pub(super) history: VecDeque<Track>,
     pub(super) auto_advance: bool,
+    pub(super) repeat_mode: RepeatMode,
+    pub(super) shuffle_enabled: bool,
+    pub(super) pre_shuffle_order: Option<Vec<Uuid>>,
 }
 
 impl PlaybackState {
@@ -37,6 +64,9 @@ impl PlaybackState {
             queue: VecDeque::new(),
             history: VecDeque::new(),
             auto_advance: true,
+            repeat_mode: RepeatMode::Off,
+            shuffle_enabled: false,
+            pre_shuffle_order: None,
         }
     }
 
@@ -56,8 +86,8 @@ impl PlaybackState {
     /// Caso "el track al frente no tiene archivo local": lo devuelve a la
     /// cola, archiva lo que estaba sonando y marca auto_advance para que
     /// el supervisor retome en cuanto el DownloadWorker termine.
-    fn requeue_for_download(&mut self, track: Arc<Track>) {
-        self.queue.push_front(track);
+    fn requeue_for_download(&mut self, slot: QueueSlot) {
+        self.queue.push_front(slot);
         if let Some(current) = self.current_track.take() {
             push_to_history_inner(&mut self.history, current.track.clone());
         }
@@ -155,7 +185,23 @@ impl TrackManager {
                         continue;
                     }
 
-                    let Some(next_track) = ps.queue.pop_front() else {
+                    if ps.repeat_mode == RepeatMode::Track {
+                        if let Some(current) = ps.current_track.clone() {
+                            drop(ps);
+                            let _ = supervisor_tx.send(AudioCommand::Play {
+                                track: current,
+                                mode: ChannelMode::Stereo,
+                            });
+                            continue;
+                        }
+                    }
+
+                    if ps.queue.is_empty() && ps.repeat_mode == RepeatMode::Queue && !ps.history.is_empty() {
+                        let replay: Vec<QueueSlot> = ps.history.drain(..).map(|t| QueueSlot::new(Arc::new(t))).collect();
+                        ps.queue.extend(replay);
+                    }
+
+                    let Some(next_slot) = ps.queue.pop_front() else {
                         ps.clear_current_to_history();
                         drop(ps);
                         supervisor_state.status.store(0, Ordering::Relaxed);
@@ -163,8 +209,9 @@ impl TrackManager {
                         continue;
                     };
 
-                    if next_track.file_path.is_none() {
-                        ps.requeue_for_download(Arc::clone(&next_track));
+                    if next_slot.track.file_path.is_none() {
+                        let next_track = Arc::clone(&next_slot.track);
+                        ps.requeue_for_download(next_slot);
                         drop(ps);
                         signal_download_required(
                             &supervisor_state,
@@ -175,7 +222,7 @@ impl TrackManager {
                         continue;
                     }
 
-                    let playable = match probe_track(&next_track, "SUPERVISOR") {
+                    let playable = match probe_track(&next_slot.track, "SUPERVISOR") {
                         Ok(p) => p,
                         Err(_) => continue,
                     };
@@ -220,19 +267,19 @@ impl TrackManager {
         I: IntoIterator<Item = Track>,
         I::IntoIter: DoubleEndedIterator,
     {
-        let tracks_iter = tracks.into_iter().map(Arc::new);
+        let slots_iter = tracks.into_iter().map(|t| QueueSlot::new(Arc::new(t)));
         let mut added_any = false;
 
         {
             let mut ps = self.playback.lock().unwrap();
             if to_front {
-                for track in tracks_iter.rev() {
-                    ps.queue.push_front(track);
+                for slot in slots_iter.rev() {
+                    ps.queue.push_front(slot);
                     added_any = true;
                 }
             } else {
-                for track in tracks_iter {
-                    ps.queue.push_back(track);
+                for slot in slots_iter {
+                    ps.queue.push_back(slot);
                     added_any = true;
                 }
             }
@@ -266,16 +313,21 @@ impl TrackManager {
                 }
 
                 ps.clear_current_to_history();
-                let skipped: Vec<Track> = ps.queue.drain(0..n).map(|t| (*t).clone()).collect();
+                let skipped: Vec<Track> = ps.queue.drain(0..n).map(|slot| (*slot.track).clone()).collect();
                 for track in skipped {
                     push_to_history_inner(&mut ps.history, track);
                 }
             }
 
+            if ps.queue.is_empty() && ps.repeat_mode == RepeatMode::Queue && !ps.history.is_empty() {
+                let replay: Vec<QueueSlot> = ps.history.drain(..).map(|t| QueueSlot::new(Arc::new(t))).collect();
+                ps.queue.extend(replay);
+            }
+
             ps.queue.pop_front()
         };
 
-        let Some(next_track) = next_track else {
+        let Some(next_slot) = next_track else {
             if n == 0 {
                 self.stop();
                 return Ok(());
@@ -283,10 +335,11 @@ impl TrackManager {
             return Err(ManagerError::QueueEmptiedUnexpectedly);
         };
 
-        if next_track.file_path.is_none() {
+        if next_slot.track.file_path.is_none() {
+            let next_track = Arc::clone(&next_slot.track);
             {
                 let mut ps = self.playback.lock().unwrap();
-                ps.requeue_for_download(Arc::clone(&next_track));
+                ps.requeue_for_download(next_slot);
             }
             let _ = self.engine_tx.send(AudioCommand::Stop);
             signal_download_required(&self.state, &self.queue_tx, next_track, "MANAGER:skip");
@@ -294,7 +347,7 @@ impl TrackManager {
             return Ok(());
         }
 
-        let playable = probe_track(&next_track, "MANAGER:skip")?;
+        let playable = probe_track(&next_slot.track, "MANAGER:skip")?;
 
         {
             let mut ps = self.playback.lock().unwrap();
@@ -315,12 +368,20 @@ impl TrackManager {
         self.playback.lock().unwrap().current_track.clone()
     }
 
-    pub fn get_queue_snapshot(&self) -> Vec<Arc<Track>> {
+    pub fn get_queue_snapshot(&self) -> Vec<QueueSlot> {
         self.playback.lock().unwrap().queue.iter().cloned().collect()
     }
 
     pub fn get_history_snapshot(&self) -> Vec<Track> {
         self.playback.lock().unwrap().history.iter().cloned().collect()
+    }
+
+    pub fn is_shuffled(&self) -> bool {
+        self.playback.lock().unwrap().shuffle_enabled
+    }
+
+    pub fn repeat_mode(&self) -> RepeatMode {
+        self.playback.lock().unwrap().repeat_mode
     }
 
 }

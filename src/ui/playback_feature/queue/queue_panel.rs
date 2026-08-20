@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::time::Instant;
 use iced::{Element, Length, Padding, Task};
 use iced::widget::scrollable::Viewport;
@@ -7,7 +6,7 @@ use iced::widget::operation::scroll_by;
 use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::{button, container, scrollable, space, stack, text, Id};
 use crate::JETBRAINS_MONO;
-use crate::model::Track;
+use crate::audio::manager::manager::QueueSlot;
 use crate::ui::styles::styles::{minimal_button};
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::virtual_list::ScrollTracker;
@@ -99,7 +98,7 @@ pub struct QueuePanel {
     pub show: bool,
     pub queue_width: f32,
     pub target_width: f32,
-    queue: Vec<Arc<Track>>,
+    queue: Vec<QueueSlot>,
     hovered_row: Option<usize>,
     hovered_delete: Option<usize>,
     drag: Option<DragState>,
@@ -149,12 +148,12 @@ impl QueuePanel {
 
         self.queue[window.start..window.end]
             .iter()
-            .filter_map(|t| t.thumbnail_small.clone().map(|url| (thumb_key(t), url)))
+            .filter_map(|s| s.track.thumbnail_small.clone().map(|url| (thumb_key(&s.track), url)))
             .collect()
     }
 
-    fn track_id_of(track: &Track) -> String {
-        track.id.to_string()
+    fn slot_id_of(slot: &QueueSlot) -> String {
+        slot.id.to_string()
     }
 
     fn move_dragged_item(&mut self, hovered_index: usize, now: Instant) {
@@ -167,7 +166,7 @@ impl QueuePanel {
         self.queue.insert(hovered_index, item);
         drag.current_index = hovered_index;
 
-        let ids: Vec<String> = self.queue.iter().map(|t| Self::track_id_of(t)).collect();
+        let ids: Vec<String> = self.queue.iter().map(Self::slot_id_of).collect();
         for (i, id) in ids.iter().enumerate() {
             if i == hovered_index {
                 continue;
@@ -298,8 +297,8 @@ impl QueuePanel {
                     return (Task::none(), QueueOutMessage::Idle);
                 };
 
-                if let Some(track) = self.queue.get(drag.current_index) {
-                    let id = Self::track_id_of(track);
+                if let Some(slot) = self.queue.get(drag.current_index) {
+                    let id = Self::slot_id_of(slot);
                     self.animator.snap_to_target(&id, drag.current_index);
                 }
 
@@ -357,8 +356,9 @@ impl QueuePanel {
 
         // 2. Renderizamos SOLO las filas de la ventana.
         for index in window.start..window.end {
-            let track = &self.queue[index];
-            let track_id = Self::track_id_of(track);
+            let slot = &self.queue[index];
+            let track = &slot.track;
+            let slot_id = Self::slot_id_of(slot);
             let thumbnail = thumbnails.get(&thumb_key(track.as_ref())).cloned();
 
             let row_is_dragged = self
@@ -388,7 +388,7 @@ impl QueuePanel {
                 continue;
             }
 
-            let y = self.animator.visual_y_of(&track_id, now);
+            let y = self.animator.visual_y_of(&slot_id, now);
 
             layers.push(
                 container(row)
@@ -400,7 +400,8 @@ impl QueuePanel {
 
         // 3. Ghost del drag & drop (siempre se pinta por encima de la lista).
         if let Some(drag) = &self.drag {
-            if let Some(track) = self.queue.get(drag.current_index) {
+            if let Some(slot) = self.queue.get(drag.current_index) {
+                let track = &slot.track;
                 let thumbnail = thumbnails.get(&thumb_key(track.as_ref())).cloned();
                 let ghost_y = (drag.cursor_y - drag.grab_offset).max(0.0);
 
@@ -465,7 +466,7 @@ impl QueuePanel {
         }.into()
     }
 
-    pub fn queue_update(&mut self, queue: Vec<Arc<Track>>) {
+    pub fn queue_update(&mut self, queue: Vec<QueueSlot>) {
         self.drag = None;
         self.queue = queue;
         if self.queue.is_empty() {
@@ -481,14 +482,14 @@ impl QueuePanel {
         let valid_ids: HashSet<String> = self
             .queue
             .iter()
-            .map(|t| Self::track_id_of(t))
+            .map(Self::slot_id_of)
             .collect();
 
         self.animator.retain_valid_ids(&valid_ids);
 
-        for (index, track) in self.queue.iter().enumerate() {
-            let track_id = Self::track_id_of(track);
-            self.animator.sync_target(&track_id, index, now);
+        for (index, slot) in self.queue.iter().enumerate() {
+            let slot_id = Self::slot_id_of(slot);
+            self.animator.sync_target(&slot_id, index, now);
         }
 
         // Reclampa el offset de scroll por si la lista se encogió.

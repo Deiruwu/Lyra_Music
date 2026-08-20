@@ -9,7 +9,7 @@ use mpris_server::{
 };
 use mpris_server::zbus::fdo;
 
-use crate::audio::manager::manager::TrackManager;
+use crate::audio::manager::manager::{RepeatMode, TrackManager};
 use crate::audio::track_event::TrackEvent;
 use crate::model::audio_tech::PlayableTrack;
 
@@ -173,12 +173,36 @@ impl PlayerInterface for MprisPlayer {
         Ok(map_status(self.manager.state.status.load(Ordering::Relaxed)))
     }
 
-    async fn loop_status(&self)                    -> fdo::Result<LoopStatus>   { Ok(LoopStatus::None) }
-    async fn set_loop_status(&self, _: LoopStatus) -> zbus::Result<()>          { Ok(()) }
+    async fn loop_status(&self) -> fdo::Result<LoopStatus> {
+        Ok(match self.manager.repeat_mode() {
+            RepeatMode::Off   => LoopStatus::None,
+            RepeatMode::Queue => LoopStatus::Playlist,
+            RepeatMode::Track => LoopStatus::Track,
+        })
+    }
+
+    async fn set_loop_status(&self, status: LoopStatus) -> zbus::Result<()> {
+        self.manager.set_repeat_mode(match status {
+            LoopStatus::None     => RepeatMode::Off,
+            LoopStatus::Playlist => RepeatMode::Queue,
+            LoopStatus::Track    => RepeatMode::Track,
+        });
+        Ok(())
+    }
+
     async fn rate(&self)                           -> fdo::Result<PlaybackRate> { Ok(1.0) }
     async fn set_rate(&self, _: PlaybackRate)      -> zbus::Result<()>          { Ok(()) }
-    async fn shuffle(&self)                        -> fdo::Result<bool>         { Ok(false) }
-    async fn set_shuffle(&self, _: bool)           -> zbus::Result<()>          { Ok(()) }
+
+    async fn shuffle(&self) -> fdo::Result<bool> {
+        Ok(self.manager.is_shuffled())
+    }
+
+    async fn set_shuffle(&self, value: bool) -> zbus::Result<()> {
+        if self.manager.is_shuffled() != value {
+            self.manager.toggle_shuffle();
+        }
+        Ok(())
+    }
 
     async fn metadata(&self) -> fdo::Result<Metadata> {
         let current_track = self.manager.get_current_track();

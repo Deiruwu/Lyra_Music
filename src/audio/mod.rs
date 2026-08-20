@@ -9,3 +9,4 @@ pub mod radio_daemon;
 pub mod download_daemon;
 pub mod manager;
 pub mod music_utils;
+pub mod queue_shuffle;

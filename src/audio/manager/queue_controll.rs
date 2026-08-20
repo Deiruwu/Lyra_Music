@@ -9,8 +9,8 @@ impl TrackManager {
         if from >= ps.queue.len() || to >= ps.queue.len() {
             return Err(ManagerError::IndexOutOfRange);
         }
-        let track = ps.queue.remove(from).unwrap();
-        ps.queue.insert(to, track);
+        let slot = ps.queue.remove(from).unwrap();
+        ps.queue.insert(to, slot);
         drop(ps);
         self.broadcast_queue_update();
         Ok(())
@@ -51,7 +51,7 @@ impl TrackManager {
                 }
             }
 
-            if ps.queue.iter().any(|t| t.id == track.id) {
+            if ps.queue.iter().any(|slot| slot.track.id == track.id) {
                 return false;
             }
 

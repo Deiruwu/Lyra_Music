@@ -75,11 +75,11 @@ impl DownloadWorker {
     async fn next_predownload_candidate(&self) -> Option<Track> {
         let first = self.manager.get_queue_snapshot().into_iter().next()?;
 
-        if first.file_path.is_some() {
+        if first.track.file_path.is_some() {
             return None;
         }
 
-        if self.active_id.lock().await.as_deref() == Some(first.id.as_str()) {
+        if self.active_id.lock().await.as_deref() == Some(first.track.id.as_str()) {
             return None;
         }
 
@@ -87,7 +87,7 @@ impl DownloadWorker {
             return None;
         }
 
-        Some((*first).clone())
+        Some((*first.track).clone())
     }
 
     // ── Descarga de emergencia ────────────────────────────────────────────────

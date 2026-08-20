@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use crate::audio::engine_state::AudioCommand;
-use crate::audio::manager::manager::{probe_track, TrackManager};
+use crate::audio::manager::manager::{probe_track, QueueSlot, TrackManager};
 use crate::audio::manager::error_mananger::ManagerError;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 use crate::model::Track;
@@ -14,7 +14,7 @@ impl TrackManager {
 
         let mut tracks_iter = context_tracks.into_iter().skip(start_index);
         let first_track = Arc::new(tracks_iter.next().unwrap());
-        let remaining: Vec<Arc<Track>> = tracks_iter.map(Arc::new).collect();
+        let remaining: Vec<QueueSlot> = tracks_iter.map(|t| QueueSlot::new(Arc::new(t))).collect();
 
         {
             let mut ps = self.playback.lock().unwrap();
@@ -27,7 +27,7 @@ impl TrackManager {
         if first_track.file_path.is_none() {
             {
                 let mut ps = self.playback.lock().unwrap();
-                ps.queue.push_front(Arc::clone(&first_track));
+                ps.queue.push_front(QueueSlot::new(Arc::clone(&first_track)));
             }
 
             let _ = self.engine_tx.send(AudioCommand::Stop);
@@ -91,7 +91,7 @@ impl TrackManager {
             let mut ps = self.playback.lock().unwrap();
             if let Some(current) = ps.current_track.as_ref() {
                 let current_track = current.track.clone();
-                ps.queue.push_front(Arc::new(current_track));
+                ps.queue.push_front(QueueSlot::new(Arc::new(current_track)));
             }
             ps.advance_to(Arc::clone(&playable));
         }

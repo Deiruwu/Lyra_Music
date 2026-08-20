@@ -4,6 +4,7 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::Event::Mouse;
 use iced::mouse::Event::CursorMoved;
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
+use iced::widget::text::Shaping;
 
 use crate::audio::manager::manager::TrackManager;
 use crate::db::playlist_manager::PlaylistManager;
@@ -377,6 +378,7 @@ impl SidebarFeatureV2 {
         let icon_elem = text(data.icon.as_str())
             .font(data.icon_font)
             .size(16)
+            .shaping(Shaping::Advanced)
             .color(text_color);
 
         let content: Element<'_, SidebarMessage> = if is_expanded_visual {
@@ -544,7 +546,7 @@ impl SidebarFeatureV2 {
 
     pub fn view_toggle(&self) -> Element<'_, SidebarMessage> {
         let icon_char = if self.is_expanded { Icon::Return } else { Icon::BurgerMenu };
-        let btn = button(text(icon_char.as_str()).font(JETBRAINS_MONO).size(18))
+        let btn = button(text(icon_char.as_str()).font(JETBRAINS_MONO).size(18).shaping(Shaping::Advanced))
             .style(minimal_button)
             .on_press(SidebarMessage::ToggleExpanded)
             .padding(8);

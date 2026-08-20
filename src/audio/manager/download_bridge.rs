@@ -17,8 +17,8 @@ impl TrackManager {
 
             let mut ps = self.playback.lock().unwrap();
             match ps.queue.front_mut() {
-                Some(front) if front.id == new_track.id => {
-                    *front = Arc::new(new_track);
+                Some(front) if front.track.id == new_track.id => {
+                    front.track = Arc::new(new_track);
                 }
                 _ => {
                     return;
@@ -43,7 +43,7 @@ impl TrackManager {
     pub fn remove_queue_front_and_resume(&self, track_id: &str) {
         {
             let mut ps = self.playback.lock().unwrap();
-            if ps.queue.front().map_or(false, |t| t.id == track_id) {
+            if ps.queue.front().map_or(false, |slot| slot.track.id == track_id) {
                 ps.queue.pop_front();
             } else {
                 return;

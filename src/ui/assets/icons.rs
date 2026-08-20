@@ -15,6 +15,15 @@ pub enum Icon {
     #[strum(serialize = "󰒭")]
     SkipNext,
 
+    #[strum(serialize = "")]
+    Shuffle,
+
+    #[strum(serialize = "󰑖")]
+    Repeat,
+
+    #[strum(serialize = "󰑘")]
+    RepeatOne,
+
     // Library
     #[strum(serialize = "")]
     Home,

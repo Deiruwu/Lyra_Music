@@ -2,6 +2,7 @@ use std::sync::Arc;
 use iced::{Alignment, Color, Element, Length, Renderer, Task, Theme};
 use iced::widget::image::Handle;
 use iced::widget::{button, column, rich_text, row, slider, space, text};
+use crate::audio::manager::manager::RepeatMode;
 use crate::audio::track_event::TrackEvent;
 use crate::JETBRAINS_MONO;
 use crate::model::audio_tech::PlayableTrack;
@@ -25,6 +26,8 @@ pub enum PlayerMessage {
     UiPrev,
     UiSeek(f32),
     UiToggleLike(String),
+    UiToggleShuffle,
+    UiCycleRepeat,
     OpenTrackLink(TrackLink),
 }
 
@@ -36,6 +39,8 @@ pub enum PlayerOutMessage {
     RequestPrev,
     RequestSeek(f32),
     RequestToggleLike(String),
+    RequestToggleShuffle,
+    RequestCycleRepeat,
     RequestOpenTrackLink(TrackLink),
 }
 
@@ -68,15 +73,39 @@ impl Player {
             PlayerMessage::UiPrev           => (Task::none(), PlayerOutMessage::RequestPrev),
             PlayerMessage::UiSeek(pos)      => (Task::none(), PlayerOutMessage::RequestSeek(pos)),
             PlayerMessage::UiToggleLike(track_id) => (Task::none(), PlayerOutMessage::RequestToggleLike(track_id)),
+            PlayerMessage::UiToggleShuffle   => (Task::none(), PlayerOutMessage::RequestToggleShuffle),
+            PlayerMessage::UiCycleRepeat     => (Task::none(), PlayerOutMessage::RequestCycleRepeat),
             PlayerMessage::OpenTrackLink(link) => (Task::none(), PlayerOutMessage::RequestOpenTrackLink(link)),
         }
     }
 
-    pub fn view(&self, is_playing: bool, has_track: bool, has_history: bool) -> Element<'_, PlayerMessage> {
+    pub fn view(
+        &self,
+        is_playing: bool,
+        has_track: bool,
+        has_history: bool,
+        is_shuffled: bool,
+        repeat_mode: RepeatMode,
+    ) -> Element<'_, PlayerMessage> {
         let play_icon = if is_playing {
             text(Icon::Pause.as_ref()).font(JETBRAINS_MONO)
         } else {
             text(Icon::Play.as_ref()).font(JETBRAINS_MONO)
+        };
+
+        let active_color = Color::from_rgb(0.62, 0.42, 0.92);
+        let inactive_color = Color::from_rgb(0.6, 0.6, 0.6);
+
+        let shuffle_button = {
+            let color = if is_shuffled { active_color } else { inactive_color };
+            button(
+                text(Icon::Shuffle.as_ref())
+                    .font(JETBRAINS_MONO)
+                    .size(16)
+                    .style(move |_: &Theme| text::Style { color: Some(color) }),
+            )
+                .style(minimal_button)
+                .on_press(PlayerMessage::UiToggleShuffle)
         };
 
         let prev_button = {
@@ -96,7 +125,23 @@ impl Player {
             if has_track { b.on_press(PlayerMessage::UiNext) } else { b }
         };
 
-        row![prev_button, play_button, next_button]
+        let repeat_button = {
+            let (icon, color) = match repeat_mode {
+                RepeatMode::Off   => (Icon::Repeat.as_ref(), inactive_color),
+                RepeatMode::Queue => (Icon::Repeat.as_ref(), active_color),
+                RepeatMode::Track => (Icon::RepeatOne.as_ref(), active_color),
+            };
+            button(
+                text(icon)
+                    .font(JETBRAINS_MONO)
+                    .size(16)
+                    .style(move |_: &Theme| text::Style { color: Some(color) }),
+            )
+                .style(minimal_button)
+                .on_press(PlayerMessage::UiCycleRepeat)
+        };
+
+        row![shuffle_button, prev_button, play_button, next_button, repeat_button]
             .spacing(15)
             .align_y(Alignment::Center)
             .into()

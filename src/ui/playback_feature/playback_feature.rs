@@ -265,6 +265,8 @@ impl PlaybackFeature {
                     PlayerOutMessage::RequestToggleLike(track_id) => {
                         feature_out = PlaybackOutMessage::RequestToggleLike(track_id);
                     }
+                    PlayerOutMessage::RequestToggleShuffle => self.manager.toggle_shuffle(),
+                    PlayerOutMessage::RequestCycleRepeat   => self.manager.cycle_repeat_mode(),
                     PlayerOutMessage::RequestOpenTrackLink(link) => {
                         feature_out = PlaybackOutMessage::RequestOpenTrackLink(link);
                     }
@@ -315,7 +317,13 @@ impl PlaybackFeature {
             .view_current_play(current_thumbnail, is_current_liked)
             .map(PlaybackFeatureMessage::Player);
 
-        let play_center  = self.player.view(self.manager.state.is_playing(), has_track, has_history).map(PlaybackFeatureMessage::Player);
+        let play_center  = self.player.view(
+            self.manager.state.is_playing(),
+            has_track,
+            has_history,
+            self.manager.is_shuffled(),
+            self.manager.repeat_mode(),
+        ).map(PlaybackFeatureMessage::Player);
         let seek_bar     = self.player.view_seek_bar(current_position).map(PlaybackFeatureMessage::Player);
         let vol_view     = self.volume.view(vol).map(PlaybackFeatureMessage::Volume);
         let queue_toggle   = self.queue.view_toggle_button().map(PlaybackFeatureMessage::Queue);

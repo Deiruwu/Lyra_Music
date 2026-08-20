@@ -143,9 +143,9 @@ impl RadioWorker {
             candidate_seeds.push(current_seed.clone());
         }
 
-        for track in queue_snapshot.iter().rev() {
-            if !candidate_seeds.contains(&track.id) {
-                candidate_seeds.push(track.id.clone());
+        for slot in queue_snapshot.iter().rev() {
+            if !candidate_seeds.contains(&slot.track.id) {
+                candidate_seeds.push(slot.track.id.clone());
             }
         }
 
