@@ -31,12 +31,6 @@ pub enum TrackEvent {
     ViewportExited,
 }
 
-impl TrackEvent {
-    pub fn needs_track_context(&self) -> bool {
-        !matches!(self, TrackEvent::MouseMoved(_) | TrackEvent::ViewportExited | TrackEvent::Scrolled(_))
-    }
-}
-
 // ── La fila de fábrica ────────────────────────────────────────────
 
 /// Único vocabulario de "columna ordenable" en toda la app. Cada

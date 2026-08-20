@@ -1,10 +1,11 @@
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CodecRegistry, Decoder as SymphCodecDecoder, DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::audio::{AudioDecoder as SymphAudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::registry::CodecRegistry;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
-use rubato::{Resampler, SincFixedOut, SincInterpolationType, SincInterpolationParameters, WindowFunction};
+use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
@@ -36,18 +37,18 @@ pub trait AudioDecoder: Send {
 fn build_codec_registry() -> CodecRegistry {
     let mut registry = CodecRegistry::new();
     symphonia::default::register_enabled_codecs(&mut registry);
-    registry.register_all::<OpusDecoder>();
+    registry.register_audio_decoder::<OpusDecoder>();
     registry
 }
 // ───────────────────────────────────────────────────────────────────────────
 
 pub struct SymphoniaDecoder {
     format_reader: Box<dyn FormatReader>,
-    decoder: Box<dyn SymphCodecDecoder>,
+    decoder: Box<dyn SymphAudioDecoder>,
     track_id: u32,
     properties: AudioProperties,
-    sample_buf: Option<SampleBuffer<f32>>,
-    resampler: Option<SincFixedOut<f32>>,
+    raw_buf: Vec<f32>,
+    resampler: Option<Async<f32>>,
     resample_staging: Vec<Vec<f32>>,
     mode: ChannelMode,
 }
@@ -63,42 +64,41 @@ impl SymphoniaDecoder {
             hint.with_extension(ext);
         }
 
-        let probed = symphonia::default::get_probe()
-            .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        let format_reader = symphonia::default::get_probe()
+            .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
             .map_err(|e| DecodeError::Format(e.to_string()))?;
-
-        let format_reader = probed.format;
 
         let track = format_reader
             .tracks()
             .iter()
-            .find(|t| {
-                t.codec_params.codec != CODEC_TYPE_NULL
-                    && t.codec_params.sample_rate.is_some()
-            })
+            .find(|t| t.codec_params.as_ref().is_some_and(|cp| cp.audio().is_some()))
             .ok_or(DecodeError::NoAudioStream)?;
 
         let track_id = track.id;
-        let params = &track.codec_params;
-        let source_sample_rate = params.sample_rate.unwrap_or(TARGET_SAMPLE_RATE);
+        let audio_params = track
+            .codec_params
+            .as_ref()
+            .and_then(|cp| cp.audio())
+            .ok_or(DecodeError::NoAudioStream)?;
+        let source_sample_rate = audio_params.sample_rate.unwrap_or(TARGET_SAMPLE_RATE);
 
         // Usamos nuestro registro inyectado
         let codec_registry = build_codec_registry();
 
         let decoder = codec_registry
-            .make(params, &DecoderOptions::default())
+            .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
             .map_err(|e| DecodeError::Codec(e.to_string()))?;
 
         let properties = AudioProperties {
             sample_rate: source_sample_rate,
-            channels: params.channels.map(|c| c.count() as u8).unwrap_or(TARGET_CHANNELS as u8),
-            bit_depth: params.bits_per_sample.map(|b| b as u8),
+            channels: audio_params.channels.as_ref().map(|c| c.count() as u8).unwrap_or(TARGET_CHANNELS as u8),
+            bit_depth: audio_params.bits_per_sample.map(|b| b as u8),
             codec: codec_registry
-                .get_codec(params.codec)
-                .map(|d| d.short_name.to_string())
+                .get_audio_decoder(audio_params.codec)
+                .map(|d| d.codec.info.short_name.to_string())
                 .unwrap_or_else(|| "unknown".to_string()),
-            duration_secs: params.n_frames
-                .zip(params.sample_rate)
+            duration_secs: track.num_frames
+                .zip(audio_params.sample_rate)
                 .map(|(frames, rate)| frames / rate as u64),
         };
 
@@ -126,7 +126,7 @@ impl SymphoniaDecoder {
             decoder,
             track_id,
             properties,
-            sample_buf: None,
+            raw_buf: Vec::new(),
             resampler,
             resample_staging,
             mode,
@@ -134,20 +134,21 @@ impl SymphoniaDecoder {
     }
 }
 
-fn make_resampler(from_rate: u32, to_rate: u32) -> Result<SincFixedOut<f32>, DecodeError> {
+fn make_resampler(from_rate: u32, to_rate: u32) -> Result<Async<f32>, DecodeError> {
     let params = SincInterpolationParameters {
         sinc_len: 256,
-        f_cutoff: 0.95,
+        f_cutoff: Some(0.95),
         interpolation: SincInterpolationType::Linear,
         oversampling_factor: 256,
         window: WindowFunction::BlackmanHarris2,
     };
-    SincFixedOut::<f32>::new(
+    Async::<f32>::new_sinc(
         to_rate as f64 / from_rate as f64,
         2.0,
-        params,
+        &params,
         1024,
         TARGET_CHANNELS,
+        FixedAsync::Output,
     ).map_err(|e| DecodeError::Resample(e.to_string()))
 }
 
@@ -155,22 +156,18 @@ impl AudioDecoder for SymphoniaDecoder {
     fn decode_next(&mut self) -> Result<Option<Vec<f32>>, DecodeError> {
         loop {
             let packet = match self.format_reader.next_packet() {
-                Ok(p) => p,
-                Err(symphonia::core::errors::Error::IoError(e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                    {
-                        return Ok(None);
-                    }
+                Ok(Some(p)) => p,
+                Ok(None) => return Ok(None),
                 Err(e) => return Err(DecodeError::Format(e.to_string())),
             };
 
-            if packet.track_id() != self.track_id {
+            if packet.track_id != self.track_id {
                 continue;
             }
 
             match self.decoder.decode(&packet) {
                 Ok(decoded) => {
-                    let actual_rate = decoded.spec().rate;
+                    let actual_rate = decoded.spec().rate();
                     if actual_rate != self.properties.sample_rate {
                         let header_rate = self.properties.sample_rate;
                         self.properties.sample_rate = actual_rate;
@@ -192,15 +189,9 @@ impl AudioDecoder for SymphoniaDecoder {
                         }
                     }
 
-                    if self.sample_buf.is_none() {
-                        self.sample_buf = Some(SampleBuffer::<f32>::new(
-                            decoded.capacity() as u64,
-                            *decoded.spec(),
-                        ));
-                    }
-                    let buf = self.sample_buf.as_mut().unwrap();
-                    buf.copy_interleaved_ref(decoded);
-                    let raw_samples = buf.samples();
+                    self.raw_buf.clear();
+                    decoded.copy_to_vec_interleaved(&mut self.raw_buf);
+                    let raw_samples = &self.raw_buf[..];
                     let source_channels = self.properties.channels as usize;
 
                     if self.resampler.is_none() {
@@ -235,18 +226,25 @@ impl AudioDecoder for SymphoniaDecoder {
                             .map(|ch| ch.drain(..needed).collect())
                             .collect();
 
+                        let adapter = SequentialSliceOfVecs::new(&input, TARGET_CHANNELS, needed)
+                            .map_err(|e| DecodeError::Resample(e.to_string()))?;
+
                         let resampled = self.resampler
                             .as_mut()
                             .unwrap()
-                            .process(&input, None)
+                            .process(&adapter, None)
                             .map_err(|e| DecodeError::Resample(e.to_string()))?;
 
-                        for i in 0..resampled[0].len() {
-                            let l = resampled[0][i];
-                            let r = resampled[1][i];
-                            match self.mode {
-                                ChannelMode::Stereo  => { out.push(l); out.push(r); }
-                                ChannelMode::MonoMix => { let m = (l + r) * 0.5; out.push(m); out.push(m); }
+                        let interleaved = resampled.take_data();
+
+                        match self.mode {
+                            ChannelMode::Stereo => out.extend(interleaved),
+                            ChannelMode::MonoMix => {
+                                for frame in interleaved.chunks(2) {
+                                    let m = (frame[0] + frame[1]) * 0.5;
+                                    out.push(m);
+                                    out.push(m);
+                                }
                             }
                         }
                     }
@@ -267,7 +265,8 @@ impl AudioDecoder for SymphoniaDecoder {
     }
 
     fn seek(&mut self, target: Duration) -> Result<(), DecodeError> {
-        let symphonia_time = symphonia::core::units::Time::from(target.as_secs_f64());
+        let symphonia_time = symphonia::core::units::Time::try_from_secs_f64(target.as_secs_f64())
+            .ok_or_else(|| DecodeError::Format("Duración de seek inválida".to_string()))?;
 
         self.format_reader.seek(
             SeekMode::Accurate,
@@ -304,36 +303,35 @@ pub fn probe_file<P: AsRef<Path>>(path: P, track: Track) -> Result<PlayableTrack
         hint.with_extension(ext);
     }
 
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+    let format = symphonia::default::get_probe()
+        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
         .map_err(|e| DecodeError::Format(e.to_string()))?;
-
-    let format = probed.format;
 
     let audio_track = format
         .tracks()
         .iter()
-        .find(|t| {
-            t.codec_params.codec != CODEC_TYPE_NULL
-                && t.codec_params.sample_rate.is_some()
-        })
+        .find(|t| t.codec_params.as_ref().is_some_and(|cp| cp.audio().is_some()))
         .ok_or(DecodeError::NoAudioStream)?;
 
-    let params = &audio_track.codec_params;
+    let audio_params = audio_track
+        .codec_params
+        .as_ref()
+        .and_then(|cp| cp.audio())
+        .ok_or(DecodeError::NoAudioStream)?;
 
     // Usamos nuestro registro inyectado también aquí
     let codec_registry = build_codec_registry();
 
     let audio_props = AudioProperties {
-        sample_rate: params.sample_rate.unwrap_or(48000),
-        channels: params.channels.map(|c| c.count() as u8).unwrap_or(2),
-        bit_depth: params.bits_per_sample.map(|b| b as u8),
+        sample_rate: audio_params.sample_rate.unwrap_or(48000),
+        channels: audio_params.channels.as_ref().map(|c| c.count() as u8).unwrap_or(2),
+        bit_depth: audio_params.bits_per_sample.map(|b| b as u8),
         codec: codec_registry
-            .get_codec(params.codec)
-            .map(|d| d.short_name.to_string())
+            .get_audio_decoder(audio_params.codec)
+            .map(|d| d.codec.info.short_name.to_string())
             .unwrap_or_else(|| "unknown".to_string()),
-        duration_secs: params.n_frames
-            .zip(params.sample_rate)
+        duration_secs: audio_track.num_frames
+            .zip(audio_params.sample_rate)
             .map(|(frames, rate)| frames / rate as u64),
     };
 

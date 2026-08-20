@@ -12,7 +12,7 @@ use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
 use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
-use crate::ui::widgets::track_list_builder::{sort_tracks, TrackBuilder, TrackColumn, TrackEvent};
+use crate::ui::widgets::track_list_builder::{TrackBuilder, TrackColumn, TrackEvent};
 use crate::ui::widgets::track_list_out_message::TrackListOutMessage;
 use crate::ui::widgets::track_context_builder::TrackContextMenuBuilder;
 
@@ -68,10 +68,7 @@ impl ExplorerView {
 
         match &msg {
             ExplorerMessage::Table(event) => {
-                let mut sorted_refs = rendered_tracks.to_vec();
-                sort_tracks(&mut sorted_refs, self.list.active_sort_key, self.list.sort_direction_asc);
-
-                let action = self.list.process_event(event.clone(), &sorted_refs);
+                let action = self.list.process_event(event.clone(), rendered_tracks);
 
                 out = match action {
                     ListAction::PlayContext(id) => ExplorerOutMessage::RequestPlayContext { start_track_id: id },
@@ -79,7 +76,7 @@ impl ExplorerView {
                     ListAction::None => ExplorerOutMessage::Idle,
 
                     ListAction::OpenContextMenu { anchor_id, selected_ids: _ } => {
-                        let is_liked = sorted_refs.iter().find(|t| t.id == anchor_id).map(|t| t.liked).unwrap_or(false);
+                        let is_liked = rendered_tracks.iter().find(|t| t.id == anchor_id).map(|t| t.liked).unwrap_or(false);
 
                         let items = TrackContextMenuBuilder::new(is_liked)
                             .with_playlists(playlists, None)
@@ -114,7 +111,6 @@ impl ExplorerView {
             }
         };
 
-        let _ = rendered_tracks;
         (Task::none(), out)
     }
 
@@ -155,8 +151,7 @@ impl ExplorerView {
                 StatusTone::Muted,
             )
         } else {
-            let mut tracks_refs: Vec<&Track> = rendered_tracks;
-            sort_tracks(&mut tracks_refs, self.list.active_sort_key, self.list.sort_direction_asc);
+            let tracks_refs: Vec<&Track> = rendered_tracks;
 
             let confirm_overlay = self.confirm_dialog.view(
                 ExplorerMessage::ConfirmDialogConfirm,

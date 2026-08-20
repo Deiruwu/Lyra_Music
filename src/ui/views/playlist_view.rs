@@ -7,7 +7,7 @@ use crate::ui::views::states_view::{ListAction, TrackViewState};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
 use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
 use crate::ui::widgets::playlist_header::{playlist_header, PlaylistHeaderData};
-use crate::ui::widgets::track_list_builder::{sort_tracks, TrackBuilder, TrackEvent};
+use crate::ui::widgets::track_list_builder::{TrackBuilder, TrackEvent};
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::utils::row_animator::RowAnimator;
 use crate::ui::widgets::track_list_out_message::TrackListOutMessage;
@@ -321,8 +321,7 @@ impl PlaylistView {
         let body_content: Element<'_, PlaylistMessage> = if rendered_tracks.is_empty() {
             catalog_status_message("Esta playlist está vacía.", StatusTone::Muted)
         } else {
-            let mut tracks_refs: Vec<&Track> = rendered_tracks.iter().copied().collect();
-            sort_tracks(&mut tracks_refs, self.list.active_sort_key, self.list.sort_direction_asc);
+            let mut tracks_refs: Vec<&Track> = rendered_tracks;
 
             if let Some(drag) = &self.drag_state {
                 if self.drag_enabled() && drag.source_index != drag.current_index && drag.source_index < tracks_refs.len() {

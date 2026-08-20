@@ -47,13 +47,26 @@ impl AudioEngine {
         // 4. Levantar el Hilo de Hardware (El Consumidor CPAL)
         let cpal_state = Arc::clone(&state);
 
+        // cpal empieza a sondear el stream (snd_pcm_avail_delay) apenas se
+        // construye, y en sistemas con PipeWire el nodo puede tardar hasta
+        // ~1-2s en terminar de conectarse en el grafo. Durante esa ventana
+        // el plugin ALSA de PipeWire devuelve I/O error (EIO) en vez de
+        // silenciarlo, aunque el audio real nunca se ve afectado. Es
+        // cosmético y no se repite después del arranque, así que se
+        // silencia solo acá; pasada la ventana, un error sí es real.
+        let stream_start = std::time::Instant::now();
+
         let stream = device.build_output_stream(
             config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 // EL HOT-PATH: Nada de bloqueos.
                 write_audio_to_hardware(data, &mut consumer, &cpal_state);
             },
-            |err| eprintln!("[CPAL ERROR] Stream de hardware roto: {}", err),
+            move |err| {
+                if stream_start.elapsed() > std::time::Duration::from_secs(2) {
+                    eprintln!("[CPAL ERROR] Stream de hardware roto: {}", err);
+                }
+            },
             None,
         ).map_err(|e| format!("Fallo al construir stream: {}", e))?;
 

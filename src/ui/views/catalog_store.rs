@@ -119,6 +119,13 @@ pub struct CatalogStore {
 
     is_loading: bool,
     last_error: Option<String>,
+
+    /// Se bumpea en cualquier mutación que pueda cambiar qué tracks (o en
+    /// qué orden) debe ver una vista: altas/bajas del catálogo, likes,
+    /// membresía/orden de playlists. Es la señal barata que usa
+    /// `TrackViewState::rendered()` para saber si su cache de
+    /// filtrado+orden sigue siendo válido, sin comparar tracks uno a uno.
+    version: u64,
 }
 
 impl CatalogStore {
@@ -138,6 +145,7 @@ impl CatalogStore {
             playlists_metadata: Vec::new(),
             is_loading: true,
             last_error: None,
+            version: 0,
         };
 
         let load_ids_task = Task::perform(
@@ -154,6 +162,14 @@ impl CatalogStore {
 
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
+    }
+
+    fn bump_version(&mut self) {
+        self.version = self.version.wrapping_add(1);
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     // ── Métodos de acceso ────────────────────────────────
@@ -235,6 +251,7 @@ impl CatalogStore {
         } else {
             self.liked_order.retain(|id| id != track_id);
         }
+        self.bump_version();
 
         let manager = Arc::clone(&self.playlist_manager);
         let id_clone = track_id.to_string();
@@ -278,6 +295,7 @@ impl CatalogStore {
     pub fn delete_playlist(&mut self, playlist_id: &str) -> Task<CatalogStoreMessage> {
         self.playlists_metadata.retain(|(id, _, _)| id != playlist_id);
         self.playlist_order.remove(playlist_id);
+        self.bump_version();
 
         let manager = Arc::clone(&self.playlist_manager);
         let id_clone = playlist_id.to_string();
@@ -352,6 +370,7 @@ impl CatalogStore {
             .entry(playlist_id.to_string())
             .or_default()
             .push(track_id.to_string());
+        self.bump_version();
 
         let manager = Arc::clone(&self.playlist_manager);
         let playlist_id_clone = playlist_id.to_string();
@@ -379,6 +398,7 @@ impl CatalogStore {
         if let Some(ids) = self.playlist_order.get_mut(playlist_id) {
             ids.retain(|id| id != track_id);
         }
+        self.bump_version();
 
         let manager = Arc::clone(&self.playlist_manager);
         let playlist_id_clone = playlist_id.to_string();
@@ -423,6 +443,7 @@ impl CatalogStore {
             .enumerate()
             .map(|(i, id)| (id.clone(), (i as f64) * 1024.0))
             .collect();
+        self.bump_version();
 
         let manager = Arc::clone(&self.playlist_manager);
         let playlist_id_clone = playlist_id.to_string();
@@ -532,6 +553,7 @@ impl CatalogStore {
                                 self.all_tracks[idx].liked = true;
                             }
                         }
+                        self.bump_version();
                         self.last_error = None;
                     }
                     Err(e) => {
@@ -545,6 +567,7 @@ impl CatalogStore {
                 match result {
                     Ok(pairs) => {
                         self.playlist_order = pairs.into_iter().collect();
+                        self.bump_version();
                         self.last_error = None;
                     }
                     Err(e) => {
@@ -565,6 +588,7 @@ impl CatalogStore {
                     } else {
                         self.liked_order.insert(0, track_id.clone());
                     }
+                    self.bump_version();
 
                     self.last_error = Some(e);
                 } else {
@@ -618,6 +642,7 @@ impl CatalogStore {
                     if let Some(ids) = self.playlist_order.get_mut(&playlist_id) {
                         ids.retain(|id| id != &track_id);
                     }
+                    self.bump_version();
                     self.last_error = Some(e);
                 } else {
                     self.last_error = None;
@@ -636,6 +661,7 @@ impl CatalogStore {
                         .entry(playlist_id)
                         .or_default()
                         .push(track_id);
+                    self.bump_version();
                     self.last_error = Some(e);
                 } else {
                     self.last_error = None;
@@ -666,6 +692,7 @@ impl CatalogStore {
                     let next_idx = self.all_tracks.len();
                     self.index_by_id.insert(track.id.clone(), next_idx);
                     self.all_tracks.push(track);
+                    self.bump_version();
                 }
                 Task::none()
             }
@@ -725,5 +752,6 @@ impl CatalogStore {
             .enumerate()
             .map(|(idx, t)| (t.id.clone(), idx))
             .collect();
+        self.bump_version();
     }
 }

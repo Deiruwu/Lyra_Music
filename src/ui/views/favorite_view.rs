@@ -11,7 +11,7 @@ use crate::ui::views::states_view::{ListAction, TrackViewState};
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
 use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
-use crate::ui::widgets::track_list_builder::{sort_tracks, TrackBuilder, TrackEvent};
+use crate::ui::widgets::track_list_builder::{TrackBuilder, TrackEvent};
 use crate::ui::widgets::track_list_out_message::TrackListOutMessage;
 use crate::ui::widgets::track_context_builder::TrackContextMenuBuilder;
 
@@ -127,8 +127,7 @@ impl FavoritesView {
                 StatusTone::Muted,
             )
         } else {
-            let mut tracks_refs: Vec<&Track> = rendered_tracks;
-            sort_tracks(&mut tracks_refs, self.list.active_sort_key, self.list.sort_direction_asc);
+            let tracks_refs: Vec<&Track> = rendered_tracks;
 
             TrackBuilder::new(
                 tracks_refs,

@@ -8,7 +8,6 @@ use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::utils::cover_manager::CoverManager;
-use crate::ui::utils::search::SearchQuery;
 use crate::ui::views::catalog_store::{CatalogStore, CatalogStoreMessage};
 use crate::ui::views::home_view::{HomeView, HomeViewMessage};
 use crate::ui::views::explorer_view_v2::{ExplorerView, ExplorerMessage, ExplorerExtra};
@@ -157,14 +156,9 @@ impl ViewCoordinator {
 
             // ─── EXPLORER ────────────────────────────────────────────────
             CoordinatorMessage::Explorer(inner) => {
-                let needs_context = match &inner {
-                    ExplorerMessage::Table(event) => event.needs_track_context(),
-                    _ => true,
-                };
-
                 let all_tracks = self.catalog_store.all_tracks();
-                let all_refs: Vec<&Track> = if needs_context { all_tracks.iter().collect() } else { Vec::new() };
-                let rendered_refs = filter_tracks(&all_refs, &self.explorer_view.list.search_filter);
+                let all_refs: Vec<&Track> = all_tracks.iter().collect();
+                let rendered_refs = self.explorer_view.list.rendered(&all_refs, &self.catalog_store);
                 let play_context: Vec<Track> = rendered_refs.iter().map(|t| (*t).clone()).collect();
                 let playlists = playlist_pairs(self.catalog_store.playlists_metadata());
 
@@ -187,17 +181,8 @@ impl ViewCoordinator {
 
             // ─── FAVORITES ───────────────────────────────────────────────
             CoordinatorMessage::Favorites(inner) => {
-                let needs_context = match &inner {
-                    FavoritesMessage::Table(event) => event.needs_track_context(),
-                    _ => true,
-                };
-
-                let liked: Vec<&Track> = if needs_context {
-                    self.catalog_store.tracks_for_playlist(self.catalog_store.system_playlist_id())
-                } else {
-                    Vec::new()
-                };
-                let rendered_refs = filter_tracks(&liked, &self.favorites_view.list.search_filter);
+                let liked = self.catalog_store.tracks_for_playlist(self.catalog_store.system_playlist_id());
+                let rendered_refs = self.favorites_view.list.rendered(&liked, &self.catalog_store);
                 let play_context: Vec<Track> = rendered_refs.iter().map(|t| (*t).clone()).collect();
                 let playlists = playlist_pairs(self.catalog_store.playlists_metadata());
 
@@ -216,18 +201,8 @@ impl ViewCoordinator {
                 };
                 let playlist_id = playlist_view.playlist_id.clone();
 
-                let needs_context = match &inner {
-                    PlaylistMessage::Table(event) => event.needs_track_context() || playlist_view.is_dragging(),
-                    PlaylistMessage::GlobalMouseRelease => false,
-                    _ => true,
-                };
-
-                let all_tracks: Vec<&Track> = if needs_context {
-                    self.catalog_store.tracks_for_playlist(&playlist_id)
-                } else {
-                    Vec::new()
-                };
-                let rendered_refs = filter_tracks(&all_tracks, &playlist_view.list.search_filter);
+                let all_tracks = self.catalog_store.tracks_for_playlist(&playlist_id);
+                let rendered_refs = playlist_view.list.rendered(&all_tracks, &self.catalog_store);
                 let play_context: Vec<Track> = rendered_refs.iter().map(|t| (*t).clone()).collect();
                 let playlists = playlist_pairs(self.catalog_store.playlists_metadata());
 
@@ -474,26 +449,14 @@ impl ViewCoordinator {
             ActiveRoute::Nav(NavId::Explorer) => {
                 let all_tracks = self.catalog_store.all_tracks();
                 let all_refs: Vec<&Track> = all_tracks.iter().collect();
-                let mut tracks = filter_tracks(&all_refs, &self.explorer_view.list.search_filter);
-
-                crate::ui::widgets::track_list_builder::sort_tracks(
-                    &mut tracks,
-                    self.explorer_view.list.active_sort_key,
-                    self.explorer_view.list.sort_direction_asc,
-                );
+                let tracks = self.explorer_view.list.rendered(&all_refs, &self.catalog_store);
 
                 self.explorer_view.list.visible_thumbnail_targets(&tracks)
             }
             ActiveRoute::Nav(NavId::Favorites) => {
                 let liked = self.catalog_store
                     .tracks_for_playlist(self.catalog_store.system_playlist_id());
-                let mut tracks = filter_tracks(&liked, &self.favorites_view.list.search_filter);
-
-                crate::ui::widgets::track_list_builder::sort_tracks(
-                    &mut tracks,
-                    self.favorites_view.list.active_sort_key,
-                    self.favorites_view.list.sort_direction_asc,
-                );
+                let tracks = self.favorites_view.list.rendered(&liked, &self.catalog_store);
 
                 self.favorites_view.list.visible_thumbnail_targets(&tracks)
             }
@@ -502,13 +465,7 @@ impl ViewCoordinator {
                     return Vec::new();
                 };
                 let all = self.catalog_store.tracks_for_playlist(id);
-                let mut tracks = filter_tracks(&all, &view.list.search_filter);
-
-                crate::ui::widgets::track_list_builder::sort_tracks(
-                    &mut tracks,
-                    view.list.active_sort_key,
-                    view.list.sort_direction_asc,
-                );
+                let tracks = view.list.rendered(&all, &self.catalog_store);
 
                 // Las portadas de playlists ya viven pre-codificadas en
                 // `playlists_metadata` (son locales; no pasan por el caché de
@@ -570,7 +527,7 @@ impl ViewCoordinator {
             ActiveRoute::Nav(NavId::Explorer) => {
                 let all_tracks = self.catalog_store.all_tracks();
                 let all_refs: Vec<&Track> = all_tracks.iter().collect();
-                let rendered_tracks = filter_tracks(&all_refs, &self.explorer_view.list.search_filter);
+                let rendered_tracks = self.explorer_view.list.rendered(&all_refs, &self.catalog_store);
 
                 self.explorer_view
                     .view(rendered_tracks, &self.thumbnails)
@@ -579,7 +536,7 @@ impl ViewCoordinator {
             ActiveRoute::Nav(NavId::Favorites) => {
                 let liked_tracks = self.catalog_store
                     .tracks_for_playlist(self.catalog_store.system_playlist_id());
-                let liked_tracks = filter_tracks(&liked_tracks, &self.favorites_view.list.search_filter);
+                let liked_tracks = self.favorites_view.list.rendered(&liked_tracks, &self.catalog_store);
 
                 self.favorites_view
                     .view(liked_tracks, &self.thumbnails)
@@ -593,7 +550,7 @@ impl ViewCoordinator {
                         .find(|(id_, _, _)| id_ == id)
                     {
                         let tracks_refs = self.catalog_store.tracks_for_playlist(id);
-                        let tracks_refs = filter_tracks(&tracks_refs, &view.list.search_filter);
+                        let tracks_refs = view.list.rendered(&tracks_refs, &self.catalog_store);
 
                         let cover_handle = self.covers.get(&crate::ui::utils::cover_manager::CoverVariant::Large.key(id)).cloned();
 
@@ -674,27 +631,6 @@ impl ViewCoordinator {
             .delete_playlist(playlist_id)
             .map(CoordinatorMessage::Catalog)
     }
-}
-
-/// Filtra `tracks` contra `raw_query` (el `search_filter` local de cada
-/// vista) usando la utilidad de búsqueda difusa compartida. Matchea contra
-/// título, artistas formateados y álbum. Query vacía → devuelve todo sin
-/// tocar el orden (SearchQuery::is_empty ya hace early-return internamente,
-/// pero evitamos incluso construir la query si no hace falta).
-fn filter_tracks<'a>(tracks: &[&'a Track], raw_query: &str) -> Vec<&'a Track> {
-    if raw_query.trim().is_empty() {
-        return tracks.to_vec();
-    }
-
-    let query = SearchQuery::new(raw_query);
-    tracks
-        .iter()
-        .copied()
-        .filter(|t| {
-            let album_name = t.album.as_ref().map(|a| a.name.as_str()).unwrap_or("");
-            query.matches_any(&[&t.title, &t.format_artists(), album_name])
-        })
-        .collect()
 }
 
 /// Las vistas (Explorer/Favorites/Playlist) esperan `&[(String, String)]`
