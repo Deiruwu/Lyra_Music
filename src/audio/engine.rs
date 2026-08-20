@@ -22,7 +22,7 @@ impl AudioEngine {
 
         let config = cpal::StreamConfig {
             channels: TARGET_CHANNELS as u16,
-            sample_rate: cpal::SampleRate(TARGET_SAMPLE_RATE),
+            sample_rate: TARGET_SAMPLE_RATE,
             buffer_size: cpal::BufferSize::Default,
         };
 
@@ -48,7 +48,7 @@ impl AudioEngine {
         let cpal_state = Arc::clone(&state);
 
         let stream = device.build_output_stream(
-            &config,
+            config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 // EL HOT-PATH: Nada de bloqueos.
                 write_audio_to_hardware(data, &mut consumer, &cpal_state);
