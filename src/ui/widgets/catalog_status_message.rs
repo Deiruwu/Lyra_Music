@@ -62,7 +62,7 @@ pub fn catalog_status_message<'a, Message: 'a>(
 
     container(
         text(message.into())
-            .font(crate::ui::widgets::track_list::SF_PRO)
+            .font(crate::ui::assets::fonts::SF_PRO)
             .size(14),
     )
         .width(Length::Fill)

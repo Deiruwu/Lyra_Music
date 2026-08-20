@@ -7,7 +7,7 @@ use crate::ui::styles::styles::transparent_button;
 use crate::JETBRAINS_MONO;
 use crate::ui::assets::icons::Icon;
 
-fn truncate(s: &str, max: usize) -> String {
+pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() > max {
         format!("{}…", s.chars().take(max).collect::<String>())
     } else {
@@ -94,54 +94,6 @@ where
         .on_press(on_press)
         .style(transparent_button)
         .into()
-}
-
-pub fn currently_playing_row<'a, Message>(
-    track: &'a Track,
-    thumbnail: Option<Handle>,
-) -> Element<'a, Message>
-where
-    Message: Clone + 'a,
-{
-    currently_playing_row_with_trailing(track, thumbnail, None)
-}
-
-/// Igual que `currently_playing_row`, pero acepta un elemento opcional
-/// (`trailing`) que se agrega dentro del MISMO `row!`, con el mismo
-/// spacing que el resto de la fila. Existe para casos como el botón de
-/// like en el panel de reproducción: si se arma por fuera con otro
-/// `row!` envolvente, queda visualmente despegado del track (spacing
-/// del row exterior distinto al interno). Metiéndolo aquí adentro
-/// queda pegado igual que thumbnail/info.
-pub fn currently_playing_row_with_trailing<'a, Message>(
-    track: &'a Track,
-    thumbnail: Option<Handle>,
-    trailing: Option<Element<'a, Message>>,
-) -> Element<'a, Message>
-where
-    Message: Clone + 'a,
-{
-    // Cuando hay trailing (p. ej. el like), `track_info` NO debe pedir
-    // Fill: un `text(...).width(Fill)` se estira y absorbe todo el ancho
-    // sobrante del row, empujando el trailing hasta el borde derecho del
-    // panel en vez de dejarlo pegado justo después del texto. Con Shrink,
-    // el texto ocupa solo lo que necesita (hasta su truncamiento normal)
-    // y el trailing queda inmediatamente después, con el spacing normal
-    // de la fila.
-    let info_width = if trailing.is_some() { Length::Shrink } else { Length::Fill };
-
-    let mut content = row![
-        track_thumbnail(thumbnail),
-        track_info(track, info_width)
-    ]
-        .spacing(12)
-        .align_y(Alignment::Center);
-
-    if let Some(trailing) = trailing {
-        content = content.push(trailing);
-    }
-
-    content.into()
 }
 
 // ── Thumbnail con overlay ─────────────────────────────────────────────────────

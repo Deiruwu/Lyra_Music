@@ -1,13 +1,21 @@
 use std::sync::Arc;
-use iced::{Alignment, Element, Renderer, Task, Theme};
+use iced::{Alignment, Color, Element, Length, Renderer, Task, Theme};
 use iced::widget::image::Handle;
-use iced::widget::{button, row, slider, space, text};
+use iced::widget::{button, column, rich_text, row, slider, space, text};
 use crate::audio::track_event::TrackEvent;
 use crate::JETBRAINS_MONO;
 use crate::model::audio_tech::PlayableTrack;
+use crate::model::Track;
 use crate::ui::assets::icons::Icon;
 use crate::ui::styles::styles::{minimal_button};
-use crate::ui::widgets::track_row::currently_playing_row_with_trailing;
+use crate::ui::widgets::track_row::{track_thumbnail, truncate};
+
+/// Destino de navegación al hacer click en el artista o álbum del track en reproducción.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrackLink {
+    Artist(String),
+    Album(String),
+}
 
 #[derive(Debug, Clone)]
 pub enum PlayerMessage {
@@ -17,6 +25,7 @@ pub enum PlayerMessage {
     UiPrev,
     UiSeek(f32),
     UiToggleLike(String),
+    OpenTrackLink(TrackLink),
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +36,7 @@ pub enum PlayerOutMessage {
     RequestPrev,
     RequestSeek(f32),
     RequestToggleLike(String),
+    RequestOpenTrackLink(TrackLink),
 }
 
 pub struct Player {
@@ -58,6 +68,7 @@ impl Player {
             PlayerMessage::UiPrev           => (Task::none(), PlayerOutMessage::RequestPrev),
             PlayerMessage::UiSeek(pos)      => (Task::none(), PlayerOutMessage::RequestSeek(pos)),
             PlayerMessage::UiToggleLike(track_id) => (Task::none(), PlayerOutMessage::RequestToggleLike(track_id)),
+            PlayerMessage::OpenTrackLink(link) => (Task::none(), PlayerOutMessage::RequestOpenTrackLink(link)),
         }
     }
 
@@ -106,11 +117,58 @@ impl Player {
         match &self.current_track {
             Some(track) => {
                 let like = Self::like_button(track.track.id.clone(), is_liked);
-                currently_playing_row_with_trailing(&track.track, thumbnail, Some(like))
+                Self::current_track_content(&track.track, thumbnail, like)
             }
 
             None => space().into(),
         }
+    }
+
+    /// Thumbnail + título + artista/álbum del track en reproducción. El
+    /// nombre del artista y del álbum son links de `rich_text`: el hover
+    /// los subraya de forma nativa (sin fondo, para no competir
+    /// visualmente con el resto de botones de la barra) y el click abre
+    /// `ArtistView`/`AlbumView`. Si el track no tiene artista o álbum
+    /// resuelto, ese tramo queda como texto plano sin link.
+    fn current_track_content<'a>(
+        track: &'a Track,
+        thumbnail: Option<Handle>,
+        trailing: Element<'a, PlayerMessage>,
+    ) -> Element<'a, PlayerMessage> {
+        let title = text(truncate(&track.title, 45))
+            .size(14)
+            .color(Color::WHITE);
+
+        let subtitle_color = Color::from_rgb(0.6, 0.6, 0.6);
+
+        let artist_span = {
+            let mut span = iced::widget::span(track.format_artists()).size(11).color(subtitle_color);
+            if let Some(id) = track.artists.first().and_then(|artist| artist.id.clone()) {
+                span = span.link(TrackLink::Artist(id));
+            }
+            span
+        };
+
+        let album_span = {
+            let album_name = track.album.as_ref().map(|a| a.name.as_str()).unwrap_or("");
+            let mut span = iced::widget::span(album_name).size(11).color(subtitle_color);
+            if let Some(album) = &track.album {
+                span = span.link(TrackLink::Album(album.id.clone()));
+            }
+            span
+        };
+
+        let subtitle = rich_text![artist_span, "\n", album_span]
+            .on_link_click(PlayerMessage::OpenTrackLink);
+
+        let info = column![title, subtitle]
+            .width(Length::Shrink)
+            .align_x(Alignment::Start);
+
+        row![track_thumbnail(thumbnail), info, trailing]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into()
     }
 
     fn like_button(track_id: String, is_liked: bool) -> Element<'static, PlayerMessage> {

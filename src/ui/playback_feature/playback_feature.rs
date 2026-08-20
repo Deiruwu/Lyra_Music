@@ -10,7 +10,7 @@ use crate::model::audio_tech::PlayableTrack;
 use crate::audio::manager::manager::TrackManager;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 
-use crate::ui::playback_feature::player::{Player, PlayerMessage, PlayerOutMessage};
+use crate::ui::playback_feature::player::{Player, PlayerMessage, PlayerOutMessage, TrackLink};
 use crate::ui::playback_feature::queue::queue_panel::{QueueMessage, QueueOutMessage, QueuePanel};
 use crate::ui::playback_feature::theater::theater_panel::{TheaterMessage, TheaterOutMessage, TheaterPanel};
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
@@ -37,6 +37,7 @@ pub enum PlaybackFeatureMessage {
 pub enum PlaybackOutMessage {
     ToggleTheaterMode,
     RequestToggleLike(String),
+    RequestOpenTrackLink(TrackLink),
     Idle,
 }
 
@@ -263,6 +264,9 @@ impl PlaybackFeature {
                     }
                     PlayerOutMessage::RequestToggleLike(track_id) => {
                         feature_out = PlaybackOutMessage::RequestToggleLike(track_id);
+                    }
+                    PlayerOutMessage::RequestOpenTrackLink(link) => {
+                        feature_out = PlaybackOutMessage::RequestOpenTrackLink(link);
                     }
                     PlayerOutMessage::Idle             => {}
                 }

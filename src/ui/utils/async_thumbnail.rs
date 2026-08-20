@@ -22,7 +22,7 @@ pub fn thumb_key(track: &Track) -> String {
 /// Guarda una bandera atómica compartida con el hilo asíncrono.
 /// Al destruirse (Drop), cambia la bandera a `true` para abortar la tarea de red o CPU.
 #[derive(Debug)]
-pub struct DropGuard(Arc<AtomicBool>);
+pub(crate) struct DropGuard(Arc<AtomicBool>);
 
 impl DropGuard {
     /// Crea una nueva guardia y retorna su instancia junto con el puntero atómico compartido.
@@ -40,7 +40,7 @@ impl Drop for DropGuard {
 
 /// Estado interno de una miniatura en el ciclo de vida de carga.
 enum Slot {
-    Loading(DropGuard),
+    Loading { _guard: DropGuard },
     Ready(Handle),
 }
 
@@ -76,7 +76,7 @@ impl AsyncThumbnail {
             }
 
             let (guard, abort_flag) = DropGuard::new();
-            self.slots.insert(key.clone(), Slot::Loading(guard));
+            self.slots.insert(key.clone(), Slot::Loading { _guard: guard });
 
             let key = key.clone();
             let url = url.clone();
@@ -103,13 +103,13 @@ impl AsyncThumbnail {
     pub fn get(&self, key: &str) -> Option<&Handle> {
         match self.slots.get(key)? {
             Slot::Ready(h) => Some(h),
-            Slot::Loading(_) => None,
+            Slot::Loading { .. } => None,
         }
     }
 }
 
 /// Limita la concurrencia global de descargas a 15 hilos simultáneos para no saturar sockets TCP.
-fn download_limiter() -> &'static Semaphore {
+pub(crate) fn download_limiter() -> &'static Semaphore {
     static LIMITER: OnceLock<Semaphore> = OnceLock::new();
     LIMITER.get_or_init(|| Semaphore::new(15))
 }

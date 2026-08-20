@@ -701,7 +701,7 @@ fn filter_tracks<'a>(tracks: &[&'a Track], raw_query: &str) -> Vec<&'a Track> {
 /// (id, nombre) para armar el submenú "Agregar a playlist". CatalogStore
 /// devuelve metadata completa, que estas vistas no necesitan — se descarta acá
 /// en vez de cambiar la firma de las 3 vistas por un dato que no usan.
-fn playlist_pairs(metadata: &[(String, String, Option<String>)]) -> Vec<(String, String)> {
+pub(crate) fn playlist_pairs(metadata: &[(String, String, Option<String>)]) -> Vec<(String, String)> {
     metadata
         .iter()
         .map(|(id, name, _cover)| (id.clone(), name.clone()))

@@ -1,15 +1,13 @@
 pub mod track_row;
+pub mod track_row_simple;
 pub mod icon_toggle;
 pub mod async_thumbnail;
 pub mod context_menu;
 pub mod confirm_dialog;
-pub mod track_list;
 pub mod playlist_header;
 pub mod playlist_row;
-pub mod track_fields;
 pub mod catalog_status_message;
 pub mod catalog_search_input;
-pub mod views;
 pub mod selection_state;
 pub mod track_list_builder;
 pub mod track_context_builder;

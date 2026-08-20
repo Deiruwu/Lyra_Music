@@ -4,8 +4,16 @@ pub mod artist;
 pub mod track_state;
 pub mod audio_tech;
 pub mod playlist;
+pub mod album_type;
+pub mod album_summary;
+pub mod album_dto;
+pub mod artist_dto;
 
 pub use track::Track;
 pub use album::Album;
 pub use artist::Artist;
 pub use track_state::TrackState;
+pub use album_type::AlbumType;
+pub use album_summary::AlbumSummary;
+pub use album_dto::AlbumDto;
+pub use artist_dto::ArtistDto;

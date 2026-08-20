@@ -6,3 +6,5 @@ pub mod favorite_view;
 pub mod explorer_view_v2;
 pub mod states_view;
 pub mod view_coordinator;
+pub mod artist_view;
+pub mod album_view;

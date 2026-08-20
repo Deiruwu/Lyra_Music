@@ -4,6 +4,7 @@ pub mod download_queue;
 pub mod virtual_list;
 pub mod search;
 pub mod async_thumbnail;
+pub mod gallery_thumbnail;
 pub mod data_dir;
 pub mod cover_manager;
 pub mod cover_picker;

@@ -1,4 +1,4 @@
-use crate::model::Track;
+use crate::model::{AlbumDto, ArtistDto, Track};
 use musichub_client::{MicroserviceClient as HubClient, Request};
 pub use musichub_client::MicroserviceError;
 
@@ -46,5 +46,13 @@ impl MicroserviceClient {
             return Ok(Vec::new());
         }
         self.inner.resolve_many(ids).await
+    }
+
+    pub async fn album(&self, album_id: &str) -> Result<AlbumDto, MicroserviceError> {
+        self.inner.album(album_id).await
+    }
+
+    pub async fn artist(&self, channel_id: &str, limit: Option<usize>) -> Result<ArtistDto, MicroserviceError> {
+        self.inner.artist(channel_id, limit).await
     }
 }

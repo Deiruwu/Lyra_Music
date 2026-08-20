@@ -64,6 +64,12 @@ pub enum Icon {
     #[strum(serialize = "")]
     ExpandMore,
 
+    #[strum(serialize = "")]
+    LeftArrow,
+
+    #[strum(serialize = "")]
+    RightArrow,
+
     // Volume
     #[strum(serialize = "...")]
     VolumeOff,

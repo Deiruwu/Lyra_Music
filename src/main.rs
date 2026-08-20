@@ -22,14 +22,19 @@ use crate::db::playlist_manager::PlaylistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::tray::TrayFlags;
 
+use crate::ui::library_browser_feature::library_browser_feature::{
+    LibraryBrowserFeature, LibraryBrowserMessage, LibraryBrowserOutMessage,
+};
+use crate::ui::playback_feature::player::TrackLink;
 use crate::ui::playback_feature::playback_feature::{PlaybackFeature, PlaybackFeatureMessage, PlaybackOutMessage};
 use crate::ui::search_feature::search_feature::{SearchFeature, SearchFeatureMessage, SearchFeatureOutMessage};
 use crate::ui::sidebar_feature::sidebar_feature_v2::{
     SidebarFeatureV2 as SidebarFeature, SidebarMessage as SidebarFeatureMessage
 };
-use crate::ui::views::view_coordinator::CoordinatorMessage;
+use crate::ui::views::view_coordinator::{playlist_pairs, CoordinatorMessage};
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::views::catalog_store::CatalogStoreMessage;
+use crate::ui::widgets::context_menu::ContextMenuEvent;
 
 const JETBRAINS_MONO: Font = Font::with_name("JetBrainsMono Nerd Font");
 
@@ -44,6 +49,8 @@ pub enum AppMessage {
     CloseRequested(window::Id),
     ShowWindow,
     Quit,
+    LibraryBrowser(LibraryBrowserMessage),
+    NavigateBack,
 }
 
 struct App {
@@ -52,6 +59,7 @@ struct App {
     search_feature: SearchFeature,
     playback_feature: PlaybackFeature,
     sidebar_feature: SidebarFeature,
+    library_browser: LibraryBrowserFeature,
     view_thumbnails: ThumbnailCache,
     tray_flags: Arc<TrayFlags>,
     main_window: Option<window::Id>,
@@ -81,6 +89,9 @@ impl App {
 
         // Guardamos una copia para el sidebar/explorer antes de que RadioWorker consuma `client`.
         let sidebar_client = Arc::clone(&client);
+        // Copia (no Arc, MicroserviceClient ya es Clone) para LibraryBrowserFeature.
+        let library_browser_client = client.as_ref().clone();
+        let library_browser_manager = Arc::clone(&manager);
 
         let radio = RadioWorker::new(Arc::clone(&manager), client).spawn();
         radio.set_enabled(false);
@@ -125,6 +136,7 @@ impl App {
             search_feature: SearchFeature::new(),
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
             sidebar_feature,
+            library_browser: LibraryBrowserFeature::new(library_browser_client, library_browser_manager),
             view_thumbnails: ThumbnailCache::new(100, 50),
             tray_flags,
             main_window: Some(window_id),
@@ -208,6 +220,12 @@ impl App {
                                 ))
                             })
                     }
+                    PlaybackOutMessage::RequestOpenTrackLink(link) => {
+                        iced::Task::done(AppMessage::LibraryBrowser(match link {
+                            TrackLink::Artist(id) => LibraryBrowserMessage::OpenArtist(id),
+                            TrackLink::Album(id) => LibraryBrowserMessage::OpenAlbum(id),
+                        }))
+                    }
                     PlaybackOutMessage::Idle => iced::Task::none(),
                 };
 
@@ -218,6 +236,10 @@ impl App {
             }
 
             AppMessage::SidebarFeature(msg) => {
+                if matches!(msg, SidebarFeatureMessage::SelectNav(_) | SidebarFeatureMessage::SelectPlaylist(_)) {
+                    self.library_browser.close();
+                }
+
                 let task = self.sidebar_feature.update(msg);
                 task.map(AppMessage::SidebarFeature)
             }
@@ -248,11 +270,52 @@ impl App {
                     catalog_task,
                 ])
             }
+
+            AppMessage::LibraryBrowser(msg) => self.update_library_browser(msg),
+
+            AppMessage::NavigateBack => {
+                if self.library_browser.is_active() {
+                    self.update_library_browser(LibraryBrowserMessage::Back)
+                } else {
+                    iced::Task::none()
+                }
+            }
         }
     }
 
+    /// Puentea `LibraryBrowserOutMessage` hacia el `CatalogStore` del sidebar,
+    /// igual que ya hace `PlaybackOutMessage::RequestToggleLike`.
+    fn update_library_browser(&mut self, msg: LibraryBrowserMessage) -> iced::Task<AppMessage> {
+        let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
+        let (task, out) = self.library_browser.update(msg, &playlists);
+
+        let bridge_task = match out {
+            LibraryBrowserOutMessage::RequestToggleLike(track_id) => self
+                .sidebar_feature
+                .coordinator
+                .catalog_store
+                .toggle_like(&track_id)
+                .map(|catalog_msg| {
+                    AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)))
+                }),
+            LibraryBrowserOutMessage::RequestAddToPlaylist { playlist_id, track_id } => self
+                .sidebar_feature
+                .coordinator
+                .catalog_store
+                .add_track_to_playlist(&playlist_id, &track_id)
+                .map(|catalog_msg| {
+                    AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)))
+                }),
+            LibraryBrowserOutMessage::Idle => iced::Task::none(),
+        };
+
+        iced::Task::batch([task.map(AppMessage::LibraryBrowser), bridge_task])
+    }
+
     pub fn view(&self, _window: window::Id) -> Element<'_, AppMessage> {
-        let center_content: Element<'_, AppMessage> = if self.is_theater_mode {
+        let center_content: Element<'_, AppMessage> = if self.library_browser.is_active() {
+            self.library_browser.view().map(AppMessage::LibraryBrowser)
+        } else if self.is_theater_mode {
             self.playback_feature.view_theater().map(AppMessage::PlaybackFeature)
         } else {
             self.sidebar_feature.view_content().map(AppMessage::SidebarFeature)
@@ -337,6 +400,10 @@ impl App {
                 .map(|layer| layer.map(AppMessage::SidebarFeature)),
         );
 
+        if let Some(menu) = self.library_browser.view_context_menu() {
+            absolute_root_layers.push(menu.map(AppMessage::LibraryBrowser));
+        }
+
         stack(absolute_root_layers).into()
     }
     pub fn subscription(&self) -> iced::Subscription<AppMessage> {
@@ -350,7 +417,28 @@ impl App {
                 _ => None,
             });
 
-        iced::Subscription::batch(vec![search_sub, playback_sub, sidebar_sub, close_sub])
+        let nav_back_sub = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Back)) => {
+                Some(AppMessage::NavigateBack)
+            }
+            _ => None,
+        });
+
+        let library_menu_mouse_sub = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(AppMessage::LibraryBrowser(
+                LibraryBrowserMessage::ContextMenuEvent(ContextMenuEvent::MouseMoved(position)),
+            )),
+            _ => None,
+        });
+
+        iced::Subscription::batch(vec![
+            search_sub,
+            playback_sub,
+            sidebar_sub,
+            close_sub,
+            nav_back_sub,
+            library_menu_mouse_sub,
+        ])
     }
 
     pub fn theme(&self, _window: window::Id) -> Theme {

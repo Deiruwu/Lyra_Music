@@ -35,7 +35,7 @@ where
     Message: Clone + 'a,
 {
     text_input(placeholder, value)
-        .font(crate::ui::widgets::track_list::SF_PRO)
+        .font(crate::ui::assets::fonts::SF_PRO)
         .size(14)
         .padding(Padding { top: 10.0, bottom: 10.0, left: 14.0, right: 14.0 })
         .style(|theme, status| {
