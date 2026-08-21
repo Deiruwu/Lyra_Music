@@ -5,6 +5,8 @@ use iced::{Alignment, Color, Element, Length, Padding, Theme};
 
 use crate::model::{Track, TrackState};
 use crate::ui::assets::fonts::SF_PRO;
+use crate::ui::widgets::artist_links::artist_links;
+use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
 use crate::utils::formatting::format_duration;
 
@@ -18,40 +20,43 @@ const NUMBERED_INDEX_WIDTH: f32 = 32.0;
 
 /// Fila de track con thumbnail al inicio: Título / Artista / Álbum / Duración + indicador de caché.
 /// Click izquierdo reproduce, click derecho abre el menú contextual.
-pub fn track_row_with_thumbnail<'a, Message: Clone + 'a>(
+pub fn track_row_with_thumbnail<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a>(
     track: &'a Track,
     thumbnail: Option<Handle>,
     on_play: Message,
     on_right_click: Message,
+    on_artist_click: F,
 ) -> Element<'a, Message> {
-    build_row(track, Some(track_thumbnail_sized(thumbnail, ROW_THUMBNAIL_SIZE)), on_play, on_right_click)
+    build_row(track, Some(track_thumbnail_sized(thumbnail, ROW_THUMBNAIL_SIZE)), on_play, on_right_click, on_artist_click)
 }
 
-fn build_row<'a, Message: Clone + 'a>(
+fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a>(
     track: &'a Track,
     thumbnail: Option<Element<'a, Message>>,
     on_play: Message,
     on_right_click: Message,
+    on_artist_click: F,
 ) -> Element<'a, Message> {
     let cached = matches!(track.state, TrackState::Cached);
 
-    let title = text(track.title.as_str())
-        .font(SF_PRO)
-        .size(14)
-        .color(Color::WHITE)
-        .width(TITLE_WIDTH);
+    let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, Color::WHITE, TITLE_WIDTH);
 
-    let artist = text(track.format_artists())
-        .font(SF_PRO)
-        .size(13)
-        .color(Color::from_rgb(0.7, 0.7, 0.75))
-        .width(ARTIST_WIDTH);
+    let artist = artist_links(
+        &track.artists,
+        SF_PRO,
+        13.0,
+        Color::from_rgb(0.7, 0.7, 0.75),
+        ARTIST_WIDTH,
+        on_artist_click,
+    );
 
-    let album = text(track.album.as_ref().map(|a| a.name.as_str()).unwrap_or(""))
-        .font(SF_PRO)
-        .size(13)
-        .color(Color::from_rgb(0.7, 0.7, 0.75))
-        .width(ALBUM_WIDTH);
+    let album = single_line_text(
+        track.album.as_ref().map(|a| a.name.as_str()).unwrap_or(""),
+        SF_PRO,
+        13.0,
+        Color::from_rgb(0.7, 0.7, 0.75),
+        ALBUM_WIDTH,
+    );
 
     let duration = text(format_duration(track.duration_seconds))
         .font(SF_PRO)
@@ -59,7 +64,7 @@ fn build_row<'a, Message: Clone + 'a>(
         .color(Color::from_rgb(0.7, 0.7, 0.75))
         .width(DURATION_WIDTH);
 
-    let mut content = row![].spacing(12).align_y(Alignment::Center).padding([6, 8]);
+    let mut content = row![].spacing(18).align_y(Alignment::Center).padding([6, 8]);
 
     if let Some(thumbnail) = thumbnail {
         content = content.push(thumbnail);
@@ -88,11 +93,12 @@ fn build_row<'a, Message: Clone + 'a>(
 
 /// Fila con número de posición, título/artista apilados, indicador de caché y duración; con hover.
 /// Click izquierdo reproduce, click derecho abre el menú contextual.
-pub fn track_row_numbered<'a, Message: Clone + 'a>(
+pub fn track_row_numbered<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a>(
     position: usize,
     track: &'a Track,
     on_play: Message,
     on_right_click: Message,
+    on_artist_click: F,
 ) -> Element<'a, Message> {
     let cached = matches!(track.state, TrackState::Cached);
 
@@ -101,8 +107,8 @@ pub fn track_row_numbered<'a, Message: Clone + 'a>(
         .align_x(Alignment::Center)
         .align_y(Alignment::Center);
 
-    let title = text(track.title.as_str()).font(SF_PRO).size(14).color(Color::WHITE);
-    let artist = text(track.format_artists()).font(SF_PRO).size(13).color(Color::from_rgb(0.7, 0.7, 0.75));
+    let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, Color::WHITE, Length::Fill);
+    let artist = artist_links(&track.artists, SF_PRO, 13.0, Color::from_rgb(0.7, 0.7, 0.75), Length::Fill, on_artist_click);
     let title_artist = column![title, artist].spacing(2).width(Length::Fill);
 
     let duration = text(format_duration(track.duration_seconds))
@@ -112,7 +118,7 @@ pub fn track_row_numbered<'a, Message: Clone + 'a>(
         .width(DURATION_WIDTH);
 
     let content = row![index, title_artist, cache_indicator(cached), duration]
-        .spacing(12)
+        .spacing(18)
         .align_y(Alignment::Center)
         .padding(Padding { top: 10.0, right: 8.0, bottom: 10.0, left: 8.0 });
 

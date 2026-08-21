@@ -9,6 +9,7 @@ use crate::model::{AlbumDto, Artist, Track};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::utils::gallery_thumbnail::{GalleryThumbnail, Treatment};
 use crate::ui::utils::playlist_metadata::{format_total_duration, format_track_count, track_stats};
+use crate::ui::widgets::artist_links::artist_links;
 use crate::ui::widgets::track_row_simple::track_row_numbered;
 
 const COVER_SIZE: f32 = 220.0;
@@ -35,6 +36,7 @@ pub enum AlbumMessage {
     ArtistPressed(String),
     TrackRowPressed(String),
     TrackRowRightClicked(String),
+    TrackArtistPressed(String),
     PlayAlbumPressed,
 }
 
@@ -45,6 +47,7 @@ pub enum AlbumOutMessage {
     PlayTrack(String),
     PlayAlbum,
     TrackRightClicked(String),
+    OpenTrackArtist(String),
 }
 
 impl AlbumView {
@@ -74,6 +77,7 @@ impl AlbumView {
             AlbumMessage::ArtistPressed(id) => out = AlbumOutMessage::OpenArtist(id),
             AlbumMessage::TrackRowPressed(id) => out = AlbumOutMessage::PlayTrack(id),
             AlbumMessage::TrackRowRightClicked(id) => out = AlbumOutMessage::TrackRightClicked(id),
+            AlbumMessage::TrackArtistPressed(id) => out = AlbumOutMessage::OpenTrackArtist(id),
             AlbumMessage::PlayAlbumPressed => out = AlbumOutMessage::PlayAlbum,
         }
 
@@ -190,41 +194,28 @@ impl AlbumView {
     }
 
     /// Artistas del álbum (clickeables, uno por cada crédito distinto) seguidos del tipo (Álbum/Single/EP).
+    /// Usa el mismo widget `artist_links` que el resto de la app en vez de
+    /// armar los spans a mano, para no perder su garantía de una sola
+    /// línea sin wrap (la fila del resto de créditos de artista sí la
+    /// tiene; esta no la tenía, rompiendo la consistencia visual).
     fn view_artists_and_type<'a>(&'a self, album: &'a AlbumDto) -> Element<'a, AlbumMessage> {
-        let artists = album_artists(&album.tracks);
+        let artists: Vec<Artist> = album_artists(&album.tracks).into_iter().cloned().collect();
 
-        let mut children: Vec<Element<'a, AlbumMessage>> = Vec::new();
-        for (index, artist) in artists.iter().enumerate() {
-            if index > 0 {
-                children.push(text(", ").font(SF_PRO).size(14).color(Color::from_rgb(0.7, 0.7, 0.75)).into());
-            }
-            let name_text = text(artist.name.as_str()).font(SF_PRO).size(14).color(Color::from_rgb(0.85, 0.85, 0.9));
-            children.push(match &artist.id {
-                Some(id) => button(name_text)
-                    .padding(0)
-                    .style(|_theme: &Theme, status| button::Style {
-                        background: None,
-                        text_color: match status {
-                            button::Status::Hovered => Color::WHITE,
-                            _ => Color::from_rgb(0.85, 0.85, 0.9),
-                        },
-                        ..Default::default()
-                    })
-                    .on_press(AlbumMessage::ArtistPressed(id.clone()))
-                    .into(),
-                None => name_text.into(),
-            });
-        }
-
-        children.push(
-            text(format!(" · {}", album.album_type.label()))
-                .font(SF_PRO)
-                .size(14)
-                .color(Color::from_rgb(0.7, 0.7, 0.75))
-                .into(),
+        let artist_line = artist_links(
+            &artists,
+            SF_PRO,
+            14.0,
+            Color::from_rgb(0.85, 0.85, 0.9),
+            Length::Shrink,
+            AlbumMessage::ArtistPressed,
         );
 
-        row(children).align_y(Alignment::Center).into()
+        let type_label = text(format!(" · {}", album.album_type.label()))
+            .font(SF_PRO)
+            .size(14)
+            .color(Color::from_rgb(0.7, 0.7, 0.75));
+
+        row![artist_line, type_label].align_y(Alignment::Center).into()
     }
 
     /// Lista completa de tracks del álbum: fila numerada, título/artista apilados, caché y duración.
@@ -238,6 +229,7 @@ impl AlbumView {
                     track,
                     AlbumMessage::TrackRowPressed(track.id.clone()),
                     AlbumMessage::TrackRowRightClicked(track.id.clone()),
+                    AlbumMessage::TrackArtistPressed,
                 )
             })
             .collect();

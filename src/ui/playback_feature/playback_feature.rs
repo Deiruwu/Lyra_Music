@@ -185,14 +185,18 @@ impl PlaybackFeature {
             PlaybackFeatureMessage::Queue(msg) => {
                 let (task, out_msg) = self.queue.update(msg);
 
+                let mut feature_out = PlaybackOutMessage::Idle;
                 match out_msg {
                     QueueOutMessage::RequestPlay(index)    => self.manager.skip_to_index(index).unwrap(),
                     QueueOutMessage::RequestRemove(index)  => self.manager.remove_from_queue(index).unwrap(),
                     QueueOutMessage::RequestMove(from, to) => self.manager.move_in_queue(from, to).unwrap(),
+                    QueueOutMessage::RequestOpenTrackLink(link) => {
+                        feature_out = PlaybackOutMessage::RequestOpenTrackLink(link);
+                    }
                     QueueOutMessage::Idle                  => {}
                 }
 
-                (task.map(PlaybackFeatureMessage::Queue), PlaybackOutMessage::Idle)
+                (task.map(PlaybackFeatureMessage::Queue), feature_out)
             }
 
             PlaybackFeatureMessage::Theater(msg) => {

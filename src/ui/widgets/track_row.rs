@@ -1,8 +1,10 @@
-use iced::{Alignment, ContentFit, Element, Length, Theme};
+use iced::{Alignment, ContentFit, Element, Font, Length, Theme};
 use iced::widget::{button, column, container, image, mouse_area, row, space, stack, text};
 use iced::widget::image::{Handle};
 use crate::model::Track;
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
+use crate::ui::widgets::artist_links::{album_link, artist_links, artist_names_text};
+use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::styles::styles::transparent_button;
 use crate::JETBRAINS_MONO;
 use crate::ui::assets::icons::Icon;
@@ -33,17 +35,13 @@ where
     track_thumbnail_sized(thumbnail, 60.0)
 }
 
-pub fn track_info<'a, Message>(track: &'a Track, width: Length) -> Element<'a, Message>
-where
-    Message: Clone + 'a,
-{
+/// Fila de track sin navegación (usada por el dropdown de búsqueda: acá
+/// clickear la fila descarga/reproduce, no debe haber otro camino de
+/// navegación posible desde adentro).
+pub fn track_info<'a, Message: Clone + 'a>(track: &'a Track, width: Length) -> Element<'a, Message> {
     let is_downloaded = track.file_path.as_ref().map_or(false, |p| !p.is_empty());
 
-    let title = truncate(&track.title, 45);
-
     let album_name = track.album.as_ref().map_or("".to_string(), |album| album.name.clone());
-    let artist_and_album = format!("{}\n{}", track.format_artists(), album_name);
-    let subtitle = truncate(&artist_and_album, 55);
 
     let (title_color, artist_color) = if is_downloaded {
         (iced::Color::WHITE, iced::Color::from_rgb(0.6, 0.6, 0.6))
@@ -52,26 +50,18 @@ where
     };
 
     column![
-        text(title)
-            .size(14)
-            .color(title_color)
-            .width(width),
-        text(subtitle)
-            .size(11)
-            .color(artist_color)
-            .width(width),
+        single_line_text(&track.title, Font::default(), 14.0, title_color, width),
+        artist_names_text(&track.artists, Font::default(), 11.0, artist_color, width),
+        single_line_text(album_name, Font::default(), 11.0, artist_color, width),
     ]
         .align_x(Alignment::Start)
         .into()
 }
 
-pub fn basic_track_view<'a, Message>(
+pub fn basic_track_view<'a, Message: Clone + 'a>(
     track: &'a Track,
     thumbnail: Option<Handle>,
-) -> Element<'a, Message>
-where
-    Message: Clone + 'a,
-{
+) -> Element<'a, Message> {
     row![
         track_thumbnail(thumbnail),
         track_info(track, Length::Fixed(260.0))
@@ -81,14 +71,11 @@ where
         .into()
 }
 
-pub fn track_row<'a, Message>(
+pub fn track_row<'a, Message: Clone + 'a>(
     track: &'a Track,
     thumbnail: Option<Handle>,
     on_press: Message,
-) -> Element<'a, Message>
-where
-    Message: Clone + 'a,
-{
+) -> Element<'a, Message> {
     button(basic_track_view(track, thumbnail))
         .width(Length::Fill)
         .on_press(on_press)
@@ -186,7 +173,7 @@ where
         .into()
 }
 
-pub fn queue_track_row<'a, Message>(
+pub fn queue_track_row<'a, Message, F, G>(
     track: &'a Track,
     thumbnail: Option<Handle>,
     on_play: Message,
@@ -196,13 +183,29 @@ pub fn queue_track_row<'a, Message>(
     on_delete_hover: Message,
     on_delete_leave: Message,
     drag: DragRowParams<Message>,
+    on_artist_click: F,
+    on_album_click: G,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
+    F: Fn(String) -> Message + 'a,
+    G: Fn(String) -> Message + 'a,
 {
     let thumb = thumbnail_with_overlay(thumbnail, on_play, row_hovered);
 
-    let info = track_info(track, Length::Fill);
+    let is_downloaded = track.file_path.as_ref().map_or(false, |p| !p.is_empty());
+    let (title_color, artist_color) = if is_downloaded {
+        (iced::Color::WHITE, iced::Color::from_rgb(0.6, 0.6, 0.6))
+    } else {
+        (iced::Color::from_rgb(0.4, 0.4, 0.4), iced::Color::from_rgb(0.3, 0.3, 0.3))
+    };
+
+    let info = column![
+        single_line_text(&track.title, Font::default(), 14.0, title_color, Length::Fill),
+        artist_links(&track.artists, Font::default(), 11.0, artist_color, Length::Fill, on_artist_click),
+        album_link(track.album.as_ref(), Font::default(), 11.0, artist_color, Length::Fill, on_album_click),
+    ]
+        .align_x(Alignment::Start);
 
     let delete_button = mouse_area(
         button(

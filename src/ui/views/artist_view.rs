@@ -59,6 +59,7 @@ pub enum ArtistMessage {
     AlbumCardPressed(String),
     TopSongClicked(String),
     TopSongRightClicked(String),
+    TopSongArtistPressed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +68,7 @@ pub enum ArtistOutMessage {
     OpenAlbum(String),
     PlayTopSong(String),
     TrackRightClicked(String),
+    OpenTrackArtist(String),
 }
 
 impl ArtistView {
@@ -104,6 +106,7 @@ impl ArtistView {
             ArtistMessage::AlbumCardPressed(id) => out = ArtistOutMessage::OpenAlbum(id),
             ArtistMessage::TopSongClicked(id) => out = ArtistOutMessage::PlayTopSong(id),
             ArtistMessage::TopSongRightClicked(id) => out = ArtistOutMessage::TrackRightClicked(id),
+            ArtistMessage::TopSongArtistPressed(id) => out = ArtistOutMessage::OpenTrackArtist(id),
         }
 
         let sync_task = self.thumbnails.sync(&self.thumbnail_targets(), ArtistMessage::ThumbnailLoaded);
@@ -193,6 +196,7 @@ impl ArtistView {
                     thumbnail,
                     ArtistMessage::TopSongClicked(track.id.clone()),
                     ArtistMessage::TopSongRightClicked(track.id.clone()),
+                    ArtistMessage::TopSongArtistPressed,
                 )
             })
             .collect();

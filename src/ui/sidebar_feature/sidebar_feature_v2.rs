@@ -13,7 +13,7 @@ use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 use crate::ui::assets::icons::Icon;
 use crate::ui::styles::styles::{minimal_button, transparent_button};
 use crate::ui::utils::cover_manager::CoverVariant;
-use crate::ui::views::view_coordinator::{ActiveRoute, CoordinatorMessage, ViewCoordinator};
+use crate::ui::views::view_coordinator::{ActiveRoute, CoordinatorMessage, CoordinatorOutMessage, ViewCoordinator};
 use crate::ui::views::home_view;
 use crate::ui::views::explorer_view_v2;
 use crate::ui::views::favorite_view;
@@ -73,6 +73,8 @@ pub enum PlaylistContextAction {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SidebarOutMessage {
     Idle,
+    RequestOpenArtist(String),
+    RequestOpenAlbum(String),
 }
 
 // ─── ESTADO (EL STRUCT) ──────────────────────────────────────────────
@@ -180,11 +182,24 @@ impl SidebarFeatureV2 {
         if self.is_expanded { EXPANDED_WIDTH } else { COLLAPSED_WIDTH }
     }
 
-    pub fn update(&mut self, msg: SidebarMessage) -> Task<SidebarMessage> {
+    pub fn update(&mut self, msg: SidebarMessage) -> (Task<SidebarMessage>, SidebarOutMessage) {
+        /// Azúcar local: corre `self.coordinator.update(...)`, mapea el Task
+        /// y traduce `CoordinatorOutMessage` a `SidebarOutMessage`.
+        fn from_coordinator(
+            (task, out): (Task<CoordinatorMessage>, CoordinatorOutMessage),
+        ) -> (Task<SidebarMessage>, SidebarOutMessage) {
+            let out = match out {
+                CoordinatorOutMessage::Idle => SidebarOutMessage::Idle,
+                CoordinatorOutMessage::RequestOpenArtist(id) => SidebarOutMessage::RequestOpenArtist(id),
+                CoordinatorOutMessage::RequestOpenAlbum(id) => SidebarOutMessage::RequestOpenAlbum(id),
+            };
+            (task.map(SidebarMessage::Content), out)
+        }
+
         match msg {
             SidebarMessage::ToggleExpanded => {
                 self.is_expanded = !self.is_expanded;
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             }
 
             SidebarMessage::AnimationTick => {
@@ -196,54 +211,54 @@ impl SidebarFeatureV2 {
                 } else {
                     self.sidebar_width += diff * LERP_FACTOR;
                 }
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             }
 
             SidebarMessage::SelectNav(nav_id) => {
-                self.coordinator.update(CoordinatorMessage::SelectNav(nav_id)).map(SidebarMessage::Content)
+                from_coordinator(self.coordinator.update(CoordinatorMessage::SelectNav(nav_id)))
             }
 
             SidebarMessage::SelectPlaylist(id) => {
-                self.coordinator.update(CoordinatorMessage::SelectPlaylist(id)).map(SidebarMessage::Content)
+                from_coordinator(self.coordinator.update(CoordinatorMessage::SelectPlaylist(id)))
             }
 
             SidebarMessage::Content(inner) => {
-                self.coordinator.update(inner).map(SidebarMessage::Content)
+                from_coordinator(self.coordinator.update(inner))
             }
 
             SidebarMessage::ShowCreatePlaylistInput => {
                 self.new_playlist_input = Some(String::new());
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             }
 
             SidebarMessage::NewPlaylistNameChanged(name) => {
                 self.new_playlist_input = Some(name);
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             }
 
             SidebarMessage::SubmitNewPlaylist => {
                 if let Some(name) = self.new_playlist_input.take() {
                     if !name.trim().is_empty() {
-                        return self.coordinator
-                            .update(CoordinatorMessage::CreatePlaylist(name))
-                            .map(SidebarMessage::Content);
+                        return from_coordinator(
+                            self.coordinator.update(CoordinatorMessage::CreatePlaylist(name)),
+                        );
                     }
                 }
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             }
 
             SidebarMessage::CancelNewPlaylist => {
                 self.new_playlist_input = None;
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             }
 
             SidebarMessage::PlaylistRowRightClicked(id) => {
                 self.playlist_context_menu.handle(ContextMenuEvent::RightClicked(id));
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             }
             SidebarMessage::PlaylistContextMenuEvent(event) => {
                 self.playlist_context_menu.handle(event);
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             }
             SidebarMessage::PlaylistContextAction(action, playlist_id) => {
                 match action {
@@ -267,32 +282,33 @@ impl SidebarFeatureV2 {
                 // se cierra igual que en v1, independientemente de si la
                 // acción termina confirmándose o cancelándose después.
                 self.playlist_context_menu.handle(ContextMenuEvent::Dismissed);
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             }
             SidebarMessage::ConfirmDeletePlaylist => {
                 if let Some(playlist_id) = self.delete_playlist_dialog.take_confirmed() {
-                    return self.coordinator
+                    let task = self.coordinator
                         .delete_playlist(&playlist_id)
                         .map(SidebarMessage::Content);
+                    return (task, SidebarOutMessage::Idle);
                 }
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             }
             SidebarMessage::CancelDeletePlaylist => {
                 self.delete_playlist_dialog.cancel();
-                Task::none()
+                (Task::none(), SidebarOutMessage::Idle)
             },
             SidebarMessage::GlobalMouseMoved(position) => {
                 self.playlist_context_menu.handle(ContextMenuEvent::MouseMoved(position));
 
-                self.coordinator.update(CoordinatorMessage::TrackContextMenuEvent(
+                from_coordinator(self.coordinator.update(CoordinatorMessage::TrackContextMenuEvent(
                     ContextMenuEvent::MouseMoved(position)
-                )).map(SidebarMessage::Content)
+                )))
             }
 
             SidebarMessage::GlobalWindowResized(size) => {
                 self.playlist_context_menu.handle(ContextMenuEvent::ViewportResized(size));
 
-                self.coordinator.update(CoordinatorMessage::WindowResized(size)).map(SidebarMessage::Content)
+                from_coordinator(self.coordinator.update(CoordinatorMessage::WindowResized(size)))
             }
         }
     }

@@ -59,6 +59,17 @@ pub enum CoordinatorMessage {
     CoverLoaded(String, Vec<u8>),
 }
 
+/// Salida de `ViewCoordinator::update()` hacia quien lo contenga
+/// (`SidebarFeatureV2`, y de ahí hasta `App`), para pedidos que el
+/// coordinador no puede resolver solo — hoy, navegar a un artista, que vive
+/// en `LibraryBrowserFeature`, un sibling de `SidebarFeature` dentro de `App`.
+#[derive(Debug, Clone)]
+pub enum CoordinatorOutMessage {
+    Idle,
+    RequestOpenArtist(String),
+    RequestOpenAlbum(String),
+}
+
 /// Dueño de todo lo que las 3 vistas de tracks (Explorer/Favorites/
 /// Playlist) más Home comparten y necesitan para funcionar: el
 /// catalog_store, el manager de reproducción, el cache de thumbnails y
@@ -122,8 +133,8 @@ impl ViewCoordinator {
     /// sincroniza el caché de thumbnails contra la ventana visible de la
     /// vista activa ahora mismo. No depende de que cada rama se acuerde
     /// de pedir/podar thumbnails: corre siempre.
-    pub fn update(&mut self, msg: CoordinatorMessage) -> Task<CoordinatorMessage> {
-        let route_task = self.update_route(msg);
+    pub fn update(&mut self, msg: CoordinatorMessage) -> (Task<CoordinatorMessage>, CoordinatorOutMessage) {
+        let (route_task, out) = self.update_route(msg);
 
         let wanted = self.active_view_thumbnail_targets();
         let sync_task = self.thumbnails.sync(&wanted, CoordinatorMessage::ThumbnailLoaded);
@@ -131,27 +142,28 @@ impl ViewCoordinator {
         let wanted_covers = self.active_cover_targets();
         let cover_task = self.covers.sync(&wanted_covers, CoordinatorMessage::CoverLoaded);
 
-        Task::batch([route_task, sync_task, cover_task])
+        (Task::batch([route_task, sync_task, cover_task]), out)
     }
 
-    fn update_route(&mut self, msg: CoordinatorMessage) -> Task<CoordinatorMessage> {
+    fn update_route(&mut self, msg: CoordinatorMessage) -> (Task<CoordinatorMessage>, CoordinatorOutMessage) {
         match msg {
             CoordinatorMessage::SelectNav(nav_id) => {
                 self.active_route = ActiveRoute::Nav(nav_id);
                 self.playlist_view = None;
-                Task::none()
+                (Task::none(), CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::SelectPlaylist(id) => {
                 self.active_route = ActiveRoute::Playlist(id.clone());
                 self.playlist_view = Some(PlaylistView::new(id));
-                Task::none()
+                (Task::none(), CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::CreatePlaylist(name) => {
-                self.catalog_store
+                let task = self.catalog_store
                     .create_playlist(&name)
-                    .map(CoordinatorMessage::Catalog)
+                    .map(CoordinatorMessage::Catalog);
+                (task, CoordinatorOutMessage::Idle)
             }
 
             // ─── EXPLORER ────────────────────────────────────────────────
@@ -165,7 +177,7 @@ impl ViewCoordinator {
                 let (task, out) = self.explorer_view.update(inner, &rendered_refs, &playlists);
                 let view_task = task.map(CoordinatorMessage::Explorer);
 
-                let out_task = self.handle_track_list_out(out, &play_context, |store, extra| match extra {
+                let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, |store, extra| match extra {
                     ExplorerExtra::RequestDelete(ids) => {
                         // TODO: delete_track es singular; se batchea id a id
                         // hasta que CatalogStore soporte borrado múltiple.
@@ -176,7 +188,7 @@ impl ViewCoordinator {
                     }
                 });
 
-                Task::batch([view_task, out_task])
+                (Task::batch([view_task, out_task]), coordinator_out)
             }
 
             // ─── FAVORITES ───────────────────────────────────────────────
@@ -189,15 +201,15 @@ impl ViewCoordinator {
                 let (task, out) = self.favorites_view.update(inner, &rendered_refs, &playlists);
                 let view_task = task.map(CoordinatorMessage::Favorites);
 
-                let out_task = self.handle_track_list_out(out, &play_context, |_store, extra| match extra {});
+                let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, |_store, extra| match extra {});
 
-                Task::batch([view_task, out_task])
+                (Task::batch([view_task, out_task]), coordinator_out)
             }
 
             // ─── PLAYLIST DETAIL ─────────────────────────────────────────
             CoordinatorMessage::PlaylistDetail(inner) => {
                 let Some(playlist_view) = &mut self.playlist_view else {
-                    return Task::none();
+                    return (Task::none(), CoordinatorOutMessage::Idle);
                 };
                 let playlist_id = playlist_view.playlist_id.clone();
 
@@ -209,7 +221,7 @@ impl ViewCoordinator {
                 let (task, out) = playlist_view.update(inner, &rendered_refs, &playlists);
                 let view_task = task.map(CoordinatorMessage::PlaylistDetail);
 
-                let out_task = self.handle_track_list_out(out, &play_context, |store, extra| match extra {
+                let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, |store, extra| match extra {
                     PlaylistExtra::RequestReorder { playlist_id, from, to } => {
                         store.reorder_track_in_playlist(&playlist_id, from, to)
                             .map(CoordinatorMessage::Catalog)
@@ -234,16 +246,17 @@ impl ViewCoordinator {
                     }
                 });
 
-                Task::batch([view_task, out_task])
+                (Task::batch([view_task, out_task]), coordinator_out)
             }
 
             CoordinatorMessage::Catalog(inner) => {
-                self.catalog_store.update(inner).map(CoordinatorMessage::Catalog)
+                let task = self.catalog_store.update(inner).map(CoordinatorMessage::Catalog);
+                (task, CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::Home(inner) => {
                 self.home_view.update(inner);
-                Task::none()
+                (Task::none(), CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::TrackContextMenuEvent(event) => {
@@ -251,27 +264,27 @@ impl ViewCoordinator {
                     self.track_context_menu_items.clear();
                 }
                 self.track_context_menu.handle(event);
-                Task::none()
+                (Task::none(), CoordinatorOutMessage::Idle)
             }
             CoordinatorMessage::TrackContextAction(action, track_id) => {
                 let task = self.handle_track_context_action(action, track_id);
                 self.track_context_menu.handle(ContextMenuEvent::Dismissed);
                 self.track_context_menu_items.clear();
-                task
+                (task, CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::ThumbnailLoaded(key, bytes) => {
                 self.thumbnails.on_loaded(key, bytes);
-                Task::none()
+                (Task::none(), CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::CoverLoaded(key, bytes) => {
                 self.covers.on_loaded(key, bytes);
-                Task::none()
+                (Task::none(), CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::CoverPicked { playlist_id, path } => {
-                if let Some(path) = path {
+                let task = if let Some(path) = path {
                     match self.covers.import_cover(&playlist_id, &path) {
                         Ok(cover_path) => {
                             let cover_path_str = cover_path.to_string_lossy().into_owned();
@@ -289,12 +302,13 @@ impl ViewCoordinator {
                     }
                 } else {
                     Task::none()
-                }
+                };
+                (task, CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::WindowResized(size) => {
                 self.track_context_menu.handle(ContextMenuEvent::ViewportResized(size));
-                Task::none()
+                (Task::none(), CoordinatorOutMessage::Idle)
             }
         }
     }
@@ -311,9 +325,17 @@ impl ViewCoordinator {
         out: TrackListOutMessage<Extra>,
         play_context: &[Track],
         on_extra: impl FnOnce(&mut CatalogStore, Extra) -> Task<CoordinatorMessage>,
-    ) -> Task<CoordinatorMessage> {
-        match out {
+    ) -> (Task<CoordinatorMessage>, CoordinatorOutMessage) {
+        let coordinator_out = match &out {
+            TrackListOutMessage::RequestOpenArtist(id) => CoordinatorOutMessage::RequestOpenArtist(id.clone()),
+            TrackListOutMessage::RequestOpenAlbum(id) => CoordinatorOutMessage::RequestOpenAlbum(id.clone()),
+            _ => CoordinatorOutMessage::Idle,
+        };
+
+        let task = match out {
             TrackListOutMessage::Idle => Task::none(),
+            TrackListOutMessage::RequestOpenArtist(_) => Task::none(),
+            TrackListOutMessage::RequestOpenAlbum(_) => Task::none(),
 
             TrackListOutMessage::RequestPlayContext { start_track_id } => {
                 if let Some(start_index) = play_context.iter().position(|t| t.id == start_track_id) {
@@ -387,7 +409,9 @@ impl ViewCoordinator {
             }
 
             TrackListOutMessage::Extra(extra) => on_extra(&mut self.catalog_store, extra),
-        }
+        };
+
+        (task, coordinator_out)
     }
 
     /// Traduce una acción elegida en el menú contextual de track a la

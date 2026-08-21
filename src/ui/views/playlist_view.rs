@@ -159,6 +159,8 @@ impl PlaylistView {
 
                 out = match action {
                     ListAction::PlayContext(id) => PlaylistOutMessage::RequestPlayContext { start_track_id: id },
+                    ListAction::OpenArtist(id) => PlaylistOutMessage::RequestOpenArtist(id),
+                    ListAction::OpenAlbum(id) => PlaylistOutMessage::RequestOpenAlbum(id),
                     ListAction::None => PlaylistOutMessage::Idle,
 
                     ListAction::SortChanged(key) => {

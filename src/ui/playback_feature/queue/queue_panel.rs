@@ -7,6 +7,7 @@ use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::{button, container, scrollable, space, stack, text, Id};
 use crate::JETBRAINS_MONO;
 use crate::audio::manager::manager::QueueSlot;
+use crate::ui::playback_feature::player::TrackLink;
 use crate::ui::styles::styles::{minimal_button};
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::virtual_list::ScrollTracker;
@@ -66,6 +67,7 @@ pub enum QueueMessage {
     UiPlayClicked(usize),
     UiRemoveClicked(usize),
     UiMoveClicked(usize, usize),
+    OpenTrackLink(TrackLink),
 
     // ── Drag & drop ──────────────────────────────────────────────────────
     DragStarted(usize),
@@ -85,6 +87,7 @@ pub enum QueueOutMessage {
     RequestPlay(usize),
     RequestRemove(usize),
     RequestMove(usize, usize),
+    RequestOpenTrackLink(TrackLink),
 }
 
 struct DragState {
@@ -201,6 +204,7 @@ impl QueuePanel {
             QueueMessage::UiPlayClicked(index) => (Task::none(), QueueOutMessage::RequestPlay(index)),
             QueueMessage::UiRemoveClicked(index) => (Task::none(), QueueOutMessage::RequestRemove(index)),
             QueueMessage::UiMoveClicked(from, to) => (Task::none(), QueueOutMessage::RequestMove(from, to)),
+            QueueMessage::OpenTrackLink(link) => (Task::none(), QueueOutMessage::RequestOpenTrackLink(link)),
 
             QueueMessage::Scrolled(viewport) => {
                 self.scroll.update(viewport);
@@ -382,6 +386,8 @@ impl QueuePanel {
                 QueueMessage::DeleteHovered(index),
                 QueueMessage::DeleteUnhovered,
                 drag_params,
+                |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
+                |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
             );
 
             if row_is_dragged {
@@ -421,6 +427,8 @@ impl QueuePanel {
                     QueueMessage::DeleteHovered(drag.current_index),
                     QueueMessage::DeleteUnhovered,
                     drag_params,
+                    |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
+                    |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
                 );
 
                 layers.push(

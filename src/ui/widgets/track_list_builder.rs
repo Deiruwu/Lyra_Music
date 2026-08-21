@@ -6,12 +6,14 @@ use iced::widget::scrollable::Viewport;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, space, stack, text, Id};
 use iced::{Alignment, Color, Element, Length, Padding, Point};
 use strum_macros::AsRefStr;
-use crate::model::Track;
+use crate::model::{Album, Artist, Track};
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 use crate::ui::styles::styles::{minimal_button, selected_row_container, transparent_button, RowSelectionShape};
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::row_animator::RowAnimator;
 use crate::ui::utils::virtual_list::ScrollTracker;
+use crate::ui::widgets::artist_links::{album_link, artist_links, artist_names_text};
+use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
 use crate::utils::formatting::{format_added_at, format_duration};
 
@@ -29,6 +31,8 @@ pub enum TrackEvent {
     MouseMoved(Point),
     RightClicked(String),
     ViewportExited,
+    ArtistClicked(String),
+    AlbumClicked(String),
 }
 
 // ── La fila de fábrica ────────────────────────────────────────────
@@ -80,10 +84,8 @@ impl TrackColumn {
         match self {
             TrackColumn::Index => DisplayValue::Index(display_index),
             TrackColumn::Title => DisplayValue::Text(track.title.clone()),
-            TrackColumn::Artist => DisplayValue::Text(track.format_artists()),
-            TrackColumn::Album => DisplayValue::Text(
-                track.album.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "-".to_string()),
-            ),
+            TrackColumn::Artist => DisplayValue::Artists(track.artists.clone()),
+            TrackColumn::Album => DisplayValue::AlbumLink(track.album.clone()),
             TrackColumn::Duration => DisplayValue::Text(format_duration(track.duration_seconds)),
             TrackColumn::Bpm => DisplayValue::Text(track.bpm.map(|b| b.to_string()).unwrap_or_else(|| "-".to_string())),
             TrackColumn::Key => DisplayValue::ColoredText(
@@ -100,6 +102,8 @@ enum DisplayValue {
     Thumbnail(Option<Handle>),
     Text(String),
     ColoredText(String, Color),
+    Artists(Vec<Artist>),
+    AlbumLink(Option<Album>),
 }
 
 fn active_columns(show_added_at: bool) -> Vec<TrackColumn> {
@@ -349,7 +353,12 @@ where
 
     // ── Render: celda → Element ──────────────────────────────────
 
-    fn render_cell(&self, cell: DisplayValue, width: Length) -> Element<'a, Message> {
+    fn render_cell(
+        &self,
+        cell: DisplayValue,
+        width: Length,
+        emit: Option<&Rc<dyn Fn(TrackEvent) -> Message + 'a>>,
+    ) -> Element<'a, Message> {
         match cell {
             DisplayValue::Index(i) => container(
                 text(i.to_string()).font(SF_PRO).size(12).color(Color::from_rgb(0.45, 0.45, 0.5)),
@@ -360,10 +369,29 @@ where
                 .width(width)
                 .align_y(Alignment::Center)
                 .into(),
-            DisplayValue::Text(s) => container(text(s).font(SF_PRO).size(13.5).color(Color::from_rgb(0.7, 0.7, 0.75)))
-                .width(width)
-                .into(),
-            DisplayValue::ColoredText(s, c) => container(text(s).font(SF_PRO).size(13.5).color(c)).width(width).into(),
+            DisplayValue::Text(s) => single_line_text(s, SF_PRO, 13.5, Color::from_rgb(0.7, 0.7, 0.75), width),
+            DisplayValue::ColoredText(s, c) => single_line_text(s, SF_PRO, 13.5, c, width),
+            DisplayValue::Artists(artists) => match emit {
+                Some(emit) => {
+                    let emit = Rc::clone(emit);
+                    artist_links(&artists, SF_PRO, 13.5, Color::from_rgb(0.7, 0.7, 0.75), width, move |id| {
+                        emit(TrackEvent::ArtistClicked(id))
+                    })
+                }
+                None => artist_names_text(&artists, SF_PRO, 13.5, Color::from_rgb(0.7, 0.7, 0.75), width),
+            },
+            DisplayValue::AlbumLink(album) => match emit {
+                Some(emit) => {
+                    let emit = Rc::clone(emit);
+                    album_link(album.as_ref(), SF_PRO, 13.5, Color::from_rgb(0.7, 0.7, 0.75), width, move |id| {
+                        emit(TrackEvent::AlbumClicked(id))
+                    })
+                }
+                None => {
+                    let name = album.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "-".to_string());
+                    single_line_text(name, SF_PRO, 13.5, Color::from_rgb(0.7, 0.7, 0.75), width)
+                }
+            },
         }
     }
 
@@ -378,15 +406,15 @@ where
     ) -> Element<'a, Message> {
         let mut row_children: Vec<Element<'a, Message>> = Vec::with_capacity(fields.len() + 2);
 
-        row_children.push(self.render_cell(DisplayValue::Index(display_index), Length::Fixed(INDEX_COL_WIDTH)));
-        row_children.push(self.render_cell(DisplayValue::Thumbnail(handle), Length::Fixed(THUMBNAIL_COL_WIDTH)));
+        row_children.push(self.render_cell(DisplayValue::Index(display_index), Length::Fixed(INDEX_COL_WIDTH), None));
+        row_children.push(self.render_cell(DisplayValue::Thumbnail(handle), Length::Fixed(THUMBNAIL_COL_WIDTH), None));
 
         for &field in fields {
-            row_children.push(self.render_cell(field.display_value(track, display_index), field.width()));
+            row_children.push(self.render_cell(field.display_value(track, display_index), field.width(), Some(emit)));
         }
 
         let row_content = row(row_children)
-            .spacing(10)
+            .spacing(16)
             .align_y(Alignment::Center)
             .padding(Padding { top: 0.0, bottom: 0.0, left: 10.0, right: 16.0 });
 
@@ -444,10 +472,10 @@ where
         let display_index = drag.hole_index + 1;
 
         let mut row_children: Vec<Element<'a, Message>> = Vec::with_capacity(fields.len() + 2);
-        row_children.push(self.render_cell(DisplayValue::Index(display_index), Length::Fixed(INDEX_COL_WIDTH)));
-        row_children.push(self.render_cell(DisplayValue::Thumbnail(handle), Length::Fixed(THUMBNAIL_COL_WIDTH)));
+        row_children.push(self.render_cell(DisplayValue::Index(display_index), Length::Fixed(INDEX_COL_WIDTH), None));
+        row_children.push(self.render_cell(DisplayValue::Thumbnail(handle), Length::Fixed(THUMBNAIL_COL_WIDTH), None));
         for &field in fields {
-            row_children.push(self.render_cell(field.display_value(track, display_index), field.width()));
+            row_children.push(self.render_cell(field.display_value(track, display_index), field.width(), None));
         }
 
         let ghost_row = row(row_children)

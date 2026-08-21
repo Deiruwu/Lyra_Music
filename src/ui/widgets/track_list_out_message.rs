@@ -24,6 +24,10 @@ pub enum TrackListOutMessage<Extra> {
     RequestSearch(String),
     RequestChangeSort(usize),
 
+    // ─── Navegación ──────────────────────────────────────────────
+    RequestOpenArtist(String),
+    RequestOpenAlbum(String),
+
     // ─── Context menu de canción ─────────────────────────────────
     ContextMenuRightClicked {
         track_id: String,

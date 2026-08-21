@@ -179,6 +179,12 @@ impl LibraryBrowserFeature {
                             }
                             (task, LibraryBrowserOutMessage::Idle)
                         }
+                        ArtistOutMessage::OpenTrackArtist(id) => {
+                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id);
+                            self.previous = self.active.take();
+                            self.active = Some(LibraryBrowserRoute::Artist(artist_view));
+                            (Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]), LibraryBrowserOutMessage::Idle)
+                        }
                         ArtistOutMessage::Idle => (task, LibraryBrowserOutMessage::Idle),
                     }
                 }
@@ -217,6 +223,12 @@ impl LibraryBrowserFeature {
                                 self.context_menu_items = items;
                             }
                             (task, LibraryBrowserOutMessage::Idle)
+                        }
+                        AlbumOutMessage::OpenTrackArtist(id) => {
+                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id);
+                            self.previous = self.active.take();
+                            self.active = Some(LibraryBrowserRoute::Artist(artist_view));
+                            (Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]), LibraryBrowserOutMessage::Idle)
                         }
                         AlbumOutMessage::Idle => (task, LibraryBrowserOutMessage::Idle),
                     }

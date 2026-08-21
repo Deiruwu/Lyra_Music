@@ -2,9 +2,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use iced::widget::image::Handle;
-use iced::widget::{column, container, image, responsive, row, space, text};
-use iced::{Alignment, Color, Element, Font, Length, Task, Theme};
+use iced::widget::{column, container, image, responsive, row, space};
+use iced::{alignment::Horizontal, Alignment, Color, Element, Font, Length, Task, Theme};
 use crate::model::audio_tech::PlayableTrack;
+use crate::model::Artist;
+use crate::ui::widgets::artist_links::artist_names_text_aligned;
+use crate::ui::widgets::single_line_text::single_line_text_aligned;
 
 // ACTUALIZADO A LA NUEVA RUTA:
 use super::lyrics::lyrics_panel::{LyricsMessage, LyricsOutMessage, LyricsPanel};
@@ -25,7 +28,7 @@ pub enum TheaterOutMessage {
 pub struct TheaterPanel {
     lyrics: LyricsPanel,
     current_title: Option<String>,
-    current_artist: Option<String>,
+    current_artists: Vec<Artist>,
 }
 
 impl Default for TheaterPanel {
@@ -33,7 +36,7 @@ impl Default for TheaterPanel {
         Self {
             lyrics: LyricsPanel::default(),
             current_title: None,
-            current_artist: None,
+            current_artists: Vec::new(),
         }
     }
 }
@@ -54,7 +57,7 @@ impl TheaterPanel {
 
     pub fn track_changed(&mut self, playable: &Arc<PlayableTrack>) -> Task<TheaterMessage> {
         self.current_title = Some(playable.track.title.clone());
-        self.current_artist = Some(playable.track.format_artists());
+        self.current_artists = playable.track.artists.clone();
 
         let (task, _out) = self.lyrics.update(LyricsMessage::TrackChanged(Arc::clone(playable)));
         task.map(TheaterMessage::Lyrics)
@@ -77,7 +80,7 @@ impl TheaterPanel {
     pub fn view<'a>(&'a self, large_thumbnail: Option<&'a Handle>) -> Element<'a, TheaterMessage> {
         let thumbnail_handle = large_thumbnail.cloned();
         let title = self.current_title.clone().unwrap_or_default();
-        let artist = self.current_artist.clone().unwrap_or_default();
+        let artists = self.current_artists.clone();
 
         let artwork_panel = responsive(move |size| {
             let available_height = (size.height - 80.0).max(50.0);
@@ -123,14 +126,15 @@ impl TheaterPanel {
             };
 
             let header = column![
-                text(title.clone())
-                    .font(PRO_DISPLAY)
-                    .size(20)
-                    .color(Color::WHITE),
-                text(artist.clone())
-                    .font(PRO_DISPLAY)
-                    .size(14)
-                    .color(Color::from_rgb(0.65, 0.65, 0.7)),
+                single_line_text_aligned(title.as_str(), PRO_DISPLAY, 20.0, Color::WHITE, Length::Fixed(side), Horizontal::Center),
+                artist_names_text_aligned(
+                    &artists,
+                    PRO_DISPLAY,
+                    14.0,
+                    Color::from_rgb(0.65, 0.65, 0.7),
+                    Length::Fixed(side),
+                    Horizontal::Center,
+                ),
             ]
                 .spacing(4)
                 .align_x(Alignment::Center);

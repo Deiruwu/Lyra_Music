@@ -68,6 +68,8 @@ pub enum ListAction {
     PlayContext(String),
     SortChanged(usize),
     OpenContextMenu { anchor_id: String, selected_ids: HashSet<String> },
+    OpenArtist(String),
+    OpenAlbum(String),
     None,
 }
 
@@ -253,6 +255,8 @@ impl TrackViewState {
                     selected_ids: self.tracks_selection.selected_ids.clone(),
                 }
             }
+            TrackEvent::ArtistClicked(artist_id) => ListAction::OpenArtist(artist_id),
+            TrackEvent::AlbumClicked(album_id) => ListAction::OpenAlbum(album_id),
         }
     }
 }

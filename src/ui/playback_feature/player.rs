@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use iced::{Alignment, Color, Element, Length, Renderer, Task, Theme};
 use iced::widget::image::Handle;
-use iced::widget::{button, column, rich_text, row, slider, space, text};
+use iced::widget::{button, column, container, rich_text, row, slider, space, text};
 use crate::audio::manager::manager::RepeatMode;
 use crate::audio::track_event::TrackEvent;
 use crate::JETBRAINS_MONO;
@@ -9,7 +9,14 @@ use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
 use crate::ui::assets::icons::Icon;
 use crate::ui::styles::styles::{minimal_button};
-use crate::ui::widgets::track_row::{track_thumbnail, truncate};
+use crate::ui::widgets::artist_links::artist_links;
+use crate::ui::widgets::single_line_text::single_line_text;
+use crate::ui::widgets::track_row::track_thumbnail;
+
+/// Ancho máximo del bloque título/artista/álbum del track actual — acota
+/// nombres largos (ver `current_track_content`) sin forzar que el bloque
+/// ocupe ese ancho cuando el contenido real es más corto.
+const CURRENT_TRACK_INFO_MAX_WIDTH: f32 = 260.0;
 
 /// Destino de navegación al hacer click en el artista o álbum del track en reproducción.
 #[derive(Debug, Clone, PartialEq)]
@@ -180,19 +187,9 @@ impl Player {
         thumbnail: Option<Handle>,
         trailing: Element<'a, PlayerMessage>,
     ) -> Element<'a, PlayerMessage> {
-        let title = text(truncate(&track.title, 45))
-            .size(14)
-            .color(Color::WHITE);
+        let title = single_line_text(&track.title, iced::Font::default(), 14.0, Color::WHITE, Length::Shrink);
 
         let subtitle_color = Color::from_rgb(0.6, 0.6, 0.6);
-
-        let artist_span = {
-            let mut span = iced::widget::span(track.format_artists()).size(11).color(subtitle_color);
-            if let Some(id) = track.artists.first().and_then(|artist| artist.id.clone()) {
-                span = span.link(TrackLink::Artist(id));
-            }
-            span
-        };
 
         let album_span = {
             let album_name = track.album.as_ref().map(|a| a.name.as_str()).unwrap_or("");
@@ -203,11 +200,33 @@ impl Player {
             span
         };
 
-        let subtitle = rich_text![artist_span, "\n", album_span]
-            .on_link_click(PlayerMessage::OpenTrackLink);
+        // Cada línea (título/artista/álbum) se mide por su contenido real
+        // (`Length::Shrink`) para que el botón de like quede pegado al
+        // texto en vez de al borde de una caja ancha — el tope lo pone
+        // `info.max_width(...)` más abajo, no cada línea por separado. El
+        // artista puede ser una lista (colabs): cada nombre es un link
+        // individual a su propio artista, no uno solo apuntando al primero.
+        let artist_line = artist_links(
+            &track.artists,
+            iced::Font::default(),
+            11.0,
+            subtitle_color,
+            Length::Shrink,
+            |id| PlayerMessage::OpenTrackLink(TrackLink::Artist(id)),
+        );
 
-        let info = column![title, subtitle]
+        let album_line = container(
+            rich_text![album_span]
+                .on_link_click(PlayerMessage::OpenTrackLink)
+                .wrapping(iced::widget::text::Wrapping::None),
+        )
             .width(Length::Shrink)
+            .clip(true);
+
+        let info = column![title, artist_line, album_line]
+            .width(Length::Shrink)
+            .max_width(CURRENT_TRACK_INFO_MAX_WIDTH)
+            .clip(true)
             .align_x(Alignment::Start);
 
         row![track_thumbnail(thumbnail), info, trailing]
@@ -218,9 +237,9 @@ impl Player {
 
     fn like_button(track_id: String, is_liked: bool) -> Element<'static, PlayerMessage> {
         let (icon, color) = if is_liked {
-            ("\u{f004}", iced::Color::from_rgb(0.94, 0.23, 0.35))
+            (Icon::HeartFull.as_str(), Color::from_rgb(0.94, 0.23, 0.35))
         } else {
-            ("\u{eb05}", iced::Color::from_rgb(0.6, 0.6, 0.6))
+            (Icon::Heart.as_str(), Color::from_rgb(0.6, 0.6, 0.6))
         };
 
         button(

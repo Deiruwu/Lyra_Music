@@ -29,7 +29,7 @@ use crate::ui::playback_feature::player::TrackLink;
 use crate::ui::playback_feature::playback_feature::{PlaybackFeature, PlaybackFeatureMessage, PlaybackOutMessage};
 use crate::ui::search_feature::search_feature::{SearchFeature, SearchFeatureMessage, SearchFeatureOutMessage};
 use crate::ui::sidebar_feature::sidebar_feature_v2::{
-    SidebarFeatureV2 as SidebarFeature, SidebarMessage as SidebarFeatureMessage
+    SidebarFeatureV2 as SidebarFeature, SidebarMessage as SidebarFeatureMessage, SidebarOutMessage
 };
 use crate::ui::views::view_coordinator::{playlist_pairs, CoordinatorMessage};
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
@@ -51,6 +51,7 @@ pub enum AppMessage {
     Quit,
     LibraryBrowser(LibraryBrowserMessage),
     NavigateBack,
+    EscapePressed,
 }
 
 struct App {
@@ -238,10 +239,22 @@ impl App {
             AppMessage::SidebarFeature(msg) => {
                 if matches!(msg, SidebarFeatureMessage::SelectNav(_) | SidebarFeatureMessage::SelectPlaylist(_)) {
                     self.library_browser.close();
+                    self.is_theater_mode = false;
                 }
 
-                let task = self.sidebar_feature.update(msg);
-                task.map(AppMessage::SidebarFeature)
+                let (task, out) = self.sidebar_feature.update(msg);
+
+                let open_artist_task = match out {
+                    SidebarOutMessage::RequestOpenArtist(id) => {
+                        iced::Task::done(AppMessage::LibraryBrowser(LibraryBrowserMessage::OpenArtist(id)))
+                    }
+                    SidebarOutMessage::RequestOpenAlbum(id) => {
+                        iced::Task::done(AppMessage::LibraryBrowser(LibraryBrowserMessage::OpenAlbum(id)))
+                    }
+                    SidebarOutMessage::Idle => iced::Task::none(),
+                };
+
+                iced::Task::batch(vec![task.map(AppMessage::SidebarFeature), open_artist_task])
             }
 
             AppMessage::SearchFeature(msg) => {
@@ -249,19 +262,22 @@ impl App {
                 let mut feature_task = iced::Task::none();
                 let mut catalog_task = iced::Task::none();
 
-                if let SearchFeatureOutMessage::TrackReadyToPlay(playable) = out_msg {
-                    let track_metadata = playable.track.clone();
+                match out_msg {
+                    SearchFeatureOutMessage::TrackReadyToPlay(playable) => {
+                        let track_metadata = playable.track.clone();
 
-                    let (t, _out) = self.playback_feature.update(
-                        PlaybackFeatureMessage::Play(playable),
-                    );
-                    feature_task = t;
+                        let (t, _out) = self.playback_feature.update(
+                            PlaybackFeatureMessage::Play(playable),
+                        );
+                        feature_task = t;
 
-                    catalog_task = iced::Task::done(AppMessage::SidebarFeature(
-                        SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(
-                            CatalogStoreMessage::TrackDownloadedAndCached(track_metadata)
-                        ))
-                    ));
+                        catalog_task = iced::Task::done(AppMessage::SidebarFeature(
+                            SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(
+                                CatalogStoreMessage::TrackDownloadedAndCached(track_metadata)
+                            ))
+                        ));
+                    }
+                    SearchFeatureOutMessage::Idle => {}
                 }
 
                 iced::Task::batch(vec![
@@ -280,12 +296,25 @@ impl App {
                     iced::Task::none()
                 }
             }
+
+            AppMessage::EscapePressed => {
+                if self.is_theater_mode {
+                    self.is_theater_mode = false;
+                } else if self.library_browser.is_active() {
+                    self.library_browser.close();
+                }
+                iced::Task::none()
+            }
         }
     }
 
     /// Puentea `LibraryBrowserOutMessage` hacia el `CatalogStore` del sidebar,
     /// igual que ya hace `PlaybackOutMessage::RequestToggleLike`.
     fn update_library_browser(&mut self, msg: LibraryBrowserMessage) -> iced::Task<AppMessage> {
+        if matches!(msg, LibraryBrowserMessage::OpenArtist(_) | LibraryBrowserMessage::OpenAlbum(_)) {
+            self.is_theater_mode = false;
+        }
+
         let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
         let (task, out) = self.library_browser.update(msg, &playlists);
 
@@ -313,10 +342,10 @@ impl App {
     }
 
     pub fn view(&self, _window: window::Id) -> Element<'_, AppMessage> {
-        let center_content: Element<'_, AppMessage> = if self.library_browser.is_active() {
-            self.library_browser.view().map(AppMessage::LibraryBrowser)
-        } else if self.is_theater_mode {
+        let center_content: Element<'_, AppMessage> = if self.is_theater_mode {
             self.playback_feature.view_theater().map(AppMessage::PlaybackFeature)
+        } else if self.library_browser.is_active() {
+            self.library_browser.view().map(AppMessage::LibraryBrowser)
         } else {
             self.sidebar_feature.view_content().map(AppMessage::SidebarFeature)
         };
@@ -431,6 +460,14 @@ impl App {
             _ => None,
         });
 
+        let escape_sub = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                ..
+            }) => Some(AppMessage::EscapePressed),
+            _ => None,
+        });
+
         iced::Subscription::batch(vec![
             search_sub,
             playback_sub,
@@ -438,6 +475,7 @@ impl App {
             close_sub,
             nav_back_sub,
             library_menu_mouse_sub,
+            escape_sub,
         ])
     }
 

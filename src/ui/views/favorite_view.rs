@@ -67,6 +67,8 @@ impl FavoritesView {
                 out = match action {
                     ListAction::PlayContext(id) => FavoritesOutMessage::RequestPlayContext { start_track_id: id },
                     ListAction::SortChanged(key) => FavoritesOutMessage::RequestChangeSort(key),
+                    ListAction::OpenArtist(id) => FavoritesOutMessage::RequestOpenArtist(id),
+                    ListAction::OpenAlbum(id) => FavoritesOutMessage::RequestOpenAlbum(id),
                     ListAction::None => FavoritesOutMessage::Idle,
 
                     ListAction::OpenContextMenu { anchor_id, selected_ids: _ } => {

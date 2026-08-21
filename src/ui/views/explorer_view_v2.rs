@@ -73,6 +73,8 @@ impl ExplorerView {
                 out = match action {
                     ListAction::PlayContext(id) => ExplorerOutMessage::RequestPlayContext { start_track_id: id },
                     ListAction::SortChanged(key) => ExplorerOutMessage::RequestChangeSort(key),
+                    ListAction::OpenArtist(id) => ExplorerOutMessage::RequestOpenArtist(id),
+                    ListAction::OpenAlbum(id) => ExplorerOutMessage::RequestOpenAlbum(id),
                     ListAction::None => ExplorerOutMessage::Idle,
 
                     ListAction::OpenContextMenu { anchor_id, selected_ids: _ } => {

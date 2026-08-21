@@ -149,7 +149,11 @@ impl SearchInput {
             for track in results {
                 let thumbnail = thumbnails.peek_for_render(track);
                 results_column = results_column.push(
-                    track_row(track, thumbnail, SearchMessage::TrackClicked(track.clone()))
+                    track_row(
+                        track,
+                        thumbnail,
+                        SearchMessage::TrackClicked(track.clone()),
+                    )
                 );
             }
         }

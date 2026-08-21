@@ -1,5 +1,7 @@
 pub mod track_row;
 pub mod track_row_simple;
+pub mod single_line_text;
+pub mod artist_links;
 pub mod icon_toggle;
 pub mod async_thumbnail;
 pub mod context_menu;
