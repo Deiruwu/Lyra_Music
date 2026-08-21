@@ -5,6 +5,7 @@ mod ui;
 pub mod tray;
 pub mod db;
 pub mod utils;
+mod settings;
 
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::Ordering;
@@ -20,6 +21,7 @@ use crate::audio::radio_daemon::RadioWorker;
 use crate::db::db::init_db;
 use crate::db::playlist_manager::PlaylistManager;
 use crate::microservices::client::MicroserviceClient;
+use crate::settings::AppSettings;
 use crate::tray::TrayFlags;
 
 use crate::ui::library_browser_feature::library_browser_feature::{
@@ -52,6 +54,7 @@ pub enum AppMessage {
     LibraryBrowser(LibraryBrowserMessage),
     NavigateBack,
     EscapePressed,
+    AutosaveTick,
 }
 
 struct App {
@@ -65,14 +68,20 @@ struct App {
     tray_flags: Arc<TrayFlags>,
     main_window: Option<window::Id>,
     is_theater_mode: bool,
+    last_saved_settings: AppSettings,
 }
 
 impl App {
     pub fn init() -> (Self, iced::Task<AppMessage>) {
+        let settings = AppSettings::load();
+
         let (manager, engine) = TrackManager::new()
             .expect("Fallo fatal al inicializar el hardware de audio");
 
         let manager    = Arc::new(manager);
+        manager.set_volume(settings.volume);
+        manager.set_repeat_mode(settings.repeat_mode);
+        manager.set_shuffle_enabled(settings.shuffle_enabled);
         let tray_flags = tray::spawn_tray(Arc::clone(&manager));
         TRAY_FLAGS.set(Arc::clone(&tray_flags)).ok();
 
@@ -126,11 +135,12 @@ impl App {
         };
         let playlist_manager = Arc::new(playlist_manager);
 
-        let (sidebar_feature, sidebar_task) = SidebarFeature::new(
+        let (mut sidebar_feature, sidebar_task) = SidebarFeature::new(
             sidebar_client,
             Arc::clone(&playlist_manager),
             Arc::clone(&manager),
         );
+        sidebar_feature.set_expanded_immediate(settings.sidebar_expanded);
 
         let app = Self {
             _engine: engine,
@@ -143,6 +153,7 @@ impl App {
             main_window: Some(window_id),
             manager,
             is_theater_mode: false,
+            last_saved_settings: settings,
         };
 
         let init_task = iced::Task::batch(vec![
@@ -178,7 +189,17 @@ impl App {
             }
 
             AppMessage::Quit => {
+                let _ = self.current_settings().save();
                 iced::exit()
+            }
+
+            AppMessage::AutosaveTick => {
+                let current = self.current_settings();
+                if current != self.last_saved_settings {
+                    let _ = current.save();
+                    self.last_saved_settings = current;
+                }
+                iced::Task::none()
             }
 
             AppMessage::PlaybackFeature(PlaybackFeatureMessage::Tick) => {
@@ -305,6 +326,15 @@ impl App {
                 }
                 iced::Task::none()
             }
+        }
+    }
+
+    fn current_settings(&self) -> AppSettings {
+        AppSettings {
+            sidebar_expanded: self.sidebar_feature.is_expanded,
+            shuffle_enabled: self.manager.is_shuffled(),
+            repeat_mode: self.manager.repeat_mode(),
+            volume: self.manager.get_volume(),
         }
     }
 
@@ -468,6 +498,9 @@ impl App {
             _ => None,
         });
 
+        let autosave_sub = iced::time::every(std::time::Duration::from_secs(2))
+            .map(|_| AppMessage::AutosaveTick);
+
         iced::Subscription::batch(vec![
             search_sub,
             playback_sub,
@@ -476,6 +509,7 @@ impl App {
             nav_back_sub,
             library_menu_mouse_sub,
             escape_sub,
+            autosave_sub,
         ])
     }
 

@@ -1,12 +1,19 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use rand::rng;
 use rand::seq::SliceRandom;
+use rand::RngExt;
 use uuid::Uuid;
 use crate::audio::manager::manager::QueueSlot;
 
 pub fn shuffle(mut slots: Vec<QueueSlot>) -> Vec<QueueSlot> {
     slots.shuffle(&mut rng());
     slots
+}
+
+/// Inserta `slot` en una posición aleatoria de `queue`.
+pub fn insert_shuffled(queue: &mut VecDeque<QueueSlot>, slot: QueueSlot) {
+    let idx = rng().random_range(0..=queue.len());
+    queue.insert(idx, slot);
 }
 
 /// Reconstruye `current` en el orden de `order` (ids de antes del shuffle),

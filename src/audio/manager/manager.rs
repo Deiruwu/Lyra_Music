@@ -14,6 +14,7 @@ use crate::audio::engine_state::{AudioCommand, EngineState};
 use crate::audio::engine::AudioEngine;
 use crate::audio::manager::error_mananger::ManagerError;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
+use crate::audio::queue_shuffle;
 
 const HISTORY_CAP: usize = 100;
 
@@ -34,7 +35,7 @@ impl QueueSlot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum RepeatMode {
     #[default]
     Off,
@@ -54,7 +55,7 @@ pub(super) struct PlaybackState {
     pub(super) auto_advance: bool,
     pub(super) repeat_mode: RepeatMode,
     pub(super) shuffle_enabled: bool,
-    pub(super) pre_shuffle_order: Option<Vec<Uuid>>,
+    pub(super) original_order: VecDeque<Uuid>,
 }
 
 impl PlaybackState {
@@ -66,8 +67,48 @@ impl PlaybackState {
             auto_advance: true,
             repeat_mode: RepeatMode::Off,
             shuffle_enabled: false,
-            pre_shuffle_order: None,
+            original_order: VecDeque::new(),
         }
+    }
+
+    /// Agrega un slot a la cola, respetando el modo shuffle salvo que sea al frente.
+    pub(super) fn queue_push(&mut self, slot: QueueSlot, to_front: bool) {
+        if to_front {
+            self.original_order.push_front(slot.id);
+            self.queue.push_front(slot);
+            return;
+        }
+        self.original_order.push_back(slot.id);
+        if self.shuffle_enabled {
+            queue_shuffle::insert_shuffled(&mut self.queue, slot);
+        } else {
+            self.queue.push_back(slot);
+        }
+    }
+
+    /// Reemplaza toda la cola pendiente por `slots`, fijando el nuevo orden canónico.
+    pub(super) fn refill_queue(&mut self, slots: Vec<QueueSlot>) {
+        self.original_order = slots.iter().map(|s| s.id).collect();
+        self.queue = if self.shuffle_enabled {
+            queue_shuffle::shuffle(slots).into()
+        } else {
+            slots.into()
+        };
+    }
+
+    /// Saca el slot al frente de la cola y lo desvincula del orden canónico.
+    pub(super) fn pop_front_tracked(&mut self) -> Option<QueueSlot> {
+        let slot = self.queue.pop_front()?;
+        self.original_order.retain(|id| *id != slot.id);
+        Some(slot)
+    }
+
+    /// Saca los primeros `n` slots de la cola y los desvincula del orden canónico.
+    fn drain_front_tracked(&mut self, n: usize) -> Vec<QueueSlot> {
+        let drained: Vec<QueueSlot> = self.queue.drain(0..n).collect();
+        let ids: std::collections::HashSet<Uuid> = drained.iter().map(|s| s.id).collect();
+        self.original_order.retain(|id| !ids.contains(id));
+        drained
     }
 
     /// Empuja la pista actual (si hay) al historial y la reemplaza por
@@ -87,6 +128,7 @@ impl PlaybackState {
     /// cola, archiva lo que estaba sonando y marca auto_advance para que
     /// el supervisor retome en cuanto el DownloadWorker termine.
     fn requeue_for_download(&mut self, slot: QueueSlot) {
+        self.original_order.push_front(slot.id);
         self.queue.push_front(slot);
         if let Some(current) = self.current_track.take() {
             push_to_history_inner(&mut self.history, current.track.clone());
@@ -198,10 +240,10 @@ impl TrackManager {
 
                     if ps.queue.is_empty() && ps.repeat_mode == RepeatMode::Queue && !ps.history.is_empty() {
                         let replay: Vec<QueueSlot> = ps.history.drain(..).map(|t| QueueSlot::new(Arc::new(t))).collect();
-                        ps.queue.extend(replay);
+                        ps.refill_queue(replay);
                     }
 
-                    let Some(next_slot) = ps.queue.pop_front() else {
+                    let Some(next_slot) = ps.pop_front_tracked() else {
                         ps.clear_current_to_history();
                         drop(ps);
                         supervisor_state.status.store(0, Ordering::Relaxed);
@@ -274,12 +316,12 @@ impl TrackManager {
             let mut ps = self.playback.lock().unwrap();
             if to_front {
                 for slot in slots_iter.rev() {
-                    ps.queue.push_front(slot);
+                    ps.queue_push(slot, true);
                     added_any = true;
                 }
             } else {
                 for slot in slots_iter {
-                    ps.queue.push_back(slot);
+                    ps.queue_push(slot, false);
                     added_any = true;
                 }
             }
@@ -313,18 +355,18 @@ impl TrackManager {
                 }
 
                 ps.clear_current_to_history();
-                let skipped: Vec<Track> = ps.queue.drain(0..n).map(|slot| (*slot.track).clone()).collect();
-                for track in skipped {
-                    push_to_history_inner(&mut ps.history, track);
+                let skipped = ps.drain_front_tracked(n);
+                for slot in skipped {
+                    push_to_history_inner(&mut ps.history, (*slot.track).clone());
                 }
             }
 
             if ps.queue.is_empty() && ps.repeat_mode == RepeatMode::Queue && !ps.history.is_empty() {
                 let replay: Vec<QueueSlot> = ps.history.drain(..).map(|t| QueueSlot::new(Arc::new(t))).collect();
-                ps.queue.extend(replay);
+                ps.refill_queue(replay);
             }
 
-            ps.queue.pop_front()
+            ps.pop_front_tracked()
         };
 
         let Some(next_slot) = next_track else {

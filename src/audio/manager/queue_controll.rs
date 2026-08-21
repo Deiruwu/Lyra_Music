@@ -11,6 +11,10 @@ impl TrackManager {
         }
         let slot = ps.queue.remove(from).unwrap();
         ps.queue.insert(to, slot);
+        if !ps.shuffle_enabled {
+            let id = ps.original_order.remove(from).unwrap();
+            ps.original_order.insert(to, id);
+        }
         drop(ps);
         self.broadcast_queue_update();
         Ok(())
@@ -23,7 +27,8 @@ impl TrackManager {
             return Err(ManagerError::IndexOutOfRange);
         }
 
-        ps.queue.remove(index);
+        let slot = ps.queue.remove(index).unwrap();
+        ps.original_order.retain(|id| *id != slot.id);
         drop(ps);
         self.broadcast_queue_update();
         Ok(())
@@ -68,6 +73,7 @@ impl TrackManager {
         let mut ps = self.playback.lock().unwrap();
 
         ps.queue.clear();
+        ps.original_order.clear();
 
         drop(ps);
         self.broadcast_queue_update();

@@ -44,7 +44,7 @@ impl TrackManager {
         {
             let mut ps = self.playback.lock().unwrap();
             if ps.queue.front().map_or(false, |slot| slot.track.id == track_id) {
-                ps.queue.pop_front();
+                ps.pop_front_tracked();
             } else {
                 return;
             }

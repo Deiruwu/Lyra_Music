@@ -18,8 +18,7 @@ impl TrackManager {
 
         {
             let mut ps = self.playback.lock().unwrap();
-            ps.queue.clear();
-            ps.queue.extend(remaining);
+            ps.refill_queue(remaining);
             ps.clear_current_to_history();
             ps.auto_advance = true;
         }
@@ -27,7 +26,7 @@ impl TrackManager {
         if first_track.file_path.is_none() {
             {
                 let mut ps = self.playback.lock().unwrap();
-                ps.queue.push_front(QueueSlot::new(Arc::clone(&first_track)));
+                ps.queue_push(QueueSlot::new(Arc::clone(&first_track)), true);
             }
 
             let _ = self.engine_tx.send(AudioCommand::Stop);
@@ -91,7 +90,7 @@ impl TrackManager {
             let mut ps = self.playback.lock().unwrap();
             if let Some(current) = ps.current_track.as_ref() {
                 let current_track = current.track.clone();
-                ps.queue.push_front(QueueSlot::new(Arc::new(current_track)));
+                ps.queue_push(QueueSlot::new(Arc::new(current_track)), true);
             }
             ps.advance_to(Arc::clone(&playable));
         }

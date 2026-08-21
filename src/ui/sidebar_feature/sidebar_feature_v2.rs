@@ -182,6 +182,13 @@ impl SidebarFeatureV2 {
         if self.is_expanded { EXPANDED_WIDTH } else { COLLAPSED_WIDTH }
     }
 
+    /// Fija el estado expandido/colapsado sin animar — para restaurar el
+    /// estado guardado al arrancar, en vez de animar desde COLLAPSED_WIDTH.
+    pub fn set_expanded_immediate(&mut self, expanded: bool) {
+        self.is_expanded = expanded;
+        self.sidebar_width = self.target_width();
+    }
+
     pub fn update(&mut self, msg: SidebarMessage) -> (Task<SidebarMessage>, SidebarOutMessage) {
         /// Azúcar local: corre `self.coordinator.update(...)`, mapea el Task
         /// y traduce `CoordinatorOutMessage` a `SidebarOutMessage`.

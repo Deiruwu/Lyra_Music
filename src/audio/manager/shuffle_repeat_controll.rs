@@ -1,22 +1,19 @@
 use crate::audio::manager::manager::{RepeatMode, TrackManager};
 use crate::audio::queue_shuffle;
+use uuid::Uuid;
 
 impl TrackManager {
     pub fn toggle_shuffle(&self) {
         let mut ps = self.playback.lock().unwrap();
 
         if ps.shuffle_enabled {
-            if let Some(order) = ps.pre_shuffle_order.take() {
-                let current = std::mem::take(&mut ps.queue);
-                ps.queue = queue_shuffle::restore_order(current, &order);
-            }
+            let current = std::mem::take(&mut ps.queue);
+            let order: Vec<Uuid> = ps.original_order.iter().cloned().collect();
+            ps.queue = queue_shuffle::restore_order(current, &order);
             ps.shuffle_enabled = false;
         } else {
-            ps.pre_shuffle_order = Some(ps.queue.iter().map(|slot| slot.id).collect());
-
             let items: Vec<_> = ps.queue.drain(..).collect();
             ps.queue = queue_shuffle::shuffle(items).into();
-
             ps.shuffle_enabled = true;
         }
 
@@ -35,5 +32,12 @@ impl TrackManager {
 
     pub fn set_repeat_mode(&self, mode: RepeatMode) {
         self.playback.lock().unwrap().repeat_mode = mode;
+    }
+
+    /// Fija `shuffle_enabled` directamente, sin reordenar la cola — pensado
+    /// para restaurar el estado guardado al arrancar, cuando la cola
+    /// todavía está vacía.
+    pub fn set_shuffle_enabled(&self, enabled: bool) {
+        self.playback.lock().unwrap().shuffle_enabled = enabled;
     }
 }
