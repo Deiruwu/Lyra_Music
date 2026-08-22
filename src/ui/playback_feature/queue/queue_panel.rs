@@ -5,8 +5,10 @@ use iced::widget::scrollable::Viewport;
 use iced::widget::operation::scroll_by;
 use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::{button, container, scrollable, space, stack, text, Id};
+use uuid::Uuid;
 use crate::JETBRAINS_MONO;
 use crate::audio::manager::manager::QueueSlot;
+use crate::model::Track;
 use crate::ui::playback_feature::player::TrackLink;
 use crate::ui::styles::styles::{minimal_button};
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
@@ -68,6 +70,7 @@ pub enum QueueMessage {
     UiRemoveClicked(usize),
     UiMoveClicked(usize, usize),
     OpenTrackLink(TrackLink),
+    RightClicked(usize),
 
     // ── Drag & drop ──────────────────────────────────────────────────────
     DragStarted(usize),
@@ -88,6 +91,7 @@ pub enum QueueOutMessage {
     RequestRemove(usize),
     RequestMove(usize, usize),
     RequestOpenTrackLink(TrackLink),
+    RequestContextMenu(Uuid),
 }
 
 struct DragState {
@@ -159,6 +163,13 @@ impl QueuePanel {
         slot.id.to_string()
     }
 
+    /// Busca un track en la cola por id de slot (estable aunque la cola se
+    /// reordene) — lo usa `PlaybackFeature` para armar/ejecutar el menú
+    /// contextual sin exponer `self.queue` directamente.
+    pub fn find_slot_track(&self, slot_id: Uuid) -> Option<Track> {
+        self.queue.iter().find(|s| s.id == slot_id).map(|s| (*s.track).clone())
+    }
+
     fn move_dragged_item(&mut self, hovered_index: usize, now: Instant) {
         let Some(drag) = self.drag.as_mut() else { return };
         if hovered_index == drag.current_index {
@@ -205,6 +216,12 @@ impl QueuePanel {
             QueueMessage::UiRemoveClicked(index) => (Task::none(), QueueOutMessage::RequestRemove(index)),
             QueueMessage::UiMoveClicked(from, to) => (Task::none(), QueueOutMessage::RequestMove(from, to)),
             QueueMessage::OpenTrackLink(link) => (Task::none(), QueueOutMessage::RequestOpenTrackLink(link)),
+            QueueMessage::RightClicked(index) => {
+                match self.queue.get(index) {
+                    Some(slot) => (Task::none(), QueueOutMessage::RequestContextMenu(slot.id)),
+                    None => (Task::none(), QueueOutMessage::Idle),
+                }
+            }
 
             QueueMessage::Scrolled(viewport) => {
                 self.scroll.update(viewport);
@@ -388,6 +405,7 @@ impl QueuePanel {
                 drag_params,
                 |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
                 |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
+                QueueMessage::RightClicked(index),
             );
 
             if row_is_dragged {
@@ -429,6 +447,7 @@ impl QueuePanel {
                     drag_params,
                     |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
                     |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
+                    QueueMessage::RightClicked(drag.current_index),
                 );
 
                 layers.push(

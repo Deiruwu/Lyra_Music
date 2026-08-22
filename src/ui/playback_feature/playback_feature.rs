@@ -5,8 +5,10 @@ use iced::widget::image::Handle;
 use iced::{stream, Alignment, Color, Element, Length, Subscription, Task, Theme};
 use iced::widget::{container, column, row};
 use tokio::sync::broadcast;
+use uuid::Uuid;
 
 use crate::model::audio_tech::PlayableTrack;
+use crate::model::Track;
 use crate::audio::manager::manager::TrackManager;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 
@@ -16,6 +18,17 @@ use crate::ui::playback_feature::theater::theater_panel::{TheaterMessage, Theate
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
 use crate::ui::styles::styles::minimal_button;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
+use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
+use crate::ui::widgets::track_context_builder::{TrackContextAction, TrackContextMenuBuilder};
+
+/// Identidad de "sobre qué track" está abierto el menú contextual de
+/// reproducción — el track actual (barra inferior) o una fila puntual de
+/// la cola (por id de slot, estable aunque la cola se reordene).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlaybackContextTarget {
+    CurrentTrack,
+    QueueSlot(Uuid),
+}
 
 #[derive(Debug, Clone)]
 pub enum PlaybackFeatureMessage {
@@ -31,6 +44,8 @@ pub enum PlaybackFeatureMessage {
     ToggleTheaterMode,
     Tick,
     AnimationFrame(Instant),
+    TrackContextMenuEvent(ContextMenuEvent<PlaybackContextTarget>),
+    TrackContextAction(TrackContextAction, PlaybackContextTarget),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +53,8 @@ pub enum PlaybackOutMessage {
     ToggleTheaterMode,
     RequestToggleLike(String),
     RequestOpenTrackLink(TrackLink),
+    RequestAddToPlaylist { playlist_id: String, track_id: String },
+    RequestDeleteFromCatalog(String),
     Idle,
 }
 
@@ -51,6 +68,8 @@ pub struct PlaybackFeature {
     current_small_thumbnail: Option<(String, Handle)>,
     current_large_thumbnail: Option<(String, Handle)>,
     queue_thumbnails: AsyncThumbnail,
+    track_context_menu: ContextMenu<PlaybackContextTarget>,
+    track_context_menu_items: Vec<ContextMenuItem<TrackContextAction>>,
 }
 
 impl PlaybackFeature {
@@ -67,6 +86,8 @@ impl PlaybackFeature {
             current_small_thumbnail: None,
             current_large_thumbnail: None,
             queue_thumbnails: AsyncThumbnail::new(),
+            track_context_menu: ContextMenu::new(),
+            track_context_menu_items: Vec::new(),
         }
     }
 
@@ -83,11 +104,26 @@ impl PlaybackFeature {
             _ => None,
         });
 
+        // El anclaje del menú contextual de track (`ContextMenu::toggle`)
+        // usa `last_mouse_in_viewport`, que solo se mantiene al día
+        // escuchando estos dos eventos globales (mismo patrón que
+        // sidebar_feature_v2 usa para su propio ContextMenu).
+        let context_menu_sub = iced::event::listen_with(|event, _status, _id| match event {
+            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                Some(PlaybackFeatureMessage::TrackContextMenuEvent(ContextMenuEvent::MouseMoved(position)))
+            }
+            iced::Event::Window(iced::window::Event::Resized(size)) => {
+                Some(PlaybackFeatureMessage::TrackContextMenuEvent(ContextMenuEvent::ViewportResized(size)))
+            }
+            _ => None,
+        });
+
         let mut subs = vec![
             Subscription::run(queue_events),
             Subscription::run(backend_events).map(PlaybackFeatureMessage::Player),
             tick_sub,
             global_release,
+            context_menu_sub,
         ];
 
         // AQUÍ ESTÁ EL CAMBIO CLAVE: Agregamos la condición de la animación de ancho
@@ -119,8 +155,9 @@ impl PlaybackFeature {
     pub fn update(
         &mut self,
         msg: PlaybackFeatureMessage,
+        playlists: &[(String, String)],
     ) -> (Task<PlaybackFeatureMessage>, PlaybackOutMessage) {
-        let (task, out) = self.update_inner(msg);
+        let (task, out) = self.update_inner(msg, playlists);
 
         // Sincronización de miniaturas de la cola (AsyncThumbnail): el
         // universo pedido = la ventana visible actual (+buffer). Corre en
@@ -137,6 +174,7 @@ impl PlaybackFeature {
     fn update_inner(
         &mut self,
         msg: PlaybackFeatureMessage,
+        playlists: &[(String, String)],
     ) -> (Task<PlaybackFeatureMessage>, PlaybackOutMessage) {
         match msg {
             PlaybackFeatureMessage::Play(track) => {
@@ -192,6 +230,16 @@ impl PlaybackFeature {
                     QueueOutMessage::RequestMove(from, to) => self.manager.move_in_queue(from, to).unwrap(),
                     QueueOutMessage::RequestOpenTrackLink(link) => {
                         feature_out = PlaybackOutMessage::RequestOpenTrackLink(link);
+                    }
+                    QueueOutMessage::RequestContextMenu(slot_id) => {
+                        if let Some(track) = self.queue.find_slot_track(slot_id) {
+                            let items = TrackContextMenuBuilder::new(track.liked)
+                                .with_playlists(playlists, None)
+                                .with_delete()
+                                .build();
+                            self.track_context_menu.handle(ContextMenuEvent::RightClicked(PlaybackContextTarget::QueueSlot(slot_id)));
+                            self.track_context_menu_items = items;
+                        }
                     }
                     QueueOutMessage::Idle                  => {}
                 }
@@ -274,6 +322,16 @@ impl PlaybackFeature {
                     PlayerOutMessage::RequestOpenTrackLink(link) => {
                         feature_out = PlaybackOutMessage::RequestOpenTrackLink(link);
                     }
+                    PlayerOutMessage::RequestContextMenu => {
+                        if let Some(playable) = &self.player.current_track {
+                            let items = TrackContextMenuBuilder::new(playable.track.liked)
+                                .with_playlists(playlists, None)
+                                .with_delete()
+                                .build();
+                            self.track_context_menu.handle(ContextMenuEvent::RightClicked(PlaybackContextTarget::CurrentTrack));
+                            self.track_context_menu_items = items;
+                        }
+                    }
                     PlayerOutMessage::Idle             => {}
                 }
 
@@ -295,7 +353,91 @@ impl PlaybackFeature {
 
                 (task.map(PlaybackFeatureMessage::Volume), PlaybackOutMessage::Idle)
             }
+
+            PlaybackFeatureMessage::TrackContextMenuEvent(event) => {
+                if matches!(event, ContextMenuEvent::Dismissed) {
+                    self.track_context_menu_items.clear();
+                }
+                self.track_context_menu.handle(event);
+                (Task::none(), PlaybackOutMessage::Idle)
+            }
+
+            PlaybackFeatureMessage::TrackContextAction(action, target) => {
+                self.track_context_menu.handle(ContextMenuEvent::Dismissed);
+                self.track_context_menu_items.clear();
+                self.handle_track_context_action(action, target)
+            }
         }
+    }
+
+    /// Resuelve el `Track` sobre el que está abierto el menú contextual —
+    /// el track actual (barra inferior) o una fila puntual de la cola.
+    fn resolve_context_track(&self, target: &PlaybackContextTarget) -> Option<Track> {
+        match target {
+            PlaybackContextTarget::CurrentTrack => self.player.current_track.as_ref().map(|p| p.track.clone()),
+            PlaybackContextTarget::QueueSlot(slot_id) => self.queue.find_slot_track(*slot_id),
+        }
+    }
+
+    /// Traduce una acción elegida en el menú contextual de track a la
+    /// llamada real correspondiente. Calcado de
+    /// `ViewCoordinator::handle_track_context_action`.
+    fn handle_track_context_action(
+        &mut self,
+        action: TrackContextAction,
+        target: PlaybackContextTarget,
+    ) -> (Task<PlaybackFeatureMessage>, PlaybackOutMessage) {
+        let Some(track) = self.resolve_context_track(&target) else {
+            return (Task::none(), PlaybackOutMessage::Idle);
+        };
+
+        match action {
+            TrackContextAction::PlayNow => {
+                self.manager.play_context(vec![track], 0);
+                (Task::none(), PlaybackOutMessage::Idle)
+            }
+            TrackContextAction::Enqueue => {
+                self.manager.enqueue(track);
+                (Task::none(), PlaybackOutMessage::Idle)
+            }
+            TrackContextAction::FrontEnqueue => {
+                self.manager.enqueue_front(track);
+                (Task::none(), PlaybackOutMessage::Idle)
+            }
+            TrackContextAction::CopyId => {
+                (iced::clipboard::write(track.id), PlaybackOutMessage::Idle)
+            }
+            TrackContextAction::ToggleLike => {
+                (Task::none(), PlaybackOutMessage::RequestToggleLike(track.id))
+            }
+            TrackContextAction::AddToPlaylist(playlist_id) => {
+                (Task::none(), PlaybackOutMessage::RequestAddToPlaylist { playlist_id, track_id: track.id })
+            }
+            TrackContextAction::DeleteFromCatalog => {
+                (Task::none(), PlaybackOutMessage::RequestDeleteFromCatalog(track.id))
+            }
+            TrackContextAction::RemoveFromPlaylist => {
+                (Task::none(), PlaybackOutMessage::Idle)
+            }
+        }
+    }
+
+    /// Overlay del menú contextual de track, si hay uno abierto — se
+    /// compone en la capa raíz absoluta de `main.rs` (mismo motivo que el
+    /// menú de playlist del sidebar: el anclaje viene de coordenadas de
+    /// mouse globales, no de un `mouse_area` local).
+    pub fn view_track_context_menu(&self) -> Option<Element<'_, PlaybackFeatureMessage>> {
+        let open_target = self.track_context_menu.open_id();
+        let (anchor, target) = self.track_context_menu.render_target(|_| open_target)?;
+
+        Some(self.track_context_menu.view(
+            anchor,
+            self.track_context_menu_items.clone(),
+            target,
+            |action, target| PlaybackFeatureMessage::TrackContextAction(action, target),
+            PlaybackFeatureMessage::TrackContextMenuEvent(ContextMenuEvent::Dismissed),
+            |sub| PlaybackFeatureMessage::TrackContextMenuEvent(ContextMenuEvent::SubmenuHovered(sub)),
+        ))
     }
 
     /// Id del track actualmente en reproducción, si hay alguno. `main.rs`

@@ -185,6 +185,7 @@ pub fn queue_track_row<'a, Message, F, G>(
     drag: DragRowParams<Message>,
     on_artist_click: F,
     on_album_click: G,
+    on_right_click: Message,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -234,7 +235,8 @@ where
             .align_y(Alignment::Center)
             .padding([8, 12])
             .width(Length::Fill)
-    );
+    )
+        .on_right_press(on_right_click);
 
     let content = row![row_content, delete_button]
         .align_y(Alignment::Center)

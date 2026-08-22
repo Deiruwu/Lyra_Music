@@ -227,8 +227,9 @@ impl App {
                 let position = self.manager.get_position();
                 let position_task = self.playback_feature.position_updated(position);
 
+                let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
                 let (tick_task, _out) = self.playback_feature
-                    .update(PlaybackFeatureMessage::Tick);
+                    .update(PlaybackFeatureMessage::Tick, &playlists);
 
                 iced::Task::batch(vec![
                     position_task.map(AppMessage::PlaybackFeature),
@@ -237,7 +238,8 @@ impl App {
             }
 
             AppMessage::PlaybackFeature(msg) => {
-                let (task, out_msg) = self.playback_feature.update(msg);
+                let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
+                let (task, out_msg) = self.playback_feature.update(msg, &playlists);
 
                 let like_task = match out_msg {
                     PlaybackOutMessage::ToggleTheaterMode => {
@@ -260,6 +262,21 @@ impl App {
                             TrackLink::Artist(id) => LibraryBrowserMessage::OpenArtist(id),
                             TrackLink::Album(id) => LibraryBrowserMessage::OpenAlbum(id),
                         }))
+                    }
+                    PlaybackOutMessage::RequestAddToPlaylist { playlist_id, track_id } => {
+                        self.sidebar_feature
+                            .coordinator
+                            .catalog_store
+                            .add_track_to_playlist(&playlist_id, &track_id)
+                            .map(|catalog_msg| {
+                                AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
+                                    CoordinatorMessage::Catalog(catalog_msg)
+                                ))
+                            })
+                    }
+                    PlaybackOutMessage::RequestDeleteFromCatalog(track_id) => {
+                        self.sidebar_feature.coordinator.catalog_store.delete_track(&track_id);
+                        iced::Task::none()
                     }
                     PlaybackOutMessage::Idle => iced::Task::none(),
                 };
@@ -300,8 +317,10 @@ impl App {
                     SearchFeatureOutMessage::TrackReadyToPlay(playable) => {
                         let track_metadata = playable.track.clone();
 
+                        let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
                         let (t, _out) = self.playback_feature.update(
                             PlaybackFeatureMessage::Play(playable),
+                            &playlists,
                         );
                         feature_task = t;
 
@@ -482,6 +501,10 @@ impl App {
 
         if let Some(menu) = self.library_browser.view_context_menu() {
             absolute_root_layers.push(menu.map(AppMessage::LibraryBrowser));
+        }
+
+        if let Some(menu) = self.playback_feature.view_track_context_menu() {
+            absolute_root_layers.push(menu.map(AppMessage::PlaybackFeature));
         }
 
         stack(absolute_root_layers).into()

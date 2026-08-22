@@ -55,10 +55,10 @@ impl<'a> TrackContextMenuBuilder<'a> {
         let mut items = vec![
             ContextMenuItem::new("Reproducir ahora", TrackContextAction::PlayNow)
                 .icon(Icon::Play),
-            ContextMenuItem::new("Agregar a la cola", TrackContextAction::Enqueue)
-                .icon(Icon::AddQueue),
             ContextMenuItem::new("Reproducir después", TrackContextAction::FrontEnqueue)
                 .icon(Icon::AddQueueFront),
+            ContextMenuItem::new("Agregar a la cola", TrackContextAction::Enqueue)
+                .icon(Icon::AddQueue),
             self.like_item(),
             self.add_to_playlist_item(),
             ContextMenuItem::new("Copiar ID", TrackContextAction::CopyId)

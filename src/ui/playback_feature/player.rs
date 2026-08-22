@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use iced::{Alignment, Color, Element, Length, Renderer, Task, Theme};
 use iced::widget::image::Handle;
-use iced::widget::{button, column, container, rich_text, row, slider, space, text};
+use iced::widget::{button, column, container, mouse_area, rich_text, row, slider, space, text};
 use crate::audio::manager::manager::RepeatMode;
 use crate::audio::track_event::TrackEvent;
 use crate::JETBRAINS_MONO;
@@ -36,6 +36,7 @@ pub enum PlayerMessage {
     UiToggleShuffle,
     UiCycleRepeat,
     OpenTrackLink(TrackLink),
+    RightClicked,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +50,7 @@ pub enum PlayerOutMessage {
     RequestToggleShuffle,
     RequestCycleRepeat,
     RequestOpenTrackLink(TrackLink),
+    RequestContextMenu,
 }
 
 pub struct Player {
@@ -83,6 +85,7 @@ impl Player {
             PlayerMessage::UiToggleShuffle   => (Task::none(), PlayerOutMessage::RequestToggleShuffle),
             PlayerMessage::UiCycleRepeat     => (Task::none(), PlayerOutMessage::RequestCycleRepeat),
             PlayerMessage::OpenTrackLink(link) => (Task::none(), PlayerOutMessage::RequestOpenTrackLink(link)),
+            PlayerMessage::RightClicked => (Task::none(), PlayerOutMessage::RequestContextMenu),
         }
     }
 
@@ -229,9 +232,12 @@ impl Player {
             .clip(true)
             .align_x(Alignment::Start);
 
-        row![track_thumbnail(thumbnail), info, trailing]
+        let content = row![track_thumbnail(thumbnail), info, trailing]
             .spacing(12)
-            .align_y(Alignment::Center)
+            .align_y(Alignment::Center);
+
+        mouse_area(content)
+            .on_right_press(PlayerMessage::RightClicked)
             .into()
     }
 
