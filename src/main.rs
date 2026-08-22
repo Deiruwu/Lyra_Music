@@ -20,6 +20,9 @@ use crate::audio::mpris::MprisServer;
 use crate::audio::radio_daemon::RadioWorker;
 use crate::db::db::init_db;
 use crate::db::playlist_manager::PlaylistManager;
+use crate::db::play_history_manager::PlayHistoryManager;
+use crate::db::followed_artist_manager::FollowedArtistManager;
+use crate::audio::play_history_recorder::PlayHistoryRecorder;
 use crate::microservices::client::MicroserviceClient;
 use crate::settings::AppSettings;
 use crate::tray::TrayFlags;
@@ -116,29 +119,39 @@ impl App {
         let database_url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "sqlite://music_center.db".into());
 
-        let init_playlist_manager = async {
+        let init_local_db = async {
             let pool = init_db(&database_url)
                 .await
                 .expect("Fallo fatal al inicializar la base de datos local");
-            PlaylistManager::new(pool)
+            let playlist_manager = PlaylistManager::new(pool.clone())
                 .await
-                .expect("Fallo fatal al inicializar PlaylistManager")
+                .expect("Fallo fatal al inicializar PlaylistManager");
+            let play_history_manager = PlayHistoryManager::new(pool.clone());
+            let followed_artist_manager = FollowedArtistManager::new(pool);
+            (playlist_manager, play_history_manager, followed_artist_manager)
         };
 
-        let playlist_manager = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(init_playlist_manager)),
-            Err(_) => {
-                let rt = tokio::runtime::Runtime::new()
-                    .expect("No se pudo crear runtime temporal para inicializar la BD");
-                rt.block_on(init_playlist_manager)
-            }
-        };
+        let (playlist_manager, play_history_manager, followed_artist_manager) =
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => tokio::task::block_in_place(|| handle.block_on(init_local_db)),
+                Err(_) => {
+                    let rt = tokio::runtime::Runtime::new()
+                        .expect("No se pudo crear runtime temporal para inicializar la BD");
+                    rt.block_on(init_local_db)
+                }
+            };
         let playlist_manager = Arc::new(playlist_manager);
+        let play_history_manager = Arc::new(play_history_manager);
+        let followed_artist_manager = Arc::new(followed_artist_manager);
+
+        PlayHistoryRecorder::spawn(Arc::clone(&manager), Arc::clone(&play_history_manager), sidebar_client.as_ref().clone());
 
         let (mut sidebar_feature, sidebar_task) = SidebarFeature::new(
             sidebar_client,
             Arc::clone(&playlist_manager),
             Arc::clone(&manager),
+            Arc::clone(&play_history_manager),
+            Arc::clone(&followed_artist_manager),
         );
         sidebar_feature.set_expanded_immediate(settings.sidebar_expanded);
 
@@ -147,7 +160,7 @@ impl App {
             search_feature: SearchFeature::new(),
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
             sidebar_feature,
-            library_browser: LibraryBrowserFeature::new(library_browser_client, library_browser_manager),
+            library_browser: LibraryBrowserFeature::new(library_browser_client, library_browser_manager, Arc::clone(&followed_artist_manager)),
             view_thumbnails: ThumbnailCache::new(100, 50),
             tray_flags,
             main_window: Some(window_id),
@@ -362,6 +375,14 @@ impl App {
                 .coordinator
                 .catalog_store
                 .add_track_to_playlist(&playlist_id, &track_id)
+                .map(|catalog_msg| {
+                    AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)))
+                }),
+            LibraryBrowserOutMessage::RequestToggleFollowArtist(artist_id, name, photo_url) => self
+                .sidebar_feature
+                .coordinator
+                .catalog_store
+                .toggle_follow_artist(&artist_id, &name, photo_url.as_deref())
                 .map(|catalog_msg| {
                     AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)))
                 }),

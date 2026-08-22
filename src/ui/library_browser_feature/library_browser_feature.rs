@@ -4,6 +4,7 @@ use iced::widget::space;
 use iced::{Element, Task};
 
 use crate::audio::manager::manager::TrackManager;
+use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;
 use crate::ui::views::album_view::{AlbumMessage, AlbumOutMessage, AlbumView};
@@ -21,6 +22,7 @@ pub struct LibraryBrowserFeature {
     previous: Option<LibraryBrowserRoute>,
     client: MicroserviceClient,
     manager: Arc<TrackManager>,
+    followed_artist_manager: Arc<FollowedArtistManager>,
     context_menu: ContextMenu<String>,
     context_menu_items: Vec<ContextMenuItem<TrackContextAction>>,
 }
@@ -42,15 +44,17 @@ pub enum LibraryBrowserOutMessage {
     Idle,
     RequestToggleLike(String),
     RequestAddToPlaylist { playlist_id: String, track_id: String },
+    RequestToggleFollowArtist(String, String, Option<String>),
 }
 
 impl LibraryBrowserFeature {
-    pub fn new(client: MicroserviceClient, manager: Arc<TrackManager>) -> Self {
+    pub fn new(client: MicroserviceClient, manager: Arc<TrackManager>, followed_artist_manager: Arc<FollowedArtistManager>) -> Self {
         Self {
             active: None,
             previous: None,
             client,
             manager,
+            followed_artist_manager,
             context_menu: ContextMenu::new(),
             context_menu_items: Vec::new(),
         }
@@ -83,7 +87,7 @@ impl LibraryBrowserFeature {
     ) -> (Task<LibraryBrowserMessage>, LibraryBrowserOutMessage) {
         match message {
             LibraryBrowserMessage::OpenArtist(id) => {
-                let (view, task) = ArtistView::new(self.client.clone(), id);
+                let (view, task) = ArtistView::new(self.client.clone(), id, Arc::clone(&self.followed_artist_manager));
                 self.active = Some(LibraryBrowserRoute::Artist(view));
                 self.previous = None;
                 (task.map(LibraryBrowserMessage::Artist), LibraryBrowserOutMessage::Idle)
@@ -180,12 +184,15 @@ impl LibraryBrowserFeature {
                             (task, LibraryBrowserOutMessage::Idle)
                         }
                         ArtistOutMessage::OpenTrackArtist(id) => {
-                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id);
+                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id, Arc::clone(&self.followed_artist_manager));
                             self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Artist(artist_view));
                             (Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]), LibraryBrowserOutMessage::Idle)
                         }
                         ArtistOutMessage::Idle => (task, LibraryBrowserOutMessage::Idle),
+                        ArtistOutMessage::ToggleFollow(id, name, photo) => {
+                            (task, LibraryBrowserOutMessage::RequestToggleFollowArtist(id, name, photo))
+                        }
                     }
                 }
                 _ => (Task::none(), LibraryBrowserOutMessage::Idle),
@@ -198,7 +205,7 @@ impl LibraryBrowserFeature {
 
                     match out {
                         AlbumOutMessage::OpenArtist(id) => {
-                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id);
+                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id, Arc::clone(&self.followed_artist_manager));
                             self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Artist(artist_view));
                             (Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]), LibraryBrowserOutMessage::Idle)
@@ -225,7 +232,7 @@ impl LibraryBrowserFeature {
                             (task, LibraryBrowserOutMessage::Idle)
                         }
                         AlbumOutMessage::OpenTrackArtist(id) => {
-                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id);
+                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id, Arc::clone(&self.followed_artist_manager));
                             self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Artist(artist_view));
                             (Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]), LibraryBrowserOutMessage::Idle)

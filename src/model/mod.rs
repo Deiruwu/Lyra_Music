@@ -8,6 +8,9 @@ pub mod album_type;
 pub mod album_summary;
 pub mod album_dto;
 pub mod artist_dto;
+pub mod artist_profile_dto;
+pub mod play_history;
+pub mod followed_artist;
 
 pub use track::Track;
 pub use album::Album;
@@ -17,3 +20,6 @@ pub use album_type::AlbumType;
 pub use album_summary::AlbumSummary;
 pub use album_dto::AlbumDto;
 pub use artist_dto::ArtistDto;
+pub use artist_profile_dto::ArtistProfileDto;
+pub use play_history::{TrackPlayCount, ArtistPlayCount};
+pub use followed_artist::FollowedArtist;

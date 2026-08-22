@@ -199,10 +199,16 @@ impl AlbumView {
     /// línea sin wrap (la fila del resto de créditos de artista sí la
     /// tiene; esta no la tenía, rompiendo la consistencia visual).
     fn view_artists_and_type<'a>(&'a self, album: &'a AlbumDto) -> Element<'a, AlbumMessage> {
-        let artists: Vec<Artist> = album_artists(&album.tracks).into_iter().cloned().collect();
+        let derived;
+        let artists: &[Artist] = if !album.artists.is_empty() {
+            &album.artists
+        } else {
+            derived = album_artists(&album.tracks).into_iter().cloned().collect::<Vec<_>>();
+            &derived
+        };
 
         let artist_line = artist_links(
-            &artists,
+            artists,
             SF_PRO,
             14.0,
             Color::from_rgb(0.85, 0.85, 0.9),

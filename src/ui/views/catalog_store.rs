@@ -49,10 +49,12 @@ use std::sync::Arc;
 use iced::Task;
 
 use crate::db::playlist_manager::PlaylistManager;
+use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
-use crate::model::Track;
+use crate::model::{FollowedArtist, Track};
 
 const CHUNK_SIZE: usize = 250;
+const FOLLOWED_ARTISTS_LIMIT: i64 = 500;
 
 #[derive(Debug, Clone)]
 pub enum CatalogStoreMessage {
@@ -102,11 +104,19 @@ pub enum CatalogStoreMessage {
     /// Un nuevo track fue descargado exitosamente desde el buscador.
     /// Se inyecta en el catálogo en tiempo real para evitar recargar todo.
     TrackDownloadedAndCached(Track),
+
+    /// Artistas seguidos, cargado eager junto con likes/playlists.
+    FollowedArtistsLoaded(Result<Vec<FollowedArtist>, String>),
+
+    /// Resultado de persistir un toggle de "seguir artista" en SQLite. Si
+    /// falla, se revierte la mutación optimista.
+    FollowToggled(String, bool, Result<(), String>),
 }
 
 pub struct CatalogStore {
     client: Arc<MicroserviceClient>,
     playlist_manager: Arc<PlaylistManager>,
+    followed_artist_manager: Arc<FollowedArtistManager>,
 
     all_tracks: Vec<Track>,
     index_by_id: HashMap<String, usize>,
@@ -116,6 +126,7 @@ pub struct CatalogStore {
     playlist_order: HashMap<String, Vec<String>>,
     liked_order: Vec<String>,
     playlists_metadata: Vec<(String, String, Option<String>)>,
+    followed_artists: HashMap<String, FollowedArtist>,
 
     is_loading: bool,
     last_error: Option<String>,
@@ -132,10 +143,12 @@ impl CatalogStore {
     pub fn load(
         client: Arc<MicroserviceClient>,
         playlist_manager: Arc<PlaylistManager>,
+        followed_artist_manager: Arc<FollowedArtistManager>,
     ) -> (Self, Task<CatalogStoreMessage>) {
         let store = Self {
             client: Arc::clone(&client),
             playlist_manager,
+            followed_artist_manager,
             all_tracks: Vec::new(),
             index_by_id: HashMap::new(),
             pending_chunks: HashMap::new(),
@@ -143,6 +156,7 @@ impl CatalogStore {
             playlist_order: HashMap::new(),
             liked_order: Vec::new(),
             playlists_metadata: Vec::new(),
+            followed_artists: HashMap::new(),
             is_loading: true,
             last_error: None,
             version: 0,
@@ -266,6 +280,49 @@ impl CatalogStore {
                 (id_clone, new_value, result.map_err(|e| e.to_string()))
             },
             |(id, value, result)| CatalogStoreMessage::LikeToggled(id, value, result),
+        )
+    }
+
+    pub fn is_artist_followed(&self, artist_id: &str) -> bool {
+        self.followed_artists.contains_key(artist_id)
+    }
+
+    pub fn followed_artists(&self) -> impl Iterator<Item = &FollowedArtist> {
+        self.followed_artists.values()
+    }
+
+    /// Alterna "seguir" a un artista: muta el estado local de forma
+    /// optimista y persiste en SQLite en background. Si la escritura
+    /// falla, `FollowToggled` revierte la mutación.
+    pub fn toggle_follow_artist(&mut self, artist_id: &str, name: &str, photo_url: Option<&str>) -> Task<CatalogStoreMessage> {
+        let new_value = !self.is_artist_followed(artist_id);
+
+        if new_value {
+            self.followed_artists.insert(artist_id.to_string(), FollowedArtist {
+                artist_id: artist_id.to_string(),
+                name: name.to_string(),
+                photo_url: photo_url.map(str::to_string),
+                followed_at: chrono::Utc::now().naive_utc(),
+            });
+        } else {
+            self.followed_artists.remove(artist_id);
+        }
+
+        let manager = Arc::clone(&self.followed_artist_manager);
+        let id_clone = artist_id.to_string();
+        let name_clone = name.to_string();
+        let photo_clone = photo_url.map(str::to_string);
+
+        Task::perform(
+            async move {
+                let result = if new_value {
+                    manager.follow(&id_clone, &name_clone, photo_clone.as_deref()).await
+                } else {
+                    manager.unfollow(&id_clone).await
+                };
+                (id_clone, new_value, result.map_err(|e| e.to_string()))
+            },
+            |(id, value, result)| CatalogStoreMessage::FollowToggled(id, value, result),
         )
     }
 
@@ -696,6 +753,34 @@ impl CatalogStore {
                 }
                 Task::none()
             }
+
+            CatalogStoreMessage::FollowedArtistsLoaded(result) => {
+                match result {
+                    Ok(artists) => {
+                        self.followed_artists = artists.into_iter().map(|a| (a.artist_id.clone(), a)).collect();
+                        self.last_error = None;
+                    }
+                    Err(e) => {
+                        self.last_error = Some(e);
+                    }
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::FollowToggled(artist_id, attempted_value, result) => {
+                if let Err(e) = result {
+                    if attempted_value {
+                        self.followed_artists.remove(&artist_id);
+                    }
+                    // Si attempted_value era `false` (un unfollow que
+                    // falló), no reinsertamos: no tenemos a mano el
+                    // name/photo_url originales para reconstruir la fila.
+                    self.last_error = Some(e);
+                } else {
+                    self.last_error = None;
+                }
+                Task::none()
+            }
         }
     }
 
@@ -742,7 +827,13 @@ impl CatalogStore {
             CatalogStoreMessage::PlaylistsMetadataLoaded,
         );
 
-        Task::batch(vec![likes_task, order_task, metadata_task])
+        let followed_manager = Arc::clone(&self.followed_artist_manager);
+        let followed_task = Task::perform(
+            async move { followed_manager.list_followed(FOLLOWED_ARTISTS_LIMIT).await.map_err(|e| e.to_string()) },
+            CatalogStoreMessage::FollowedArtistsLoaded,
+        );
+
+        Task::batch(vec![likes_task, order_task, metadata_task, followed_task])
     }
 
     fn rebuild_index(&mut self) {

@@ -1,4 +1,4 @@
-use crate::model::{AlbumType, Track};
+use crate::model::{AlbumType, Artist, Track};
 use serde::{Deserialize, Serialize};
 
 /// Respuesta completa de la acción `album` del microservicio.
@@ -11,5 +11,6 @@ pub struct AlbumDto {
     #[serde(rename = "type")]
     pub album_type: AlbumType,
     pub year: Option<String>,
+    pub artists: Vec<Artist>,
     pub tracks: Vec<Track>,
 }

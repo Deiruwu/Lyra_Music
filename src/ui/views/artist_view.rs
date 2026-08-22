@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use iced::border::rounded;
 use iced::widget::image::Handle;
 use iced::widget::text::Shaping;
 use iced::widget::{button, column, container, image, responsive, row, rule, scrollable, space, stack, text};
 use iced::{Alignment, Color, ContentFit, Element, Length, Padding, Task, Theme};
 
+use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::{AlbumSummary, AlbumType, ArtistDto, Track};
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
@@ -12,6 +15,7 @@ use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::gallery_thumbnail::{GalleryThumbnail, Treatment};
 use crate::ui::widgets::track_row::truncate;
 use crate::ui::widgets::track_row_simple::track_row_with_thumbnail;
+use crate::utils::formatting::format_views;
 
 const TOP_SONGS_COUNT: usize = 5;
 const CARD_THUMBNAIL_SIZE: f32 = 176.0;
@@ -41,6 +45,7 @@ pub struct ArtistView {
     artist_id: String,
     client: MicroserviceClient,
     data: ArtistViewData,
+    is_followed: bool,
     thumbnails: AsyncThumbnail,
     gallery: GalleryThumbnail,
     albums_page: usize,
@@ -50,6 +55,7 @@ pub struct ArtistView {
 #[derive(Debug, Clone)]
 pub enum ArtistMessage {
     Loaded(Result<ArtistDto, String>),
+    FollowStatusLoaded(bool),
     ThumbnailLoaded(String, Vec<u8>),
     GalleryLoaded(String, Vec<u8>),
     AlbumsPrevPage,
@@ -60,6 +66,8 @@ pub enum ArtistMessage {
     TopSongClicked(String),
     TopSongRightClicked(String),
     TopSongArtistPressed(String),
+    TopSongAlbumPressed(String),
+    FollowPressed,
 }
 
 #[derive(Debug, Clone)]
@@ -69,26 +77,40 @@ pub enum ArtistOutMessage {
     PlayTopSong(String),
     TrackRightClicked(String),
     OpenTrackArtist(String),
+    ToggleFollow(String, String, Option<String>),
 }
 
 impl ArtistView {
-    pub fn new(client: MicroserviceClient, artist_id: String) -> (Self, Task<ArtistMessage>) {
+    pub fn new(
+        client: MicroserviceClient,
+        artist_id: String,
+        followed_artist_manager: Arc<FollowedArtistManager>,
+    ) -> (Self, Task<ArtistMessage>) {
         let view = Self {
             artist_id: artist_id.clone(),
             client: client.clone(),
             data: ArtistViewData::Loading,
+            is_followed: false,
             thumbnails: AsyncThumbnail::new(),
             gallery: GalleryThumbnail::new(),
             albums_page: 0,
             singles_page: 0,
         };
 
-        let task = Task::perform(
+        let load_task = Task::perform(
             async move { client.artist(&artist_id, Some(TOP_SONGS_COUNT)).await.map_err(|e| e.to_string()) },
             ArtistMessage::Loaded,
         );
 
-        (view, task)
+        let follow_status_task = Task::perform(
+            {
+                let artist_id = view.artist_id.clone();
+                async move { followed_artist_manager.is_followed(&artist_id).await.unwrap_or(false) }
+            },
+            ArtistMessage::FollowStatusLoaded,
+        );
+
+        (view, Task::batch([load_task, follow_status_task]))
     }
 
     pub fn update(&mut self, message: ArtistMessage) -> (Task<ArtistMessage>, ArtistOutMessage) {
@@ -97,6 +119,7 @@ impl ArtistView {
         match message {
             ArtistMessage::Loaded(Ok(dto)) => self.data = ArtistViewData::Loaded(dto),
             ArtistMessage::Loaded(Err(error)) => self.data = ArtistViewData::Error(error),
+            ArtistMessage::FollowStatusLoaded(is_followed) => self.is_followed = is_followed,
             ArtistMessage::ThumbnailLoaded(key, bytes) => self.thumbnails.on_loaded(key, bytes),
             ArtistMessage::GalleryLoaded(key, bytes) => self.gallery.on_loaded(key, bytes),
             ArtistMessage::AlbumsPrevPage => self.albums_page = self.albums_page.saturating_sub(1),
@@ -107,6 +130,13 @@ impl ArtistView {
             ArtistMessage::TopSongClicked(id) => out = ArtistOutMessage::PlayTopSong(id),
             ArtistMessage::TopSongRightClicked(id) => out = ArtistOutMessage::TrackRightClicked(id),
             ArtistMessage::TopSongArtistPressed(id) => out = ArtistOutMessage::OpenTrackArtist(id),
+            ArtistMessage::TopSongAlbumPressed(id) => out = ArtistOutMessage::OpenAlbum(id),
+            ArtistMessage::FollowPressed => {
+                self.is_followed = !self.is_followed;
+                if let ArtistViewData::Loaded(artist) = &self.data {
+                    out = ArtistOutMessage::ToggleFollow(artist.id.clone(), artist.name.clone(), artist.banner.clone());
+                }
+            }
         }
 
         let sync_task = self.thumbnails.sync(&self.thumbnail_targets(), ArtistMessage::ThumbnailLoaded);
@@ -166,14 +196,26 @@ impl ArtistView {
                 None => banner_placeholder(banner_height),
             };
 
-            let name = container(
-                text(artist.name.as_str()).font(SF_PRO).size(44).color(Color::WHITE),
-            )
-            .width(Length::Fill)
-            .height(Length::Fixed(banner_height))
-            .align_x(Alignment::Start)
-            .align_y(Alignment::End)
-            .padding(24);
+            let name = text(artist.name.as_str()).font(SF_PRO).size(44).color(Color::WHITE);
+
+            let views: Element<'a, ArtistMessage> = match artist.views {
+                Some(views) => text(format!("{} reproducciones", format_views(views)))
+                    .font(SF_PRO)
+                    .size(14)
+                    .color(Color::from_rgba(1.0, 1.0, 1.0, 0.75))
+                    .into(),
+                None => space().into(),
+            };
+
+            let overlay = row![name, space().width(Length::Fill), views, space().width(12), follow_button(self.is_followed)]
+                .align_y(Alignment::End)
+                .width(Length::Fill);
+
+            let name = container(overlay)
+                .width(Length::Fill)
+                .height(Length::Fixed(banner_height))
+                .align_y(Alignment::End)
+                .padding(24);
 
             container(stack![background, name])
                 .width(Length::Fill)
@@ -197,6 +239,7 @@ impl ArtistView {
                     ArtistMessage::TopSongClicked(track.id.clone()),
                     ArtistMessage::TopSongRightClicked(track.id.clone()),
                     ArtistMessage::TopSongArtistPressed,
+                    ArtistMessage::TopSongAlbumPressed,
                 )
             })
             .collect();
@@ -390,6 +433,31 @@ impl ArtistView {
 
         targets
     }
+}
+
+/// Botón chico "Seguir"/"Siguiendo" junto al nombre del artista en el banner.
+fn follow_button(is_followed: bool) -> Element<'static, ArtistMessage> {
+    let label = if is_followed { "Siguiendo" } else { "Seguir" };
+
+    let (idle, hovered) = if is_followed {
+        (Color::from_rgba(1.0, 1.0, 1.0, 0.22), Color::from_rgba(1.0, 1.0, 1.0, 0.28))
+    } else {
+        (Color::from_rgba(1.0, 1.0, 1.0, 0.08), Color::from_rgba(1.0, 1.0, 1.0, 0.14))
+    };
+
+    button(text(label).font(SF_PRO).size(13).color(Color::WHITE))
+        .padding(Padding { top: 6.0, right: 14.0, bottom: 6.0, left: 14.0 })
+        .style(move |_theme: &Theme, status| button::Style {
+            background: Some(match status {
+                button::Status::Hovered => hovered,
+                _ => idle,
+            }.into()),
+            text_color: Color::WHITE,
+            border: rounded(14.0),
+            ..Default::default()
+        })
+        .on_press(ArtistMessage::FollowPressed)
+        .into()
 }
 
 fn card_hover_style(_theme: &Theme, status: button::Status) -> button::Style {

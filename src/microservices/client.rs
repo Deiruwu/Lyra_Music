@@ -1,4 +1,4 @@
-use crate::model::{AlbumDto, ArtistDto, Track};
+use crate::model::{AlbumDto, ArtistDto, ArtistProfileDto, Track};
 use musichub_client::{MicroserviceClient as HubClient, Request};
 pub use musichub_client::MicroserviceError;
 
@@ -54,5 +54,9 @@ impl MicroserviceClient {
 
     pub async fn artist(&self, channel_id: &str, limit: Option<usize>) -> Result<ArtistDto, MicroserviceError> {
         self.inner.artist(channel_id, limit).await
+    }
+
+    pub async fn artist_profile(&self, channel_id: &str) -> Result<ArtistProfileDto, MicroserviceError> {
+        self.inner.artist_profile(channel_id).await
     }
 }

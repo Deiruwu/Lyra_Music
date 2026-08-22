@@ -8,6 +8,8 @@ use iced::widget::text::Shaping;
 
 use crate::audio::manager::manager::TrackManager;
 use crate::db::playlist_manager::PlaylistManager;
+use crate::db::play_history_manager::PlayHistoryManager;
+use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 use crate::ui::assets::icons::Icon;
@@ -110,8 +112,16 @@ impl SidebarFeatureV2 {
         client: Arc<MicroserviceClient>,
         playlist_manager: Arc<PlaylistManager>,
         manager: Arc<TrackManager>,
+        play_history_manager: Arc<PlayHistoryManager>,
+        followed_artist_manager: Arc<FollowedArtistManager>,
     ) -> (Self, Task<SidebarMessage>) {
-        let (coordinator, coordinator_task) = ViewCoordinator::new(client, playlist_manager, manager);
+        let (coordinator, coordinator_task) = ViewCoordinator::new(
+            client,
+            playlist_manager,
+            manager,
+            play_history_manager,
+            followed_artist_manager,
+        );
 
         let sidebar = Self {
             is_expanded: false,

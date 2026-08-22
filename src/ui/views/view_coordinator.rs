@@ -4,12 +4,14 @@ use iced::{Element, Size, Task};
 
 use crate::audio::manager::manager::TrackManager;
 use crate::db::playlist_manager::PlaylistManager;
+use crate::db::play_history_manager::PlayHistoryManager;
+use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::utils::cover_manager::CoverManager;
 use crate::ui::views::catalog_store::{CatalogStore, CatalogStoreMessage};
-use crate::ui::views::home_view::{HomeView, HomeViewMessage};
+use crate::ui::views::home_view::{HomeView, HomeViewMessage, HomeViewOutMessage};
 use crate::ui::views::explorer_view_v2::{ExplorerView, ExplorerMessage, ExplorerExtra};
 use crate::ui::views::favorite_view::{FavoritesView, FavoritesMessage};
 use crate::ui::views::playlist_view::{PlaylistView, PlaylistMessage, PlaylistExtra};
@@ -108,8 +110,15 @@ impl ViewCoordinator {
         client: Arc<MicroserviceClient>,
         playlist_manager: Arc<PlaylistManager>,
         manager: Arc<TrackManager>,
+        play_history_manager: Arc<PlayHistoryManager>,
+        followed_artist_manager: Arc<FollowedArtistManager>,
     ) -> (Self, Task<CoordinatorMessage>) {
-        let (catalog_store, catalog_task) = CatalogStore::load(client, playlist_manager);
+        let (catalog_store, catalog_task) = CatalogStore::load(
+            Arc::clone(&client),
+            playlist_manager,
+            Arc::clone(&followed_artist_manager),
+        );
+        let (home_view, home_task) = HomeView::new(client, play_history_manager, followed_artist_manager);
 
         let coordinator = Self {
             active_route: ActiveRoute::Nav(NavId::Home),
@@ -117,7 +126,7 @@ impl ViewCoordinator {
             manager,
             thumbnails: AsyncThumbnail::new(),
             covers: CoverManager::new(),
-            home_view: HomeView::new(),
+            home_view,
             explorer_view: ExplorerView::new(),
             favorites_view: FavoritesView::new(),
             playlist_view: None,
@@ -125,7 +134,12 @@ impl ViewCoordinator {
             track_context_menu_items: Vec::new(),
         };
 
-        (coordinator, catalog_task.map(CoordinatorMessage::Catalog))
+        let init_task = Task::batch([
+            catalog_task.map(CoordinatorMessage::Catalog),
+            home_task.map(CoordinatorMessage::Home),
+        ]);
+
+        (coordinator, init_task)
     }
 
     /// Único punto de entrada público. Delega el manejo del mensaje a
@@ -255,8 +269,21 @@ impl ViewCoordinator {
             }
 
             CoordinatorMessage::Home(inner) => {
-                self.home_view.update(inner);
-                (Task::none(), CoordinatorOutMessage::Idle)
+                let (task, out) = self.home_view.update(inner);
+                let task = task.map(CoordinatorMessage::Home);
+
+                match out {
+                    HomeViewOutMessage::Idle => (task, CoordinatorOutMessage::Idle),
+                    HomeViewOutMessage::PlayTrack(id) => {
+                        let tracks = self.home_view.recent_tracks();
+                        if let Some(index) = tracks.iter().position(|t| t.id == id) {
+                            self.manager.play_context(tracks.to_vec(), index);
+                        }
+                        (task, CoordinatorOutMessage::Idle)
+                    }
+                    HomeViewOutMessage::OpenArtist(id) => (task, CoordinatorOutMessage::RequestOpenArtist(id)),
+                    HomeViewOutMessage::OpenAlbum(id) => (task, CoordinatorOutMessage::RequestOpenAlbum(id)),
+                }
             }
 
             CoordinatorMessage::TrackContextMenuEvent(event) => {

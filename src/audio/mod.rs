@@ -5,6 +5,7 @@ pub mod engine_state;
 pub mod mpris;
 pub mod track_event;
 pub mod discord;
+pub mod play_history_recorder;
 pub mod radio_daemon;
 pub mod download_daemon;
 pub mod manager;

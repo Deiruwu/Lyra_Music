@@ -5,7 +5,7 @@ use iced::{Alignment, Color, Element, Length, Padding, Theme};
 
 use crate::model::{Track, TrackState};
 use crate::ui::assets::fonts::SF_PRO;
-use crate::ui::widgets::artist_links::artist_links;
+use crate::ui::widgets::artist_links::{album_link, artist_links};
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
 use crate::utils::formatting::format_duration;
@@ -20,22 +20,24 @@ const NUMBERED_INDEX_WIDTH: f32 = 32.0;
 
 /// Fila de track con thumbnail al inicio: Título / Artista / Álbum / Duración + indicador de caché.
 /// Click izquierdo reproduce, click derecho abre el menú contextual.
-pub fn track_row_with_thumbnail<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a>(
+pub fn track_row_with_thumbnail<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(String) -> Message + 'a>(
     track: &'a Track,
     thumbnail: Option<Handle>,
     on_play: Message,
     on_right_click: Message,
     on_artist_click: F,
+    on_album_click: G,
 ) -> Element<'a, Message> {
-    build_row(track, Some(track_thumbnail_sized(thumbnail, ROW_THUMBNAIL_SIZE)), on_play, on_right_click, on_artist_click)
+    build_row(track, Some(track_thumbnail_sized(thumbnail, ROW_THUMBNAIL_SIZE)), on_play, on_right_click, on_artist_click, on_album_click)
 }
 
-fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a>(
+fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(String) -> Message + 'a>(
     track: &'a Track,
     thumbnail: Option<Element<'a, Message>>,
     on_play: Message,
     on_right_click: Message,
     on_artist_click: F,
+    on_album_click: G,
 ) -> Element<'a, Message> {
     let cached = matches!(track.state, TrackState::Cached);
 
@@ -50,12 +52,13 @@ fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a>(
         on_artist_click,
     );
 
-    let album = single_line_text(
-        track.album.as_ref().map(|a| a.name.as_str()).unwrap_or(""),
+    let album = album_link(
+        track.album.as_ref(),
         SF_PRO,
         13.0,
         Color::from_rgb(0.7, 0.7, 0.75),
         ALBUM_WIDTH,
+        on_album_click,
     );
 
     let duration = text(format_duration(track.duration_seconds))
