@@ -71,6 +71,27 @@ impl PlayHistoryManager {
             .await
     }
 
+    /// Tracks tocados desde `since`, ordenados por reproducciones totales (no por fecha).
+    pub async fn top_tracks_recent(&self, since: chrono::NaiveDateTime, limit: i64) -> Result<Vec<TrackPlayCount>, sqlx::Error> {
+        sqlx::query_as!(
+            TrackPlayCount,
+            r#"
+            SELECT
+                track_id as "track_id!",
+                play_count as "play_count!",
+                last_played_at as "last_played_at!"
+            FROM play_history
+            WHERE last_played_at >= ?
+            ORDER BY play_count DESC
+            LIMIT ?
+            "#,
+            since,
+            limit
+        )
+            .fetch_all(&self.pool)
+            .await
+    }
+
     /// Sin consumidores todavía — queda listo para un futuro "top artistas".
     pub async fn top_artists(&self, limit: i64) -> Result<Vec<ArtistPlayCount>, sqlx::Error> {
         sqlx::query_as!(

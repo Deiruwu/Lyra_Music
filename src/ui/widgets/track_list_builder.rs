@@ -121,6 +121,15 @@ fn active_columns(show_added_at: bool) -> Vec<TrackColumn> {
     columns
 }
 
+/// Clave de orden para un camelot key tipo "8A"/"12B": número ascendente
+/// primero, A antes que B para el mismo número. `cmp` sobre el string crudo
+/// ordena lexicográficamente ("10A" < "2B"), que es numéricamente incorrecto.
+fn camelot_key_order(key: &str) -> (u32, char) {
+    let letter = key.chars().last().unwrap_or_default();
+    let number: u32 = key.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().unwrap_or(0);
+    (number, letter)
+}
+
 /// Ordena `tracks` in-place según `sort_key` (índice de TrackColumn) y
 /// dirección. `sort_key == Index` (0) o `None` deja el orden tal cual llega
 /// — es el caso "sin ordenar" de Favoritos/Playlist.
@@ -141,7 +150,12 @@ pub fn sort_tracks(tracks: &mut [&Track], sort_key: Option<usize>, ascending: bo
             }
             k if k == TrackColumn::Duration.as_usize() => a.duration_seconds.cmp(&b.duration_seconds),
             k if k == TrackColumn::Bpm.as_usize() => a.bpm.cmp(&b.bpm),
-            k if k == TrackColumn::Key.as_usize() => a.camelot_key.cmp(&b.camelot_key),
+            k if k == TrackColumn::Key.as_usize() => match (&a.camelot_key, &b.camelot_key) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (Some(ka), Some(kb)) => camelot_key_order(ka).cmp(&camelot_key_order(kb)),
+            },
             k if k == TrackColumn::AddedAt.as_usize() => a.added_at.cmp(&b.added_at),
             _ => std::cmp::Ordering::Equal,
         };

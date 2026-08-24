@@ -45,8 +45,9 @@ impl FollowedArtistManager {
         Ok(count > 0)
     }
 
+    /// Trae los últimos `limit` seguidos, del más antiguo al más reciente.
     pub async fn list_followed(&self, limit: i64) -> Result<Vec<FollowedArtist>, sqlx::Error> {
-        sqlx::query_as!(
+        let artists = sqlx::query_as!(
             FollowedArtist,
             r#"
             SELECT
@@ -61,6 +62,8 @@ impl FollowedArtistManager {
             limit
         )
             .fetch_all(&self.pool)
-            .await
+            .await?;
+
+        Ok(artists.into_iter().rev().collect())
     }
 }

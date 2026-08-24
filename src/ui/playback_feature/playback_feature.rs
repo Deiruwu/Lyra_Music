@@ -55,6 +55,7 @@ pub enum PlaybackOutMessage {
     RequestOpenTrackLink(TrackLink),
     RequestAddToPlaylist { playlist_id: String, track_id: String },
     RequestDeleteFromCatalog(String),
+    TrackNowPlaying(Track),
     Idle,
 }
 
@@ -257,8 +258,10 @@ impl PlaybackFeature {
 
             PlaybackFeatureMessage::Player(msg) => {
                 let mut extra_tasks = vec![];
+                let mut feature_out = PlaybackOutMessage::Idle;
 
                 if let PlayerMessage::BackendEvent(TrackEvent::TrackChanged(ref playable)) = msg {
+                    feature_out = PlaybackOutMessage::TrackNowPlaying(playable.track.clone());
                     self.current_track_id = Some(playable.track.id.clone());
                     self.current_small_thumbnail = None; // reset inmediato al cambiar de track
                     self.current_large_thumbnail = None; // reset inmediato al cambiar de track
@@ -296,8 +299,6 @@ impl PlaybackFeature {
                 }
 
                 let (task, out_msg) = self.player.update(msg);
-
-                let mut feature_out = PlaybackOutMessage::Idle;
 
                 match out_msg {
                     PlayerOutMessage::RequestTogglePlayback => {

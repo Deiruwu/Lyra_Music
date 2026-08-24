@@ -118,7 +118,7 @@ impl ViewCoordinator {
             playlist_manager,
             Arc::clone(&followed_artist_manager),
         );
-        let (home_view, home_task) = HomeView::new(client, play_history_manager, followed_artist_manager);
+        let (home_view, home_task) = HomeView::new(client, play_history_manager);
 
         let coordinator = Self {
             active_route: ActiveRoute::Nav(NavId::Home),
@@ -182,8 +182,7 @@ impl ViewCoordinator {
 
             // ─── EXPLORER ────────────────────────────────────────────────
             CoordinatorMessage::Explorer(inner) => {
-                let all_tracks = self.catalog_store.all_tracks();
-                let all_refs: Vec<&Track> = all_tracks.iter().collect();
+                let all_refs = self.catalog_store.explorer_tracks();
                 let rendered_refs = self.explorer_view.list.rendered(&all_refs, &self.catalog_store);
                 let play_context: Vec<Track> = rendered_refs.iter().map(|t| (*t).clone()).collect();
                 let playlists = playlist_pairs(self.catalog_store.playlists_metadata());
@@ -275,7 +274,7 @@ impl ViewCoordinator {
                 match out {
                     HomeViewOutMessage::Idle => (task, CoordinatorOutMessage::Idle),
                     HomeViewOutMessage::PlayTrack(id) => {
-                        let tracks = self.home_view.recent_tracks();
+                        let tracks = self.home_view.top_tracks();
                         if let Some(index) = tracks.iter().position(|t| t.id == id) {
                             self.manager.play_context(tracks.to_vec(), index);
                         }
@@ -498,8 +497,7 @@ impl ViewCoordinator {
     fn active_view_thumbnail_targets(&self) -> Vec<(String, String)> {
         match &self.active_route {
             ActiveRoute::Nav(NavId::Explorer) => {
-                let all_tracks = self.catalog_store.all_tracks();
-                let all_refs: Vec<&Track> = all_tracks.iter().collect();
+                let all_refs = self.catalog_store.explorer_tracks();
                 let tracks = self.explorer_view.list.rendered(&all_refs, &self.catalog_store);
 
                 self.explorer_view.list.visible_thumbnail_targets(&tracks)
@@ -576,8 +574,7 @@ impl ViewCoordinator {
                 self.home_view.view().map(CoordinatorMessage::Home)
             }
             ActiveRoute::Nav(NavId::Explorer) => {
-                let all_tracks = self.catalog_store.all_tracks();
-                let all_refs: Vec<&Track> = all_tracks.iter().collect();
+                let all_refs = self.catalog_store.explorer_tracks();
                 let rendered_tracks = self.explorer_view.list.rendered(&all_refs, &self.catalog_store);
 
                 self.explorer_view

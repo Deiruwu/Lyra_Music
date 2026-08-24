@@ -278,6 +278,11 @@ impl App {
                         self.sidebar_feature.coordinator.catalog_store.delete_track(&track_id);
                         iced::Task::none()
                     }
+                    PlaybackOutMessage::TrackNowPlaying(track) => {
+                        iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
+                            CoordinatorMessage::Catalog(CatalogStoreMessage::TrackDownloadedAndCached(track))
+                        )))
+                    }
                     PlaybackOutMessage::Idle => iced::Task::none(),
                 };
 

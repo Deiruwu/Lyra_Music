@@ -192,6 +192,17 @@ impl CatalogStore {
         &self.all_tracks
     }
 
+    /// Como `all_tracks()`, pero sin los tracks "stub" que el track_manager
+    /// precarga en la DB al abrir un álbum (para tenerlos listos para una
+    /// futura descarga): sin bpm, sin camelot_key y sin file_path todavía,
+    /// no aportan nada al Explorer y solo lo ensucian.
+    pub fn explorer_tracks(&self) -> Vec<&Track> {
+        self.all_tracks()
+            .iter()
+            .filter(|t| t.bpm.is_some() || t.camelot_key.is_some() || t.file_path.is_some())
+            .collect()
+    }
+
     pub fn track_by_id(&self, id: &str) -> Option<&Track> {
         self.index_by_id.get(id).and_then(|&idx| self.all_tracks.get(idx))
     }
