@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use iced::keyboard::Modifiers;
@@ -17,6 +17,7 @@ use crate::ui::views::home_view::{HomeView, HomeViewMessage, HomeViewOutMessage}
 use crate::ui::views::explorer_view_v2::{ExplorerView, ExplorerMessage, ExplorerExtra};
 use crate::ui::views::favorite_view::{FavoritesView, FavoritesMessage};
 use crate::ui::views::playlist_view::{PlaylistView, PlaylistMessage, PlaylistExtra};
+use crate::ui::views::states_view::{TrackViewState, ROW_HEIGHT};
 use crate::ui::views::view_data::NavId;
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::ui::widgets::track_context_builder::TrackContextAction;
@@ -101,6 +102,12 @@ pub struct ViewCoordinator {
     pub favorites_view: FavoritesView,
     pub playlist_view: Option<PlaylistView>,
 
+    /// `TrackViewState` (selección/scroll/filtro/sort) de playlists que no
+    /// están activas ahora mismo, guardado por `playlist_id` — para que
+    /// revisitar una playlist ya vista no la resetee (`playlist_view` en
+    /// sí solo puede tener una playlist "viva" a la vez).
+    playlist_view_cache: HashMap<String, TrackViewState>,
+
     /// ContextMenu<String> solo trackea el id abierto y el punto de
     /// anclaje — no los `items` a mostrar, porque esos dependen del
     /// track puntual (¿está likeado?, ¿en qué playlist estamos?) y ya
@@ -140,6 +147,7 @@ impl ViewCoordinator {
             explorer_view: ExplorerView::new(),
             favorites_view: FavoritesView::new(),
             playlist_view: None,
+            playlist_view_cache: HashMap::new(),
             track_context_menu: ContextMenu::new(),
             track_context_menu_items: Vec::new(),
             track_context_selected_ids: HashSet::new(),
@@ -167,21 +175,81 @@ impl ViewCoordinator {
         let wanted_covers = self.active_cover_targets();
         let cover_task = self.covers.sync(&wanted_covers, CoordinatorMessage::CoverLoaded);
 
-        (Task::batch([route_task, sync_task, cover_task]), out)
+        let scroll_task = self.resolve_pending_scroll_recenter();
+
+        (Task::batch([route_task, sync_task, cover_task, scroll_task]), out)
+    }
+
+    /// Si la vista activa tiene un recentrado de scroll pendiente (ver
+    /// `TrackViewState::apply_search_filter`), lo resuelve acá: recalcula
+    /// la lista ya filtrada+ordenada, ubica el track seleccionado y
+    /// emite el `Task` que mueve el `scrollable` nativo hasta él. Corre
+    /// siempre, sin importar qué rama de `update_route` disparó — mismo
+    /// motivo que `sync_task`/`cover_task` arriba.
+    fn resolve_pending_scroll_recenter(&mut self) -> Task<CoordinatorMessage> {
+        match self.active_route.clone() {
+            ActiveRoute::Nav(NavId::Explorer) => {
+                let Some(target_id) = self.explorer_view.list.take_pending_scroll_target() else {
+                    return Task::none();
+                };
+                let all_refs = self.catalog_store.explorer_tracks();
+                let rendered = self.explorer_view.list.rendered(&all_refs, &self.catalog_store);
+                scroll_to_selected(&mut self.explorer_view.list, &rendered, &target_id, "explorer_catalog_scroll")
+            }
+            ActiveRoute::Nav(NavId::Favorites) => {
+                let Some(target_id) = self.favorites_view.list.take_pending_scroll_target() else {
+                    return Task::none();
+                };
+                let liked = self.catalog_store.tracks_for_playlist(self.catalog_store.system_playlist_id());
+                let rendered = self.favorites_view.list.rendered(&liked, &self.catalog_store);
+                scroll_to_selected(&mut self.favorites_view.list, &rendered, &target_id, "favorites_catalog_scroll")
+            }
+            ActiveRoute::Playlist(id) => {
+                let Some(view) = &mut self.playlist_view else {
+                    return Task::none();
+                };
+                let Some(target_id) = view.list.take_pending_scroll_target() else {
+                    return Task::none();
+                };
+                let all = self.catalog_store.tracks_for_playlist(&id);
+                let rendered = view.list.rendered(&all, &self.catalog_store);
+                scroll_to_selected(&mut view.list, &rendered, &target_id, "playlists_catalog_scroll")
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// Guarda el `TrackViewState` de la playlist activa (si hay una) en
+    /// `playlist_view_cache` antes de que `playlist_view` se reemplace o
+    /// se descarte, para poder restaurarlo si se vuelve a visitar.
+    fn stash_active_playlist_view(&mut self) {
+        if let Some(view) = self.playlist_view.take() {
+            self.playlist_view_cache.insert(view.playlist_id.clone(), view.list);
+        }
     }
 
     fn update_route(&mut self, msg: CoordinatorMessage) -> (Task<CoordinatorMessage>, CoordinatorOutMessage) {
         match msg {
             CoordinatorMessage::SelectNav(nav_id) => {
                 self.active_route = ActiveRoute::Nav(nav_id);
-                self.playlist_view = None;
+                self.stash_active_playlist_view();
                 (Task::none(), CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::SelectPlaylist(id) => {
+                self.stash_active_playlist_view();
                 self.active_route = ActiveRoute::Playlist(id.clone());
-                self.playlist_view = Some(PlaylistView::new(id));
-                (Task::none(), CoordinatorOutMessage::Idle)
+
+                let restored = self.playlist_view_cache.remove(&id).unwrap_or_default();
+                let restored_offset = restored.scroll.offset_y;
+                self.playlist_view = Some(PlaylistView::with_state(id, restored));
+
+                let task = if restored_offset > 0.0 {
+                    scroll_to_offset("playlists_catalog_scroll", restored_offset)
+                } else {
+                    Task::none()
+                };
+                (task, CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::CreatePlaylist(name) => {
@@ -389,6 +457,10 @@ impl ViewCoordinator {
                 if let Some(start_index) = play_context.iter().position(|t| t.id == start_track_id) {
                     self.manager.play_context(play_context.to_vec(), start_index);
                 }
+                Task::none()
+            }
+            TrackListOutMessage::RequestPlayAll => {
+                self.manager.play_context_shuffled(play_context.to_vec());
                 Task::none()
             }
             TrackListOutMessage::RequestEnqueue(ids) => {
@@ -769,10 +841,70 @@ impl ViewCoordinator {
             self.active_route = ActiveRoute::Nav(NavId::Home);
             self.playlist_view = None;
         }
+        self.playlist_view_cache.remove(playlist_id);
         self.catalog_store
             .delete_playlist(playlist_id)
             .map(CoordinatorMessage::Catalog)
     }
+
+    /// Reafirma el offset de scroll YA guardado en `TrackViewState` de la
+    /// ruta activa contra el `scrollable` nativo de iced. Necesario
+    /// porque `App::view()` (`main.rs`) intercala `view_content()` con
+    /// otras ramas (library browser, modo teatro) en un mismo `if/else`
+    /// — iced identifica el estado interno de un widget por posición+tipo
+    /// en el árbol al diffear, no por su `Id`, así que en cuanto
+    /// `view_content()` deja de renderizarse un frame, su `scrollable`
+    /// desaparece del árbol y vuelve con offset 0 al reaparecer, aunque
+    /// `ScrollTracker.offset_y` en memoria siga teniendo el valor
+    /// correcto. Llamar esto justo cuando `view_content()` vuelve a
+    /// mostrarse arregla eso — no hay nada que recalcular, el offset ya
+    /// es el correcto.
+    pub fn resync_active_scroll(&self) -> Task<CoordinatorMessage> {
+        match &self.active_route {
+            ActiveRoute::Nav(NavId::Explorer) => {
+                scroll_to_offset("explorer_catalog_scroll", self.explorer_view.list.scroll.offset_y)
+            }
+            ActiveRoute::Nav(NavId::Favorites) => {
+                scroll_to_offset("favorites_catalog_scroll", self.favorites_view.list.scroll.offset_y)
+            }
+            ActiveRoute::Playlist(_) => match &self.playlist_view {
+                Some(view) => scroll_to_offset("playlists_catalog_scroll", view.list.scroll.offset_y),
+                None => Task::none(),
+            },
+            _ => Task::none(),
+        }
+    }
+}
+
+/// Emite el `Task` que mueve el `scrollable` nativo (por su `Id`) al
+/// offset absoluto dado.
+fn scroll_to_offset(scrollable_id: &'static str, offset_y: f32) -> Task<CoordinatorMessage> {
+    iced::widget::operation::scroll_to(
+        iced::widget::Id::new(scrollable_id),
+        iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: offset_y },
+    )
+}
+
+/// Ubica `target_id` en `rendered` y mueve `list.scroll` (más el
+/// `scrollable` nativo de iced, vía el `Task` devuelto) hasta que quede a
+/// la vista. Si `target_id` ya no está en `rendered` (se filtró afuera o
+/// se eliminó), cae al reset a 0 de siempre.
+fn scroll_to_selected(
+    list: &mut TrackViewState,
+    rendered: &[&Track],
+    target_id: &str,
+    scrollable_id: &'static str,
+) -> Task<CoordinatorMessage> {
+    let Some(index) = rendered.iter().position(|t| t.id == target_id) else {
+        list.scroll.reset();
+        return Task::none();
+    };
+
+    let max_offset = (rendered.len() as f32 * ROW_HEIGHT - list.scroll.viewport_height).max(0.0);
+    let target_offset = (index as f32 * ROW_HEIGHT).min(max_offset);
+    list.scroll.offset_y = target_offset;
+
+    scroll_to_offset(scrollable_id, target_offset)
 }
 
 /// Las vistas (Explorer/Favorites/Playlist) esperan `&[(String, String)]`

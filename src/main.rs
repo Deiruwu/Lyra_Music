@@ -244,7 +244,16 @@ impl App {
                 let like_task = match out_msg {
                     PlaybackOutMessage::ToggleTheaterMode => {
                         self.is_theater_mode = !self.is_theater_mode;
-                        iced::Task::none()
+                        // Salir de modo teatro reconstruye view_content() desde
+                        // cero (ver resync_active_scroll) — sin esto el
+                        // scrollable de la vista de fondo vuelve a offset 0.
+                        if !self.is_theater_mode && !self.library_browser.is_active() {
+                            self.sidebar_feature.coordinator.resync_active_scroll().map(|m| {
+                                AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m))
+                            })
+                        } else {
+                            iced::Task::none()
+                        }
                     }
                     PlaybackOutMessage::RequestToggleLike(track_id) => {
                         self.sidebar_feature
@@ -293,7 +302,9 @@ impl App {
             }
 
             AppMessage::SidebarFeature(msg) => {
-                if matches!(msg, SidebarFeatureMessage::SelectNav(_) | SidebarFeatureMessage::SelectPlaylist(_)) {
+                let closing_browser = self.library_browser.is_active()
+                    && matches!(msg, SidebarFeatureMessage::SelectNav(_) | SidebarFeatureMessage::SelectPlaylist(_));
+                if closing_browser {
                     self.library_browser.close();
                     self.is_theater_mode = false;
                 }
@@ -310,7 +321,18 @@ impl App {
                     SidebarOutMessage::Idle => iced::Task::none(),
                 };
 
-                iced::Task::batch(vec![task.map(AppMessage::SidebarFeature), open_artist_task])
+                // El scroll de la ruta ya actualizada (arriba) necesita
+                // reafirmarse contra el widget nativo tras salir del library
+                // browser — ver resync_active_scroll.
+                let resync_task = if closing_browser {
+                    self.sidebar_feature.coordinator.resync_active_scroll().map(|m| {
+                        AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m))
+                    })
+                } else {
+                    iced::Task::none()
+                };
+
+                iced::Task::batch(vec![task.map(AppMessage::SidebarFeature), open_artist_task, resync_task])
             }
 
             AppMessage::SearchFeature(msg) => {
@@ -360,8 +382,23 @@ impl App {
                     self.is_theater_mode = false;
                 } else if self.library_browser.is_active() {
                     self.library_browser.close();
+                } else {
+                    return iced::Task::none();
                 }
-                iced::Task::none()
+
+                // `view_content()` solo vuelve a mostrarse (y por lo tanto
+                // solo hace falta reafirmar su scroll, ver
+                // resync_active_scroll) si ninguna de las otras dos ramas
+                // de `App::view()` sigue activa — p. ej. si había teatro Y
+                // library browser, salir de teatro revela el browser, no
+                // view_content() todavía.
+                if self.is_theater_mode || self.library_browser.is_active() {
+                    iced::Task::none()
+                } else {
+                    self.sidebar_feature.coordinator.resync_active_scroll().map(|m| {
+                        AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m))
+                    })
+                }
             }
         }
     }
@@ -382,6 +419,7 @@ impl App {
             self.is_theater_mode = false;
         }
 
+        let was_active = self.library_browser.is_active();
         let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
         let (task, out) = self.library_browser.update(msg, &playlists);
 
@@ -413,7 +451,19 @@ impl App {
             LibraryBrowserOutMessage::Idle => iced::Task::none(),
         };
 
-        iced::Task::batch([task.map(AppMessage::LibraryBrowser), bridge_task])
+        // Se agotó el historial de `Back` (o llegó `Close`) y volvemos a
+        // mostrar view_content() — reafirmar su scroll nativo (ver
+        // resync_active_scroll).
+        let closed_now = was_active && !self.library_browser.is_active();
+        let resync_task = if closed_now && !self.is_theater_mode {
+            self.sidebar_feature.coordinator.resync_active_scroll().map(|m| {
+                AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m))
+            })
+        } else {
+            iced::Task::none()
+        };
+
+        iced::Task::batch([task.map(AppMessage::LibraryBrowser), bridge_task, resync_task])
     }
 
     pub fn view(&self, _window: window::Id) -> Element<'_, AppMessage> {

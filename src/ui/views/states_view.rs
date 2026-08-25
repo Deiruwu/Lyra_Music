@@ -11,7 +11,7 @@ use crate::ui::widgets::selection_state::SelectionState;
 use crate::ui::widgets::track_list_builder;
 use crate::ui::widgets::track_list_builder::TrackEvent;
 
-const ROW_HEIGHT: f32 = 60.0;
+pub(crate) const ROW_HEIGHT: f32 = 60.0;
 const BUFFER_ROWS: usize = 15;
 
 /// Resultado cacheado de filtrar+ordenar tracks para una vista puntual.
@@ -83,10 +83,23 @@ pub struct TrackViewState {
 
     pub mouse_position: Option<Point>,
 
+    /// Override explícito del usuario (click en un header). `None` =
+    /// sin override, se usa `default_sort_key`/`default_sort_ascending`.
     pub active_sort_key: Option<usize>,
     pub sort_direction_asc: bool,
 
+    /// Orden implícito de esta vista (fijado una sola vez en su
+    /// constructor, nunca mutado después). No se muestra flecha para
+    /// este orden — solo para un `active_sort_key` explícito.
+    pub default_sort_key: Option<usize>,
+    pub default_sort_ascending: bool,
+
     pub last_click: Option<(String, Instant)>,
+
+    /// `true` mientras hay un recentrado de scroll pendiente sobre la
+    /// selección actual (filtro recién limpiado/cambiado con algo
+    /// seleccionado) — lo consume `take_pending_scroll_target`.
+    pending_scroll_to_selection: bool,
 
     /// Cache de `filter_tracks` + `sort_tracks` sobre esta vista. `RefCell`
     /// porque `ViewCoordinator::view_content()` y
@@ -106,9 +119,12 @@ impl Default for TrackViewState {
             tracks_selection: SelectionState::new(),
             scroll: ScrollTracker::default(),
             mouse_position: None,
-            active_sort_key: Some(0),
+            active_sort_key: None,
             sort_direction_asc: true,
+            default_sort_key: Some(0),
+            default_sort_ascending: true,
             last_click: None,
+            pending_scroll_to_selection: false,
             cache: RefCell::new(RenderedTracksCache::default()),
         }
     }
@@ -136,9 +152,43 @@ impl TrackViewState {
         )
     }
 
+    /// Angostar el filtro (o escribirlo desde cero) sigue reseteando el
+    /// scroll a 0, igual que antes. Limpiarlo o cambiarlo a algo que no
+    /// sea una extensión del anterior, en cambio, deja el scroll donde
+    /// está y — si hay algo seleccionado — marca un recentrado
+    /// pendiente para que el coordinator scrollee hasta la selección
+    /// una vez recalculada la lista con el filtro nuevo.
     pub fn apply_search_filter(&mut self, query: String) {
+        let is_narrowing = query.starts_with(&self.search_filter);
         self.search_filter = query;
-        self.scroll.reset();
+
+        if is_narrowing || self.tracks_selection.selected_ids.is_empty() {
+            self.scroll.reset();
+            self.pending_scroll_to_selection = false;
+        } else {
+            self.pending_scroll_to_selection = true;
+        }
+    }
+
+    /// Consume el pedido de recentrado si hay uno pendiente, devolviendo
+    /// un id de la selección actual a partir del cual el coordinator
+    /// calcula el offset de scroll objetivo.
+    pub fn take_pending_scroll_target(&mut self) -> Option<String> {
+        if !self.pending_scroll_to_selection {
+            return None;
+        }
+        self.pending_scroll_to_selection = false;
+        self.tracks_selection.selected_ids.iter().next().cloned()
+    }
+
+    /// `(key, ascending)` a usar realmente para ordenar/pintar: el
+    /// override explícito del usuario si hay uno, si no el default de
+    /// esta vista.
+    pub fn effective_sort(&self) -> (Option<usize>, bool) {
+        match self.active_sort_key {
+            Some(_) => (self.active_sort_key, self.sort_direction_asc),
+            None => (self.default_sort_key, self.default_sort_ascending),
+        }
     }
 
     /// Filtra y ordena `source` contra el estado actual de búsqueda/orden
@@ -166,8 +216,9 @@ impl TrackViewState {
             return cache.ids.iter().filter_map(|id| catalog.track_by_id(id)).collect();
         }
 
+        let (sort_key, sort_ascending) = self.effective_sort();
         let mut filtered = filter_tracks(source, &self.search_filter);
-        track_list_builder::sort_tracks(&mut filtered, self.active_sort_key, self.sort_direction_asc);
+        track_list_builder::sort_tracks(&mut filtered, sort_key, sort_ascending);
 
         *cache = RenderedTracksCache {
             query: self.search_filter.clone(),
@@ -181,14 +232,23 @@ impl TrackViewState {
         filtered
     }
 
-    pub fn toggle_sort(&mut self, sort_key: usize) -> bool {
-        if self.active_sort_key == Some(sort_key) {
-            self.sort_direction_asc = !self.sort_direction_asc;
-            false
-        } else {
-            self.active_sort_key = Some(sort_key);
-            self.sort_direction_asc = true;
-            true
+    /// Ciclo de 3 clicks sobre una misma columna: ascendente → descendente
+    /// → sin override (vuelve al orden default de la vista, oculta la
+    /// flecha). Clickear una columna distinta siempre arranca en
+    /// ascendente.
+    pub fn toggle_sort(&mut self, sort_key: usize) {
+        match self.active_sort_key {
+            Some(k) if k == sort_key && self.sort_direction_asc => {
+                self.sort_direction_asc = false;
+            }
+            Some(k) if k == sort_key => {
+                self.active_sort_key = None;
+                self.sort_direction_asc = true;
+            }
+            _ => {
+                self.active_sort_key = Some(sort_key);
+                self.sort_direction_asc = true;
+            }
         }
     }
 

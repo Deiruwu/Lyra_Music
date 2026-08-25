@@ -13,6 +13,10 @@ pub enum TrackListOutMessage<Extra> {
 
     // ─── Audio Engine ───────────────────────────────────────────
     RequestPlayContext { start_track_id: String },
+    /// "Reproducir todo" sin track puntual — en shuffle, sortea la
+    /// lista completa antes de decidir cuál va primero (ver
+    /// `TrackManager::play_context_shuffled`).
+    RequestPlayAll,
     RequestEnqueue(Vec<String>),
     RequestFrontEnqueue(Vec<String>),
     RequestPlayRadio(String),

@@ -80,10 +80,15 @@ pub struct PlaylistView {
 // ─── IMPLEMENTACIÓN ─────────────────────────────────────────────
 
 impl PlaylistView {
-    pub fn new(playlist_id: String) -> Self {
+    /// Restaura (o crea, si `list` es el default) el estado de una
+    /// playlist — selección/scroll/filtro/sort — al abrirla. Ver
+    /// `ViewCoordinator::playlist_view_cache`. El estado de drag&drop
+    /// siempre arranca limpio: es interacción transitoria, no hace
+    /// falta preservarlo.
+    pub fn with_state(playlist_id: String, list: TrackViewState) -> Self {
         Self {
             playlist_id,
-            list: TrackViewState::new(),
+            list,
             drag_state: None,
             pending_drag: None,
             row_animator: RowAnimator::new(DRAG_ROW_HEIGHT),
@@ -205,8 +210,8 @@ impl PlaylistView {
             }
 
             PlaylistMessage::PlayAll => {
-                if let Some(first) = rendered_tracks.first() {
-                    out = PlaylistOutMessage::RequestPlayContext { start_track_id: first.id.clone() };
+                if !rendered_tracks.is_empty() {
+                    out = PlaylistOutMessage::RequestPlayAll;
                 }
             }
 

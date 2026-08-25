@@ -47,8 +47,8 @@ pub struct ExplorerView {
 impl ExplorerView {
     pub fn new() -> Self {
         let mut list = TrackViewState::new();
-        list.active_sort_key = Some(TrackColumn::AddedAt.as_usize());
-        list.sort_direction_asc = true;
+        list.default_sort_key = Some(TrackColumn::AddedAt.as_usize());
+        list.default_sort_ascending = true;
 
         Self {
             list,

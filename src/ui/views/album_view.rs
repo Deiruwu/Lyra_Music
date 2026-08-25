@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 
 use iced::border::rounded;
-use iced::widget::{button, column, container, image, row, scrollable, space, text};
+use iced::widget::scrollable::Viewport;
+use iced::widget::{button, column, container, image, row, scrollable, space, text, Id};
 use iced::{Alignment, Color, ContentFit, Element, Length, Padding, Task, Theme};
 
 use crate::microservices::client::MicroserviceClient;
 use crate::model::{AlbumDto, Artist, Track};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::utils::gallery_thumbnail::{GalleryThumbnail, Treatment};
+use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::utils::playlist_metadata::{format_total_duration, format_track_count, track_stats};
 use crate::ui::widgets::artist_links::artist_links;
 use crate::ui::widgets::track_row_simple::track_row_numbered;
@@ -27,6 +29,10 @@ pub struct AlbumView {
     client: MicroserviceClient,
     data: AlbumViewData,
     gallery: GalleryThumbnail,
+    /// Scroll de esta vista — `pub` para que `LibraryBrowserFeature` lo
+    /// guarde/restaure al navegar entre artistas/álbumes (ver
+    /// `stash_active_route_scroll`).
+    pub scroll: ScrollTracker,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +44,7 @@ pub enum AlbumMessage {
     TrackRowRightClicked(String),
     TrackArtistPressed(String),
     PlayAlbumPressed,
+    Scrolled(Viewport),
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +64,7 @@ impl AlbumView {
             client: client.clone(),
             data: AlbumViewData::Loading,
             gallery: GalleryThumbnail::new(),
+            scroll: ScrollTracker::default(),
         };
 
         let task = Task::perform(
@@ -79,6 +87,7 @@ impl AlbumView {
             AlbumMessage::TrackRowRightClicked(id) => out = AlbumOutMessage::TrackRightClicked(id),
             AlbumMessage::TrackArtistPressed(id) => out = AlbumOutMessage::OpenTrackArtist(id),
             AlbumMessage::PlayAlbumPressed => out = AlbumOutMessage::PlayAlbum,
+            AlbumMessage::Scrolled(viewport) => self.scroll.update(viewport),
         }
 
         let wanted = self.thumbnail_targets();
@@ -97,6 +106,8 @@ impl AlbumView {
                     .padding(Padding { top: 0.0, right: 24.0, bottom: 32.0, left: 24.0 }),
             )
             .width(Length::Fill)
+            .id(Id::new("album_view_scroll"))
+            .on_scroll(AlbumMessage::Scrolled)
             .into(),
         }
     }
@@ -241,6 +252,12 @@ impl AlbumView {
             .collect();
 
         column(rows).spacing(4).into()
+    }
+
+    /// Id del álbum mostrado — para cachear/restaurar el scroll por id
+    /// (ver `LibraryBrowserFeature::stash_active_route_scroll`).
+    pub(crate) fn album_id(&self) -> &str {
+        &self.album_id
     }
 
     /// Canciones del álbum, para armar `play_context` desde `LibraryBrowserFeature`.

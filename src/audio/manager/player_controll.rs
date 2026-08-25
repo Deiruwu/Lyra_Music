@@ -4,17 +4,38 @@ use std::time::Duration;
 use crate::audio::engine_state::AudioCommand;
 use crate::audio::manager::manager::{probe_track, QueueSlot, TrackManager};
 use crate::audio::manager::error_mananger::ManagerError;
+use crate::audio::queue_shuffle;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 use crate::model::Track;
 
 impl TrackManager {
 
+    /// Reproduce `context_tracks[start_index]` y encola el resto.
+    ///
+    /// Sin shuffle: "reproducir desde acá en adelante" — los tracks
+    /// antes de `start_index` se descartan de la cola a propósito (no es
+    /// un bug, es la semántica de este modo). En shuffle, en cambio,
+    /// TODOS los demás tracks de la vista (antes y después del
+    /// clickeado) entran al sorteo — `refill_queue` ya baraja `remaining`
+    /// cuando `shuffle_enabled`, así que alcanza con no descartarlos de
+    /// entrada.
     pub fn play_context(&self, context_tracks: Vec<Track>, start_index: usize) {
         if start_index >= context_tracks.len() { return; }
 
-        let mut tracks_iter = context_tracks.into_iter().skip(start_index);
-        let first_track = Arc::new(tracks_iter.next().unwrap());
-        let remaining: Vec<QueueSlot> = tracks_iter.map(|t| QueueSlot::new(Arc::new(t))).collect();
+        let shuffle_enabled = self.playback.lock().unwrap().shuffle_enabled;
+
+        let (first, remaining_tracks): (Track, Vec<Track>) = if shuffle_enabled {
+            let mut tracks = context_tracks;
+            let first = tracks.remove(start_index);
+            (first, tracks)
+        } else {
+            let mut tracks_iter = context_tracks.into_iter().skip(start_index);
+            let first = tracks_iter.next().unwrap();
+            (first, tracks_iter.collect())
+        };
+
+        let first_track = Arc::new(first);
+        let remaining: Vec<QueueSlot> = remaining_tracks.into_iter().map(|t| QueueSlot::new(Arc::new(t))).collect();
 
         {
             let mut ps = self.playback.lock().unwrap();
@@ -52,6 +73,22 @@ impl TrackManager {
                 self.skip_next();
             }
         }
+    }
+
+    /// "Reproducir todo" sin track puntual elegido por el usuario (botón
+    /// de playlist/álbum). En shuffle, sortea la lista ENTERA —incluido
+    /// lo que sería el primer track en orden original— antes de decidir
+    /// qué va primero, para no reproducir siempre el mismo track 0. Sin
+    /// shuffle, es idéntico a `play_context(tracks, 0)`.
+    pub fn play_context_shuffled(&self, context_tracks: Vec<Track>) {
+        if context_tracks.is_empty() { return; }
+        let shuffle_enabled = self.playback.lock().unwrap().shuffle_enabled;
+        let ordered = if shuffle_enabled {
+            queue_shuffle::shuffle_tracks(context_tracks)
+        } else {
+            context_tracks
+        };
+        self.play_context(ordered, 0);
     }
 
     pub fn play_now(&self, track: Track) {

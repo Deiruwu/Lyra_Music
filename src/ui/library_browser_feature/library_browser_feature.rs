@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use iced::widget::space;
@@ -7,6 +8,7 @@ use crate::audio::manager::manager::TrackManager;
 use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;
+use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::views::album_view::{AlbumMessage, AlbumOutMessage, AlbumView};
 use crate::ui::views::artist_view::{ArtistMessage, ArtistOutMessage, ArtistView};
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
@@ -25,6 +27,22 @@ pub struct LibraryBrowserFeature {
     followed_artist_manager: Arc<FollowedArtistManager>,
     context_menu: ContextMenu<String>,
     context_menu_items: Vec<ContextMenuItem<TrackContextAction>>,
+    /// Scroll de artistas/álbumes ya visitados en esta sesión, por id —
+    /// para restaurarlo si se vuelve a abrir el mismo artista/álbum,
+    /// aunque `previous` (un solo nivel de historial) ya se haya pisado
+    /// por saltos intermedios.
+    artist_scroll_cache: HashMap<String, ScrollTracker>,
+    album_scroll_cache: HashMap<String, ScrollTracker>,
+}
+
+/// `Task<T>` genérico: estas operaciones de scroll no producen ningún
+/// mensaje real, así que `T` se infiere del contexto donde se use
+/// (batch/return) sin necesitar `.map(...)`.
+fn scroll_to_offset<T>(scrollable_id: &'static str, offset_y: f32) -> Task<T> {
+    iced::widget::operation::scroll_to(
+        iced::widget::Id::new(scrollable_id),
+        iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: offset_y },
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +75,8 @@ impl LibraryBrowserFeature {
             followed_artist_manager,
             context_menu: ContextMenu::new(),
             context_menu_items: Vec::new(),
+            artist_scroll_cache: HashMap::new(),
+            album_scroll_cache: HashMap::new(),
         }
     }
 
@@ -67,8 +87,26 @@ impl LibraryBrowserFeature {
 
     /// Cierra cualquier vista abierta y descarta el historial de navegación.
     pub fn close(&mut self) {
+        self.stash_active_route_scroll();
         self.active = None;
         self.previous = None;
+    }
+
+    /// Guarda el scroll de la ruta activa (artista o álbum) en el cache
+    /// correspondiente, por id, antes de que `active` se reemplace o se
+    /// descarte — para poder restaurarlo si se vuelve a visitar el mismo
+    /// artista/álbum más adelante, incluso tras varios saltos que ya
+    /// pisaron `previous` (que solo cubre un nivel de historial).
+    fn stash_active_route_scroll(&mut self) {
+        match &self.active {
+            Some(LibraryBrowserRoute::Artist(view)) => {
+                self.artist_scroll_cache.insert(view.artist_id().to_string(), view.scroll);
+            }
+            Some(LibraryBrowserRoute::Album(view)) => {
+                self.album_scroll_cache.insert(view.album_id().to_string(), view.scroll);
+            }
+            None => {}
+        }
     }
 
     /// Busca un track por id en la ruta actualmente activa (top 5 del artista o tracks del álbum).
@@ -87,17 +125,29 @@ impl LibraryBrowserFeature {
     ) -> (Task<LibraryBrowserMessage>, LibraryBrowserOutMessage) {
         match message {
             LibraryBrowserMessage::OpenArtist(id) => {
-                let (view, task) = ArtistView::new(self.client.clone(), id, Arc::clone(&self.followed_artist_manager));
+                self.stash_active_route_scroll();
+                let (mut view, task) = ArtistView::new(self.client.clone(), id.clone(), Arc::clone(&self.followed_artist_manager));
+                let mut out_task = task.map(LibraryBrowserMessage::Artist);
+                if let Some(scroll) = self.artist_scroll_cache.remove(&id) {
+                    view.scroll = scroll;
+                    out_task = Task::batch([out_task, scroll_to_offset("artist_view_scroll", scroll.offset_y)]);
+                }
                 self.active = Some(LibraryBrowserRoute::Artist(view));
                 self.previous = None;
-                (task.map(LibraryBrowserMessage::Artist), LibraryBrowserOutMessage::Idle)
+                (out_task, LibraryBrowserOutMessage::Idle)
             }
 
             LibraryBrowserMessage::OpenAlbum(id) => {
-                let (view, task) = AlbumView::new(self.client.clone(), id);
+                self.stash_active_route_scroll();
+                let (mut view, task) = AlbumView::new(self.client.clone(), id.clone());
+                let mut out_task = task.map(LibraryBrowserMessage::Album);
+                if let Some(scroll) = self.album_scroll_cache.remove(&id) {
+                    view.scroll = scroll;
+                    out_task = Task::batch([out_task, scroll_to_offset("album_view_scroll", scroll.offset_y)]);
+                }
                 self.active = Some(LibraryBrowserRoute::Album(view));
                 self.previous = None;
-                (task.map(LibraryBrowserMessage::Album), LibraryBrowserOutMessage::Idle)
+                (out_task, LibraryBrowserOutMessage::Idle)
             }
 
             LibraryBrowserMessage::Close => {
@@ -107,7 +157,12 @@ impl LibraryBrowserFeature {
 
             LibraryBrowserMessage::Back => {
                 self.active = self.previous.take();
-                (Task::none(), LibraryBrowserOutMessage::Idle)
+                let task = match &self.active {
+                    Some(LibraryBrowserRoute::Artist(view)) => scroll_to_offset("artist_view_scroll", view.scroll.offset_y),
+                    Some(LibraryBrowserRoute::Album(view)) => scroll_to_offset("album_view_scroll", view.scroll.offset_y),
+                    None => Task::none(),
+                };
+                (task, LibraryBrowserOutMessage::Idle)
             }
 
             LibraryBrowserMessage::ContextMenuEvent(event) => {
@@ -161,10 +216,16 @@ impl LibraryBrowserFeature {
 
                     match out {
                         ArtistOutMessage::OpenAlbum(id) => {
-                            let (album_view, album_task) = AlbumView::new(self.client.clone(), id);
+                            self.stash_active_route_scroll();
+                            let (mut album_view, album_task) = AlbumView::new(self.client.clone(), id.clone());
+                            let mut out_task = Task::batch([task, album_task.map(LibraryBrowserMessage::Album)]);
+                            if let Some(scroll) = self.album_scroll_cache.remove(&id) {
+                                album_view.scroll = scroll;
+                                out_task = Task::batch([out_task, scroll_to_offset("album_view_scroll", scroll.offset_y)]);
+                            }
                             self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Album(album_view));
-                            (Task::batch([task, album_task.map(LibraryBrowserMessage::Album)]), LibraryBrowserOutMessage::Idle)
+                            (out_task, LibraryBrowserOutMessage::Idle)
                         }
                         ArtistOutMessage::PlayTopSong(id) => {
                             let songs = view.top_songs();
@@ -184,10 +245,16 @@ impl LibraryBrowserFeature {
                             (task, LibraryBrowserOutMessage::Idle)
                         }
                         ArtistOutMessage::OpenTrackArtist(id) => {
-                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id, Arc::clone(&self.followed_artist_manager));
+                            self.stash_active_route_scroll();
+                            let (mut artist_view, artist_task) = ArtistView::new(self.client.clone(), id.clone(), Arc::clone(&self.followed_artist_manager));
+                            let mut out_task = Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]);
+                            if let Some(scroll) = self.artist_scroll_cache.remove(&id) {
+                                artist_view.scroll = scroll;
+                                out_task = Task::batch([out_task, scroll_to_offset("artist_view_scroll", scroll.offset_y)]);
+                            }
                             self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Artist(artist_view));
-                            (Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]), LibraryBrowserOutMessage::Idle)
+                            (out_task, LibraryBrowserOutMessage::Idle)
                         }
                         ArtistOutMessage::Idle => (task, LibraryBrowserOutMessage::Idle),
                         ArtistOutMessage::ToggleFollow(id, name, photo) => {
@@ -205,10 +272,16 @@ impl LibraryBrowserFeature {
 
                     match out {
                         AlbumOutMessage::OpenArtist(id) => {
-                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id, Arc::clone(&self.followed_artist_manager));
+                            self.stash_active_route_scroll();
+                            let (mut artist_view, artist_task) = ArtistView::new(self.client.clone(), id.clone(), Arc::clone(&self.followed_artist_manager));
+                            let mut out_task = Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]);
+                            if let Some(scroll) = self.artist_scroll_cache.remove(&id) {
+                                artist_view.scroll = scroll;
+                                out_task = Task::batch([out_task, scroll_to_offset("artist_view_scroll", scroll.offset_y)]);
+                            }
                             self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Artist(artist_view));
-                            (Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]), LibraryBrowserOutMessage::Idle)
+                            (out_task, LibraryBrowserOutMessage::Idle)
                         }
                         AlbumOutMessage::PlayTrack(id) => {
                             let tracks = view.tracks();
@@ -218,7 +291,7 @@ impl LibraryBrowserFeature {
                             (task, LibraryBrowserOutMessage::Idle)
                         }
                         AlbumOutMessage::PlayAlbum => {
-                            self.manager.play_context(view.tracks().to_vec(), 0);
+                            self.manager.play_context_shuffled(view.tracks().to_vec());
                             (task, LibraryBrowserOutMessage::Idle)
                         }
                         AlbumOutMessage::TrackRightClicked(id) => {
@@ -232,10 +305,16 @@ impl LibraryBrowserFeature {
                             (task, LibraryBrowserOutMessage::Idle)
                         }
                         AlbumOutMessage::OpenTrackArtist(id) => {
-                            let (artist_view, artist_task) = ArtistView::new(self.client.clone(), id, Arc::clone(&self.followed_artist_manager));
+                            self.stash_active_route_scroll();
+                            let (mut artist_view, artist_task) = ArtistView::new(self.client.clone(), id.clone(), Arc::clone(&self.followed_artist_manager));
+                            let mut out_task = Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]);
+                            if let Some(scroll) = self.artist_scroll_cache.remove(&id) {
+                                artist_view.scroll = scroll;
+                                out_task = Task::batch([out_task, scroll_to_offset("artist_view_scroll", scroll.offset_y)]);
+                            }
                             self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Artist(artist_view));
-                            (Task::batch([task, artist_task.map(LibraryBrowserMessage::Artist)]), LibraryBrowserOutMessage::Idle)
+                            (out_task, LibraryBrowserOutMessage::Idle)
                         }
                         AlbumOutMessage::Idle => (task, LibraryBrowserOutMessage::Idle),
                     }

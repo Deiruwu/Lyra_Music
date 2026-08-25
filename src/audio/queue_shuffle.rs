@@ -4,10 +4,20 @@ use rand::seq::SliceRandom;
 use rand::RngExt;
 use uuid::Uuid;
 use crate::audio::manager::manager::QueueSlot;
+use crate::model::Track;
 
 pub fn shuffle(mut slots: Vec<QueueSlot>) -> Vec<QueueSlot> {
     slots.shuffle(&mut rng());
     slots
+}
+
+/// Igual que `shuffle`, pero sobre `Track` crudo en vez de `QueueSlot` —
+/// para barajar la vista ENTERA antes de decidir qué entra primero
+/// ("Reproducir todo" en modo shuffle), en vez de barajar solo la cola
+/// restante una vez que el primer track ya quedó fijado.
+pub fn shuffle_tracks(mut tracks: Vec<Track>) -> Vec<Track> {
+    tracks.shuffle(&mut rng());
+    tracks
 }
 
 /// Inserta `slot` en una posición aleatoria de `queue`.

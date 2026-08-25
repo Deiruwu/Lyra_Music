@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use iced::border::rounded;
 use iced::widget::image::Handle;
+use iced::widget::scrollable::Viewport;
 use iced::widget::text::Shaping;
-use iced::widget::{button, column, container, image, responsive, row, rule, scrollable, space, stack, text};
+use iced::widget::{button, column, container, image, responsive, row, rule, scrollable, space, stack, text, Id};
 use iced::{Alignment, Color, ContentFit, Element, Length, Padding, Task, Theme};
 
 use crate::db::followed_artist_manager::FollowedArtistManager;
@@ -13,6 +14,7 @@ use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 use crate::ui::assets::icons::Icon;
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::gallery_thumbnail::{GalleryThumbnail, Treatment};
+use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::widgets::track_row::truncate;
 use crate::ui::widgets::track_row_simple::track_row_with_thumbnail;
 use crate::utils::formatting::format_views;
@@ -50,6 +52,10 @@ pub struct ArtistView {
     gallery: GalleryThumbnail,
     albums_page: usize,
     singles_page: usize,
+    /// Scroll de esta vista — `pub` para que `LibraryBrowserFeature` lo
+    /// guarde/restaure al navegar entre artistas/álbumes (ver
+    /// `stash_active_route_scroll`).
+    pub scroll: ScrollTracker,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +74,7 @@ pub enum ArtistMessage {
     TopSongArtistPressed(String),
     TopSongAlbumPressed(String),
     FollowPressed,
+    Scrolled(Viewport),
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +102,7 @@ impl ArtistView {
             gallery: GalleryThumbnail::new(),
             albums_page: 0,
             singles_page: 0,
+            scroll: ScrollTracker::default(),
         };
 
         let load_task = Task::perform(
@@ -137,6 +145,7 @@ impl ArtistView {
                     out = ArtistOutMessage::ToggleFollow(artist.id.clone(), artist.name.clone(), artist.banner.clone());
                 }
             }
+            ArtistMessage::Scrolled(viewport) => self.scroll.update(viewport),
         }
 
         let sync_task = self.thumbnails.sync(&self.thumbnail_targets(), ArtistMessage::ThumbnailLoaded);
@@ -181,6 +190,8 @@ impl ArtistView {
                         .padding(Padding { top: 0.0, right: 24.0, bottom: 32.0, left: 24.0 }),
                 )
                 .width(Length::Fill)
+                .id(Id::new("artist_view_scroll"))
+                .on_scroll(ArtistMessage::Scrolled)
                 .into()
             }
         }
@@ -391,6 +402,12 @@ impl ArtistView {
         }
 
         arrow_button.into()
+    }
+
+    /// Id del artista mostrado — para cachear/restaurar el scroll por id
+    /// (ver `LibraryBrowserFeature::stash_active_route_scroll`).
+    pub(crate) fn artist_id(&self) -> &str {
+        &self.artist_id
     }
 
     /// Top canciones ya truncadas a `TOP_SONGS_COUNT`, para armar `play_context`.
