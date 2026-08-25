@@ -130,20 +130,16 @@ impl PlaylistManager {
 
     // ── OPERACIONES DE TRACKS EN CUSTOM PLAYLISTS ────────────────────────────
 
-    pub async fn add_tracks(&self, playlist_id: &str, tracks: &[(String, f64)]) -> Result<(), sqlx::Error> {
-        if tracks.is_empty() { return Ok(()); }
-
-        let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
-            "INSERT INTO playlist_track (playlist_id, track_id, position) "
-        );
-
-        query_builder.push_values(tracks, |mut b, track| {
-            b.push_bind(playlist_id)
-                .push_bind(&track.0)
-                .push_bind(track.1);
-        });
-
-        query_builder.build().execute(&self.pool).await?;
+    /// Agrega un track a una playlist CUSTOM en la posición dada.
+    pub async fn add_track(&self, playlist_id: &str, track_id: &str, position: f64) -> Result<(), sqlx::Error> {
+        sqlx::query!(
+            r#"INSERT INTO playlist_track (playlist_id, track_id, position) VALUES (?, ?, ?)"#,
+            playlist_id,
+            track_id,
+            position
+        )
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -170,7 +166,21 @@ impl PlaylistManager {
         Ok(())
     }
 
-    pub async fn reorder_tracks(&self, playlist_id: &str, updates: &[(String, f64)]) -> Result<(), sqlx::Error> {
+    /// Actualiza la posición de un track.
+    pub async fn update_position(&self, playlist_id: &str, track_id: &str, new_position: f64) -> Result<(), sqlx::Error> {
+        sqlx::query!(
+            r#"UPDATE playlist_track SET position = ? WHERE playlist_id = ? AND track_id = ?"#,
+            new_position,
+            playlist_id,
+            track_id
+        )
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Renumera todas las posiciones de una playlist.
+    pub async fn renumber_playlist(&self, playlist_id: &str, updates: &[(String, f64)]) -> Result<(), sqlx::Error> {
         if updates.is_empty() { return Ok(()); }
 
         let mut tx = self.pool.begin().await?;
@@ -192,21 +202,6 @@ impl PlaylistManager {
 
     // ── CONSULTAS ────────────────────────────────────────────────────────────
 
-    pub async fn get_all_playlist_track_ids(&self) -> Result<Vec<(String, Vec<String>)>, sqlx::Error> {
-        let playlists = self.get_all_playlists().await?;
-
-        let mut result = Vec::with_capacity(playlists.len());
-        for playlist in playlists {
-            if playlist.id == self.system_playlist_id {
-                continue;
-            }
-            let ids = self.get_playlist_track_ids(&playlist.id).await?;
-            result.push((playlist.id, ids));
-        }
-
-        Ok(result)
-    }
-
     pub async fn get_playlist_track_ids(&self, playlist_id: &str) -> Result<Vec<String>, sqlx::Error> {
         let ids = sqlx::query_scalar!(
             r#"SELECT track_id FROM playlist_track WHERE playlist_id = ? ORDER BY position ASC"#,
@@ -216,5 +211,33 @@ impl PlaylistManager {
             .await?;
 
         Ok(ids)
+    }
+
+    /// Igual a `get_playlist_track_ids`, pero incluye la posición de cada fila.
+    pub async fn get_playlist_track_positions(&self, playlist_id: &str) -> Result<Vec<(String, f64)>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT track_id as "track_id!", position as "position!: f64"
+               FROM playlist_track WHERE playlist_id = ? ORDER BY position ASC"#,
+            playlist_id
+        )
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(|r| (r.track_id, r.position)).collect())
+    }
+
+    pub async fn get_all_playlist_track_positions(&self) -> Result<Vec<(String, Vec<(String, f64)>)>, sqlx::Error> {
+        let playlists = self.get_all_playlists().await?;
+
+        let mut result = Vec::with_capacity(playlists.len());
+        for playlist in playlists {
+            if playlist.id == self.system_playlist_id {
+                continue;
+            }
+            let positions = self.get_playlist_track_positions(&playlist.id).await?;
+            result.push((playlist.id, positions));
+        }
+
+        Ok(result)
     }
 }

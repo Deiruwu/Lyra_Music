@@ -36,12 +36,10 @@
 /// background vía `PlaylistManager`.
 ///
 /// ## Sobre el orden de playlists
-/// `playlist_order` guarda `playlist_id -> Vec<track_id>` para las playlists
-/// CUSTOM (la SYSTEM/Likes no necesita orden, se resuelve filtrando `liked`).
-/// Se carga de forma eager al arrancar junto con los tracks. El orden por
-/// defecto es el de inserción (último agregado al final); reordenar es
-/// responsabilidad de quien llame a `PlaylistManager::reorder_tracks` y
-/// luego refresque `playlist_order` vía el mensaje correspondiente.
+/// `playlist_order` guarda `playlist_id -> Vec<(track_id, position)>` para
+/// las playlists CUSTOM (la SYSTEM/Likes no necesita orden, se resuelve
+/// filtrando `liked`). Se carga de forma eager al arrancar junto con los
+/// tracks, ordenado ascendente por `position`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,9 +64,9 @@ pub enum CatalogStoreMessage {
     /// sola vez tras terminar de resolver todos los chunks de `all_tracks`.
     LikesLoaded(Result<Vec<String>, String>),
 
-    /// `(playlist_id, [track_id])` para todas las playlists CUSTOM, cargado
-    /// eager junto con los likes.
-    PlaylistOrderLoaded(Result<Vec<(String, Vec<String>)>, String>),
+    /// `(playlist_id, [(track_id, position)])` para todas las playlists
+    /// CUSTOM, cargado eager junto con los likes.
+    PlaylistOrderLoaded(Result<Vec<(String, Vec<(String, f64)>)>, String>),
 
     /// `(id, name, cover_url)` de todas las playlists CUSTOM, cargado eager junto con
     /// `playlist_order`. Es la fuente para pintar la lista en el sidebar y covers.
@@ -123,7 +121,7 @@ pub struct CatalogStore {
     pending_chunks: HashMap<usize, Vec<Track>>,
     total_chunks: usize,
 
-    playlist_order: HashMap<String, Vec<String>>,
+    playlist_order: HashMap<String, Vec<(String, f64)>>,
     liked_order: Vec<String>,
     playlists_metadata: Vec<(String, String, Option<String>)>,
     followed_artists: HashMap<String, FollowedArtist>,
@@ -236,7 +234,7 @@ impl CatalogStore {
         };
 
         ids.iter()
-            .filter_map(|id| self.track_by_id(id))
+            .filter_map(|(id, _pos)| self.track_by_id(id))
             .collect()
     }
 
@@ -408,36 +406,20 @@ impl CatalogStore {
     pub fn is_track_in_playlist(&self, playlist_id: &str, track_id: &str) -> bool {
         self.playlist_order
             .get(playlist_id)
-            .map(|ids| ids.iter().any(|id| id == track_id))
+            .map(|ids| ids.iter().any(|(id, _)| id == track_id))
             .unwrap_or(false)
     }
 
-    /// Agrega un track al FINAL de una playlist CUSTOM. La posición
-    /// (`f64` en `PlaylistManager::add_tracks`, pensada para poder
-    /// insertar entre dos existentes en el futuro) se calcula sola acá:
-    /// simplemente "la cantidad de tracks que ya tiene la playlist" —
-    /// como las posiciones son 0-based y consecutivas mientras solo se
-    /// agregue al final, eso siempre cae después de la última. El
-    /// caller (la vista) no necesita saber nada de posiciones.
-    ///
-    /// Muta `playlist_order` de forma optimista y persiste en SQLite en
-    /// background. No aplica a la playlist SYSTEM (Likes) — usar
-    /// `toggle_like` para esa. Si el track ya está en la playlist, no
-    /// hace nada (evita duplicados y un round-trip innecesario).
+    /// Agrega un track al final de una playlist CUSTOM. No aplica a la
+    /// playlist SYSTEM (Likes) — usar `toggle_like` para esa.
     pub fn add_track_to_playlist(&mut self, playlist_id: &str, track_id: &str) -> Task<CatalogStoreMessage> {
         if self.is_track_in_playlist(playlist_id, track_id) {
             return Task::none();
         }
 
-        let next_position = self.playlist_order
-            .get(playlist_id)
-            .map(|ids| ids.len() as f64)
-            .unwrap_or(0.0);
-
-        self.playlist_order
-            .entry(playlist_id.to_string())
-            .or_default()
-            .push(track_id.to_string());
+        let ids = self.playlist_order.entry(playlist_id.to_string()).or_default();
+        let new_position = next_append_position(ids);
+        ids.push((track_id.to_string(), new_position));
         self.bump_version();
 
         let manager = Arc::clone(&self.playlist_manager);
@@ -447,7 +429,7 @@ impl CatalogStore {
         Task::perform(
             async move {
                 let result = manager
-                    .add_tracks(&playlist_id_clone, &[(track_id_clone.clone(), next_position)])
+                    .add_track(&playlist_id_clone, &track_id_clone, new_position)
                     .await;
                 (playlist_id_clone, track_id_clone, result.map_err(|e| e.to_string()))
             },
@@ -457,14 +439,11 @@ impl CatalogStore {
         )
     }
 
-    /// Quita un track de una playlist CUSTOM: muta `playlist_order` de
-    /// forma optimista y persiste en SQLite en background. No aplica a
-    /// la playlist SYSTEM (Likes) — usar `toggle_like` para esa
-    /// (`PlaylistManager::remove_tracks` rechaza explícitamente el id
-    /// de la playlist SYSTEM).
+    /// Quita un track de una playlist CUSTOM. No aplica a la playlist
+    /// SYSTEM (Likes) — usar `toggle_like` para esa.
     pub fn remove_track_from_playlist(&mut self, playlist_id: &str, track_id: &str) -> Task<CatalogStoreMessage> {
         if let Some(ids) = self.playlist_order.get_mut(playlist_id) {
-            ids.retain(|id| id != track_id);
+            ids.retain(|(id, _)| id != track_id);
         }
         self.bump_version();
 
@@ -485,10 +464,7 @@ impl CatalogStore {
         )
     }
 
-    /// Reordena un track dentro de una playlist CUSTOM.
-    /// Muta `playlist_order` de forma optimista (trasladando el elemento
-    /// de `from_idx` a `to_idx`) y persiste el nuevo orden O(N) en SQLite
-    /// en background usando un gap constante de 1024.0.
+    /// Reordena un track dentro de una playlist CUSTOM (drag-and-drop).
     pub fn reorder_track_in_playlist(&mut self, playlist_id: &str, from_idx: usize, to_idx: usize) -> Task<CatalogStoreMessage> {
         let Some(ids) = self.playlist_order.get_mut(playlist_id) else {
             return Task::none();
@@ -498,31 +474,49 @@ impl CatalogStore {
             return Task::none();
         }
 
-        // Mutación optimista en memoria: sacamos el track de su posición original
-        // y lo reinsertamos en el nuevo índice.
-        let track_id = ids.remove(from_idx);
-        ids.insert(to_idx, track_id);
+        let (track_id, _old_position) = ids.remove(from_idx);
 
-        // Generamos el payload para el batch UPDATE en SQLite.
-        // Multiplicamos por 1024.0 para mantener consistencia con cómo
-        // insertas posiciones en `like_track`.
-        let updates: Vec<(String, f64)> = ids
-            .iter()
-            .enumerate()
-            .map(|(i, id)| (id.clone(), (i as f64) * 1024.0))
-            .collect();
-        self.bump_version();
+        let prev = to_idx.checked_sub(1).and_then(|i| ids.get(i)).map(|(_, p)| *p);
+        let next = ids.get(to_idx).map(|(_, p)| *p);
 
         let manager = Arc::clone(&self.playlist_manager);
         let playlist_id_clone = playlist_id.to_string();
 
-        Task::perform(
-            async move {
-                let result = manager.reorder_tracks(&playlist_id_clone, &updates).await;
-                (playlist_id_clone, result.map_err(|e| e.to_string()))
-            },
-            |(pid, res)| CatalogStoreMessage::TrackReordered(pid, res),
-        )
+        let task = match compute_new_position(prev, next) {
+            Some(new_position) => {
+                ids.insert(to_idx, (track_id.clone(), new_position));
+                self.bump_version();
+
+                Task::perform(
+                    async move {
+                        let result = manager.update_position(&playlist_id_clone, &track_id, new_position).await;
+                        (playlist_id_clone, result.map_err(|e| e.to_string()))
+                    },
+                    |(pid, res)| CatalogStoreMessage::TrackReordered(pid, res),
+                )
+            }
+            None => {
+                // Colisión de redondeo f64 entre prev y next: renumerar todo.
+                ids.insert(to_idx, (track_id, 0.0));
+                let renumbered: Vec<(String, f64)> = ids
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (id, _))| (id.clone(), i as f64))
+                    .collect();
+                *ids = renumbered.clone();
+                self.bump_version();
+
+                Task::perform(
+                    async move {
+                        let result = manager.renumber_playlist(&playlist_id_clone, &renumbered).await;
+                        (playlist_id_clone, result.map_err(|e| e.to_string()))
+                    },
+                    |(pid, res)| CatalogStoreMessage::TrackReordered(pid, res),
+                )
+            }
+        };
+
+        task
     }
 
     // ── CARGA (chunking) ─────────────────────────────────────────────────────
@@ -708,7 +702,7 @@ impl CatalogStore {
                 if let Err(e) = result {
                     // Revierte la inserción optimista.
                     if let Some(ids) = self.playlist_order.get_mut(&playlist_id) {
-                        ids.retain(|id| id != &track_id);
+                        ids.retain(|(id, _)| id != &track_id);
                     }
                     self.bump_version();
                     self.last_error = Some(e);
@@ -725,10 +719,9 @@ impl CatalogStore {
                     // pero es un caso raro (fallo de escritura) y evita
                     // tener que guardar el índice previo solo para este
                     // camino de error.
-                    self.playlist_order
-                        .entry(playlist_id)
-                        .or_default()
-                        .push(track_id);
+                    let ids = self.playlist_order.entry(playlist_id).or_default();
+                    let new_position = next_append_position(ids);
+                    ids.push((track_id, new_position));
                     self.bump_version();
                     self.last_error = Some(e);
                 } else {
@@ -815,7 +808,7 @@ impl CatalogStore {
         let order_task = Task::perform(
             async move {
                 manager_order
-                    .get_all_playlist_track_ids()
+                    .get_all_playlist_track_positions()
                     .await
                     .map_err(|e| e.to_string())
             },
@@ -855,5 +848,25 @@ impl CatalogStore {
             .map(|(idx, t)| (t.id.clone(), idx))
             .collect();
         self.bump_version();
+    }
+}
+
+/// Posición para agregar un track al final de `ids`.
+fn next_append_position(ids: &[(String, f64)]) -> f64 {
+    ids.last().map(|(_, p)| p + 1.0).unwrap_or(0.0)
+}
+
+/// Nueva posición para un track movido, dados sus vecinos de destino
+/// (`None` si no hay vecino de ese lado). Devuelve `None` si `prev`/`next`
+/// están demasiado pegadas para tener un punto medio `f64` distinto.
+fn compute_new_position(prev: Option<f64>, next: Option<f64>) -> Option<f64> {
+    match (prev, next) {
+        (None, None) => Some(0.0),
+        (None, Some(next)) => Some(next - 1.0),
+        (Some(prev), None) => Some(prev + 1.0),
+        (Some(prev), Some(next)) => {
+            let mid = prev + (next - prev) / 2.0;
+            (mid > prev && mid < next).then_some(mid)
+        }
     }
 }
