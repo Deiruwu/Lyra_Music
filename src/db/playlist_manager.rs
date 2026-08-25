@@ -103,7 +103,7 @@ impl PlaylistManager {
             VALUES (
                 ?,
                 ?,
-                (SELECT COALESCE(MAX(position), 0.0) + 1024.0
+                (SELECT COALESCE(MAX(position), 0.0) + 1.0
                  FROM playlist_track
                  WHERE playlist_id = ?)
             )
