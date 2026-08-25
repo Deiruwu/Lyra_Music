@@ -438,9 +438,15 @@ where
         let click_track = track.clone();
         let right_click_id = track.id.clone();
 
-        let btn = button(row_content)
+        let centered_content = container(row_content)
             .width(Length::Fill)
             .height(Length::Fixed(self.row_height))
+            .align_y(Alignment::Center);
+
+        let btn = button(centered_content)
+            .width(Length::Fill)
+            .height(Length::Fixed(self.row_height))
+            .padding(0)
             .style(transparent_button)
             .on_press(emit(TrackEvent::Clicked(click_track, visible_idx)));
 
@@ -500,6 +506,7 @@ where
         let ghost_content = container(ghost_row)
             .width(Length::Fill)
             .height(Length::Fixed(self.row_height))
+            .align_y(Alignment::Center)
             .style(|_theme: &iced::Theme| container::Style {
                 background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
                 border: iced::border::rounded(6)
