@@ -1,7 +1,6 @@
 use std::time::Instant;
 use iced::{Element, Length, Task};
 use iced::widget::{column, space};
-use iced::keyboard::Modifiers;
 use crate::model::{Track};
 use crate::ui::views::states_view::{ListAction, TrackViewState};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
@@ -18,7 +17,6 @@ use crate::ui::widgets::track_context_builder::TrackContextMenuBuilder;
 #[derive(Debug, Clone)]
 pub enum PlaylistMessage {
     SearchInputChanged(String),
-    KeybindsChanged(Modifiers),
 
     Table(TrackEvent),
 
@@ -169,7 +167,7 @@ impl PlaylistView {
                         PlaylistOutMessage::RequestChangeSort(key)
                     }
 
-                    ListAction::OpenContextMenu { anchor_id, selected_ids: _ } => {
+                    ListAction::OpenContextMenu { anchor_id, selected_ids } => {
                         let is_liked = rendered_tracks
                             .iter()
                             .find(|t| t.id == anchor_id)
@@ -184,6 +182,7 @@ impl PlaylistView {
                         PlaylistOutMessage::ContextMenuRightClicked {
                             track_id: anchor_id,
                             items,
+                            selected_ids,
                         }
                     }
                 };
@@ -194,10 +193,6 @@ impl PlaylistView {
                 self.pending_drag = None;
                 self.list.apply_search_filter(query.clone());
                 out = PlaylistOutMessage::RequestSearch(query.clone());
-            }
-
-            PlaylistMessage::KeybindsChanged(modifiers) => {
-                self.list.keybinds_press = *modifiers;
             }
 
             PlaylistMessage::RequestCoverChange => {

@@ -1,6 +1,5 @@
 use iced::{Element, Length, Task};
 use iced::widget::{column, space, text};
-use iced::keyboard::Modifiers;
 use iced::Color;
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
@@ -27,7 +26,6 @@ pub const VIEW_DATA: ViewData = ViewData::new(
 #[derive(Debug, Clone)]
 pub enum FavoritesMessage {
     SearchInputChanged(String),
-    KeybindsChanged(Modifiers),
     Table(TrackEvent),
 }
 
@@ -71,7 +69,7 @@ impl FavoritesView {
                     ListAction::OpenAlbum(id) => FavoritesOutMessage::RequestOpenAlbum(id),
                     ListAction::None => FavoritesOutMessage::Idle,
 
-                    ListAction::OpenContextMenu { anchor_id, selected_ids: _ } => {
+                    ListAction::OpenContextMenu { anchor_id, selected_ids } => {
                         let is_liked = true;
 
                         let items = TrackContextMenuBuilder::new(is_liked)
@@ -81,6 +79,7 @@ impl FavoritesView {
                         FavoritesOutMessage::ContextMenuRightClicked {
                             track_id: anchor_id, // Usamos el ancla
                             items,
+                            selected_ids,
                         }
                     }
                 };
@@ -90,10 +89,6 @@ impl FavoritesView {
             FavoritesMessage::SearchInputChanged(query) => {
                 self.list.apply_search_filter(query.clone());
                 out = FavoritesOutMessage::RequestSearch(query.clone());
-            }
-
-            FavoritesMessage::KeybindsChanged(modifiers) => {
-                self.list.keybinds_press = *modifiers;
             }
         };
 

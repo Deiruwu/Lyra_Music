@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use iced::keyboard::Modifiers;
 use iced::{Element, Size, Task};
 
 use crate::audio::manager::manager::TrackManager;
@@ -48,6 +50,9 @@ pub enum CoordinatorMessage {
     // ─── Menú contextual de track (Explorer/Favorites/Playlist) ────
     TrackContextMenuEvent(ContextMenuEvent<String>),
     TrackContextAction(TrackContextAction, String),
+
+    // ─── Selección múltiple (shift/ctrl) ────────────────────────
+    KeybindsChanged(Modifiers),
 
     // ─── Miniaturas ──────────────────────────────────────────────
     ThumbnailLoaded(String, Vec<u8>),
@@ -103,6 +108,11 @@ pub struct ViewCoordinator {
     /// (ver TrackContextMenuBuilder).
     track_context_menu: ContextMenu<String>,
     track_context_menu_items: Vec<ContextMenuItem<TrackContextAction>>,
+    /// Ids seleccionados al momento del click derecho que abrió
+    /// `track_context_menu` — permite que una acción del menú (like,
+    /// enqueue, agregar a playlist, eliminar) se aplique a toda la
+    /// selección múltiple, no solo al track anclado.
+    track_context_selected_ids: HashSet<String>,
 }
 
 impl ViewCoordinator {
@@ -132,6 +142,7 @@ impl ViewCoordinator {
             playlist_view: None,
             track_context_menu: ContextMenu::new(),
             track_context_menu_items: Vec::new(),
+            track_context_selected_ids: HashSet::new(),
         };
 
         let init_task = Task::batch([
@@ -288,6 +299,7 @@ impl ViewCoordinator {
             CoordinatorMessage::TrackContextMenuEvent(event) => {
                 if matches!(event, ContextMenuEvent::Dismissed) {
                     self.track_context_menu_items.clear();
+                    self.track_context_selected_ids.clear();
                 }
                 self.track_context_menu.handle(event);
                 (Task::none(), CoordinatorOutMessage::Idle)
@@ -296,7 +308,17 @@ impl ViewCoordinator {
                 let task = self.handle_track_context_action(action, track_id);
                 self.track_context_menu.handle(ContextMenuEvent::Dismissed);
                 self.track_context_menu_items.clear();
+                self.track_context_selected_ids.clear();
                 (task, CoordinatorOutMessage::Idle)
+            }
+
+            CoordinatorMessage::KeybindsChanged(modifiers) => {
+                self.explorer_view.list.keybinds_press = modifiers;
+                self.favorites_view.list.keybinds_press = modifiers;
+                if let Some(view) = &mut self.playlist_view {
+                    view.list.keybinds_press = modifiers;
+                }
+                (Task::none(), CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::ThumbnailLoaded(key, bytes) => {
@@ -428,9 +450,10 @@ impl ViewCoordinator {
                 Task::none()
             }
 
-            TrackListOutMessage::ContextMenuRightClicked { track_id, items, .. } => {
+            TrackListOutMessage::ContextMenuRightClicked { track_id, items, selected_ids } => {
                 self.track_context_menu.handle(ContextMenuEvent::RightClicked(track_id));
                 self.track_context_menu_items = items;
+                self.track_context_selected_ids = selected_ids;
                 Task::none()
             }
 
@@ -441,40 +464,78 @@ impl ViewCoordinator {
     }
 
     /// Traduce una acción elegida en el menú contextual de track a la
-    /// llamada real correspondiente.
+    /// llamada real correspondiente. Cuando el click derecho se hizo sobre
+    /// una selección múltiple, `track_context_selected_ids` trae todos los
+    /// ids involucrados (no solo `track_id`, el track anclado) — cada
+    /// acción decide si aplica a toda esa selección o solo al ancla.
     fn handle_track_context_action(&mut self, action: TrackContextAction, track_id: String) -> Task<CoordinatorMessage> {
+        let selected_ids: HashSet<String> = if self.track_context_selected_ids.is_empty() {
+            HashSet::from([track_id.clone()])
+        } else {
+            self.track_context_selected_ids.clone()
+        };
+
         match action {
             TrackContextAction::PlayNow => {
-                if let Some(track) = self.catalog_store.track_by_id(&track_id) {
-                    self.manager.play_context(vec![track.clone()], 0);
+                let rendered = self.active_route_rendered_tracks();
+                let tracks: Vec<Track> = rendered
+                    .iter()
+                    .filter(|t| selected_ids.contains(&t.id))
+                    .map(|t| (*t).clone())
+                    .collect();
+                if !tracks.is_empty() {
+                    let start_index = tracks.iter().position(|t| t.id == track_id).unwrap_or(0);
+                    self.manager.play_context(tracks, start_index);
                 }
                 Task::none()
             }
             TrackContextAction::Enqueue => {
-                if let Some(track) = self.catalog_store.track_by_id(&track_id) {
-                    self.manager.enqueue(track.clone());
+                for id in &selected_ids {
+                    if let Some(track) = self.catalog_store.track_by_id(id) {
+                        self.manager.enqueue(track.clone());
+                    }
                 }
                 Task::none()
             }
             TrackContextAction::FrontEnqueue => {
-                if let Some(track) = self.catalog_store.track_by_id(&track_id) {
-                    self.manager.enqueue_front(track.clone());
+                for id in &selected_ids {
+                    if let Some(track) = self.catalog_store.track_by_id(id) {
+                        self.manager.enqueue_front(track.clone());
+                    }
                 }
                 Task::none()
             }
             TrackContextAction::ToggleLike => {
-                self.catalog_store.toggle_like(&track_id).map(CoordinatorMessage::Catalog)
+                let target_liked = self.catalog_store.track_by_id(&track_id).map(|t| t.liked).unwrap_or(false);
+                let ids_to_toggle: Vec<String> = selected_ids
+                    .iter()
+                    .filter(|id| self.catalog_store.track_by_id(id).map(|t| t.liked) != Some(target_liked))
+                    .cloned()
+                    .collect();
+                let tasks: Vec<_> = ids_to_toggle
+                    .into_iter()
+                    .map(|id| self.catalog_store.toggle_like(&id).map(CoordinatorMessage::Catalog))
+                    .collect();
+                Task::batch(tasks)
             }
             TrackContextAction::AddToPlaylist(target_playlist_id) => {
-                self.catalog_store
-                    .add_track_to_playlist(&target_playlist_id, &track_id)
-                    .map(CoordinatorMessage::Catalog)
+                let tasks: Vec<_> = selected_ids
+                    .iter()
+                    .map(|id| {
+                        self.catalog_store
+                            .add_track_to_playlist(&target_playlist_id, id)
+                            .map(CoordinatorMessage::Catalog)
+                    })
+                    .collect();
+                Task::batch(tasks)
             }
             TrackContextAction::CopyId => {
                 iced::clipboard::write(track_id)
             }
             TrackContextAction::DeleteFromCatalog => {
-                self.catalog_store.delete_track(&track_id);
+                for id in &selected_ids {
+                    self.catalog_store.delete_track(id);
+                }
                 Task::none()
             }
             TrackContextAction::RemoveFromPlaylist => {
@@ -482,10 +543,43 @@ impl ViewCoordinator {
                     return Task::none();
                 };
                 let playlist_id = playlist_id.clone();
-                self.catalog_store
-                    .remove_track_from_playlist(&playlist_id, &track_id)
-                    .map(CoordinatorMessage::Catalog)
+                let tasks: Vec<_> = selected_ids
+                    .iter()
+                    .map(|id| {
+                        self.catalog_store
+                            .remove_track_from_playlist(&playlist_id, id)
+                            .map(CoordinatorMessage::Catalog)
+                    })
+                    .collect();
+                Task::batch(tasks)
             }
+        }
+    }
+
+    /// Tracks ya filtrados+ordenados (todo el universo, no la ventana con
+    /// buffer) de la vista de la ruta activa ahora mismo — mismo `match` de
+    /// rutas que `active_view_thumbnail_targets`, pero sin recortar al
+    /// viewport visible: una selección múltiple puede incluir ids que están
+    /// scrolleados fuera de pantalla.
+    fn active_route_rendered_tracks(&self) -> Vec<&Track> {
+        match &self.active_route {
+            ActiveRoute::Nav(NavId::Explorer) => {
+                let all_refs = self.catalog_store.explorer_tracks();
+                self.explorer_view.list.rendered(&all_refs, &self.catalog_store)
+            }
+            ActiveRoute::Nav(NavId::Favorites) => {
+                let liked = self.catalog_store
+                    .tracks_for_playlist(self.catalog_store.system_playlist_id());
+                self.favorites_view.list.rendered(&liked, &self.catalog_store)
+            }
+            ActiveRoute::Playlist(id) => {
+                let Some(view) = &self.playlist_view else {
+                    return Vec::new();
+                };
+                let all = self.catalog_store.tracks_for_playlist(id);
+                view.list.rendered(&all, &self.catalog_store)
+            }
+            _ => Vec::new(),
         }
     }
 

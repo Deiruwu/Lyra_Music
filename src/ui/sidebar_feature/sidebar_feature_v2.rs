@@ -161,6 +161,9 @@ impl SidebarFeatureV2 {
                         PlaylistMessage::GlobalMouseRelease,
                     )))
                 }
+                iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
+                    Some(SidebarMessage::Content(CoordinatorMessage::KeybindsChanged(modifiers)))
+                }
                 _ => None
             }
         });

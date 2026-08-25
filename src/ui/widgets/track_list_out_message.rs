@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::ui::widgets::context_menu::ContextMenuItem;
 use crate::ui::widgets::track_context_builder::TrackContextAction;
 
@@ -32,6 +33,7 @@ pub enum TrackListOutMessage<Extra> {
     ContextMenuRightClicked {
         track_id: String,
         items: Vec<ContextMenuItem<TrackContextAction>>,
+        selected_ids: HashSet<String>,
     },
 
     // ─── Lo propio de cada vista ─────────────────────────────────

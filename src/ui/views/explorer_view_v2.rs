@@ -1,6 +1,5 @@
 use iced::{Element, Length, Task};
 use iced::widget::{column, space, text};
-use iced::keyboard::Modifiers;
 use iced::Color;
 use crate::JETBRAINS_MONO;
 use crate::model::Track;
@@ -26,7 +25,6 @@ pub const VIEW_DATA: ViewData = ViewData::new(
 #[derive(Debug, Clone)]
 pub enum ExplorerMessage {
     SearchInputChanged(String),
-    KeybindsChanged(Modifiers),
     Table(TrackEvent),
     ConfirmDialogConfirm,
     ConfirmDialogCancel,
@@ -77,7 +75,7 @@ impl ExplorerView {
                     ListAction::OpenAlbum(id) => ExplorerOutMessage::RequestOpenAlbum(id),
                     ListAction::None => ExplorerOutMessage::Idle,
 
-                    ListAction::OpenContextMenu { anchor_id, selected_ids: _ } => {
+                    ListAction::OpenContextMenu { anchor_id, selected_ids } => {
                         let is_liked = rendered_tracks.iter().find(|t| t.id == anchor_id).map(|t| t.liked).unwrap_or(false);
 
                         let items = TrackContextMenuBuilder::new(is_liked)
@@ -88,6 +86,7 @@ impl ExplorerView {
                         ExplorerOutMessage::ContextMenuRightClicked {
                             track_id: anchor_id,
                             items,
+                            selected_ids,
                         }
                     }
                 };
@@ -96,10 +95,6 @@ impl ExplorerView {
             ExplorerMessage::SearchInputChanged(query) => {
                 self.list.apply_search_filter(query.clone());
                 out = ExplorerOutMessage::RequestSearch(query.clone());
-            }
-
-            ExplorerMessage::KeybindsChanged(modifiers) => {
-                self.list.keybinds_press = *modifiers;
             }
 
             ExplorerMessage::ConfirmDialogConfirm => {
