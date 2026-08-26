@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use iced::{Alignment, Element, Length, Padding, Point, Size};
 use iced::widget::{button, column, container, mouse_area, pin, row, space, stack, text};
 use crate::ui::assets::fonts::SF_PRO;
-use crate::ui::assets::icons::Icon;
+use crate::ui::assets::icons::{self, Icon};
 use crate::ui::styles::button as button_style;
 use crate::ui::styles::container as container_style;
 use crate::ui::assets::{spacing, typography};
@@ -20,12 +20,12 @@ const VIEWPORT_MARGIN: f32 = 8.0;
 pub enum ContextMenuItem<Action> {
     Leaf {
         label: Cow<'static, str>,
-        icon: Option<&'static str>,
+        icon: Option<Icon>,
         action: Action,
     },
     Submenu {
         label: Cow<'static, str>,
-        icon: Option<&'static str>,
+        icon: Option<Icon>,
         id: usize,
         children: Vec<ContextMenuItem<Action>>,
     },
@@ -38,8 +38,8 @@ impl<Action: Clone> ContextMenuItem<Action> {
 
     pub fn icon(mut self, icon: Icon) -> Self {
         match &mut self {
-            ContextMenuItem::Leaf { icon: i, .. } => *i = Some(icon.into()),
-            ContextMenuItem::Submenu { icon: i, .. } => *i = Some(icon.into()),
+            ContextMenuItem::Leaf { icon: i, .. } => *i = Some(icon),
+            ContextMenuItem::Submenu { icon: i, .. } => *i = Some(icon),
         }
         self
     }
@@ -191,10 +191,10 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                     let item_clone = item.clone();
 
                     let icon_cell = container(
-                        text(icon.unwrap_or(""))
-                            .font(SF_PRO)
-                            .size(typography::TEXT_13)
-                            .color(theme().content.primary),
+                        match icon {
+                            Some(i) => icons::icon(i, typography::TEXT_13).color(theme().content.primary),
+                            None => text("").color(theme().content.primary),
+                        },
                     )
                         .width(Length::Fixed(ICON_COLUMN_WIDTH))
                         .align_x(Alignment::Center);
@@ -220,10 +220,10 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                     let is_open = self.open_submenu == Some(id);
 
                     let icon_cell = container(
-                        text(icon.unwrap_or(""))
-                            .font(SF_PRO)
-                            .size(typography::TEXT_13)
-                            .color(theme().content.primary),
+                        match icon {
+                            Some(i) => icons::icon(i, typography::TEXT_13).color(theme().content.primary),
+                            None => text("").color(theme().content.primary),
+                        },
                     )
                         .width(Length::Fixed(ICON_COLUMN_WIDTH))
                         .align_x(Alignment::Center);
@@ -283,10 +283,10 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                     let item_clone = item.clone();
 
                     let icon_cell = container(
-                        text(icon.unwrap_or(""))
-                            .font(SF_PRO)
-                            .size(typography::TEXT_13)
-                            .color(theme().content.primary),
+                        match icon {
+                            Some(i) => icons::icon(i, typography::TEXT_13).color(theme().content.primary),
+                            None => text("").color(theme().content.primary),
+                        },
                     )
                         .width(Length::Fixed(ICON_COLUMN_WIDTH))
                         .align_x(Alignment::Center);

@@ -4,12 +4,11 @@ use std::time::Instant;
 use iced::widget::image::Handle;
 use iced::widget::scrollable::Viewport;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, space, stack, text, Id};
-use iced::widget::text::Shaping;
 use iced::{Alignment, Color, Element, Length, Padding, Point};
 use strum_macros::AsRefStr;
 use crate::model::{Album, Artist, Track};
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
-use crate::ui::assets::icons::Icon;
+use crate::ui::assets::icons::{self, Icon};
 use crate::ui::styles::button as button_style;
 use crate::ui::styles::row as row_style;
 use crate::ui::styles::RowSelectionShape;
@@ -460,15 +459,12 @@ where
         let show_toggle_icon = !self.is_playing || self.icon_hovered;
 
         let glyph: Element<'a, Message> = if show_toggle_icon {
-            let icon = if self.is_playing { Icon::Pause } else { Icon::Play };
-            text(icon.as_str())
-                .font(JETBRAINS_MONO)
-                .shaping(Shaping::Advanced)
-                .size(typography::TEXT_13)
+            let icon_variant = if self.is_playing { Icon::Pause } else { Icon::Play };
+            icons::icon(icon_variant, typography::TEXT_13)
                 .color(theme().accent.primary)
                 .into()
         } else {
-            text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(typography::TEXT_11).color(theme().accent.primary).into()
+            icons::glyph(Icon::equalizer_frame(), typography::TEXT_11).color(theme().accent.primary).into()
         };
 
         container(glyph)

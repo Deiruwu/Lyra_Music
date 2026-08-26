@@ -3,7 +3,6 @@ use std::sync::Arc;
 use iced::border::rounded;
 use iced::widget::image::Handle;
 use iced::widget::scrollable::Viewport;
-use iced::widget::text::Shaping;
 use iced::widget::{button, column, container, image, responsive, row, rule, scrollable, space, stack, text, Id};
 use iced::{Alignment, ContentFit, Element, Length, Padding, Task, Theme};
 
@@ -11,8 +10,8 @@ use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::{AlbumSummary, AlbumType, ArtistDto, Track};
 use crate::ui::styles::button as button_style;
-use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
-use crate::ui::assets::icons::Icon;
+use crate::ui::assets::fonts::SF_PRO;
+use crate::ui::assets::icons::{self, Icon};
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::gallery_thumbnail::{GalleryThumbnail, Treatment};
 use crate::ui::utils::virtual_list::ScrollTracker;
@@ -390,7 +389,7 @@ impl ArtistView {
     /// Botón circular con flecha centrada; sin `on_press` cuando `on_press` es `None`.
     fn carousel_arrow(icon: Icon, on_press: Option<ArtistMessage>) -> Element<'static, ArtistMessage> {
         let glyph = container(
-            text(icon.as_str()).font(JETBRAINS_MONO).shaping(Shaping::Advanced).size(typography::TEXT_14),
+            icons::icon(icon, typography::TEXT_14),
         )
         .width(Length::Fixed(ARROW_SIZE))
         .height(Length::Fixed(ARROW_SIZE))

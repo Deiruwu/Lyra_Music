@@ -1,6 +1,7 @@
 use iced::{Element, Length, ContentFit};
-use iced::widget::{container, image, text};
+use iced::widget::{container, image};
 use iced::widget::image::Handle;
+use crate::ui::assets::icons::{icon, Icon};
 use crate::ui::theme::theme;
 
 pub enum ThumbnailState {
@@ -25,7 +26,7 @@ where
             .into(),
 
         ThumbnailState::Loading => container(
-            text("󰋩").size(size * 0.4)
+            icon(Icon::ImagePlaceholder, size * 0.4)
         )
             .width(Length::Fixed(size))
             .height(Length::Fixed(size))

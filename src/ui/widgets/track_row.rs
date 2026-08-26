@@ -9,7 +9,7 @@ use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::styles::button as button_style;
 use crate::ui::theme::theme;
 use crate::ui::assets::fonts::JETBRAINS_MONO;
-use crate::ui::assets::icons::Icon;
+use crate::ui::assets::icons::{self, Icon};
 
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() > max {
@@ -121,7 +121,7 @@ where
     if hovered {
         let play_btn = button(
             container(
-                text(Icon::Play.as_ref()).font(JETBRAINS_MONO).size(typography::TEXT_18).color(theme().content.primary)
+                icons::icon(Icon::Play, typography::TEXT_18).color(theme().content.primary)
             )
                 .width(Length::Fixed(55.0))
                 .height(Length::Fixed(55.0))
@@ -213,9 +213,7 @@ where
     let delete_button = mouse_area(
         button(
             container(
-                text(if delete_hovered { "󰛌" } else { "󰆴" })
-                    .font(JETBRAINS_MONO)
-                    .size(typography::TEXT_16)
+                icons::icon(if delete_hovered { Icon::DeleteOpen } else { Icon::Delete }, typography::TEXT_16)
             )
                 .width(Length::Fixed(44.0))
                 .height(Length::Fixed(44.0))

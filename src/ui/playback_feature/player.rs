@@ -4,10 +4,9 @@ use iced::widget::image::Handle;
 use iced::widget::{button, column, container, mouse_area, rich_text, row, slider, space, text};
 use crate::audio::manager::manager::RepeatMode;
 use crate::audio::track_event::TrackEvent;
-use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
-use crate::ui::assets::icons::Icon;
+use crate::ui::assets::icons::{self, Icon};
 use crate::ui::styles::button as button_style;
 use crate::ui::widgets::artist_links::artist_links;
 use crate::ui::widgets::single_line_text::single_line_text;
@@ -100,9 +99,9 @@ impl Player {
         repeat_mode: RepeatMode,
     ) -> Element<'_, PlayerMessage> {
         let play_icon = if is_playing {
-            text(Icon::Pause.as_ref()).font(JETBRAINS_MONO)
+            icons::icon(Icon::Pause, typography::TEXT_16)
         } else {
-            text(Icon::Play.as_ref()).font(JETBRAINS_MONO)
+            icons::icon(Icon::Play, typography::TEXT_16)
         };
 
         let active_color = theme().accent.control_active;
@@ -111,9 +110,7 @@ impl Player {
         let shuffle_button = {
             let color = if is_shuffled { active_color } else { inactive_color };
             button(
-                text(Icon::Shuffle.as_ref())
-                    .font(JETBRAINS_MONO)
-                    .size(typography::TEXT_16)
+                icons::icon(Icon::Shuffle, typography::TEXT_16)
                     .style(move |_: &Theme| text::Style { color: Some(color) }),
             )
                 .style(button_style::minimal)
@@ -122,7 +119,7 @@ impl Player {
 
         let prev_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
-                button(text(Icon::SkipPrevious.as_ref()).font(JETBRAINS_MONO).size(typography::TEXT_18)).style(button_style::minimal);
+                button(icons::icon(Icon::SkipPrevious, typography::TEXT_18)).style(button_style::minimal);
             if has_history { b.on_press(PlayerMessage::UiPrev) } else { b }
         };
 
@@ -133,20 +130,18 @@ impl Player {
 
         let next_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
-                button(text(Icon::SkipNext.as_ref()).font(JETBRAINS_MONO).size(typography::TEXT_18)).style(button_style::minimal);
+                button(icons::icon(Icon::SkipNext, typography::TEXT_18)).style(button_style::minimal);
             if has_track { b.on_press(PlayerMessage::UiNext) } else { b }
         };
 
         let repeat_button = {
-            let (icon, color) = match repeat_mode {
-                RepeatMode::Off   => (Icon::Repeat.as_ref(), inactive_color),
-                RepeatMode::Queue => (Icon::Repeat.as_ref(), active_color),
-                RepeatMode::Track => (Icon::RepeatOne.as_ref(), active_color),
+            let (icon_variant, color) = match repeat_mode {
+                RepeatMode::Off   => (Icon::Repeat, inactive_color),
+                RepeatMode::Queue => (Icon::Repeat, active_color),
+                RepeatMode::Track => (Icon::RepeatOne, active_color),
             };
             button(
-                text(icon)
-                    .font(JETBRAINS_MONO)
-                    .size(typography::TEXT_16)
+                icons::icon(icon_variant, typography::TEXT_16)
                     .style(move |_: &Theme| text::Style { color: Some(color) }),
             )
                 .style(button_style::minimal)
@@ -244,16 +239,14 @@ impl Player {
     }
 
     fn like_button(track_id: String, is_liked: bool) -> Element<'static, PlayerMessage> {
-        let (icon, color) = if is_liked {
-            (Icon::HeartFull.as_str(), theme().status.liked)
+        let (icon_variant, color) = if is_liked {
+            (Icon::HeartFull, theme().status.liked)
         } else {
-            (Icon::Heart.as_str(), theme().content.tertiary_alt)
+            (Icon::Heart, theme().content.tertiary_alt)
         };
 
         button(
-            text(icon)
-                .font(JETBRAINS_MONO)
-                .size(typography::TEXT_18)
+            icons::icon(icon_variant, typography::TEXT_18)
                 .style(move |_: &Theme| text::Style { color: Some(color) }),
         )
             .style(button_style::minimal)

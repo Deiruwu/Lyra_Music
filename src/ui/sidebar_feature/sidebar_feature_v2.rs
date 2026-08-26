@@ -4,15 +4,14 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::Event::Mouse;
 use iced::mouse::Event::CursorMoved;
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
-use iced::widget::text::Shaping;
 
 use crate::audio::manager::manager::TrackManager;
 use crate::db::playlist_manager::PlaylistManager;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
-use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
-use crate::ui::assets::icons::Icon;
+use crate::ui::assets::fonts::SF_PRO;
+use crate::ui::assets::icons::{self, Icon};
 use crate::ui::styles::button as button_style;
 use crate::ui::utils::cover_manager::CoverVariant;
 use crate::ui::views::view_coordinator::{ActiveRoute, CoordinatorMessage, CoordinatorOutMessage, ViewCoordinator};
@@ -413,11 +412,7 @@ impl SidebarFeatureV2 {
             theme().content.muted
         };
 
-        let icon_elem = text(data.icon.as_str())
-            .font(data.icon_font)
-            .size(typography::TEXT_16)
-            .shaping(Shaping::Advanced)
-            .color(text_color);
+        let icon_elem = icons::icon(data.icon, typography::TEXT_16).color(text_color);
 
         let content: Element<'_, SidebarMessage> = if is_expanded_visual {
             let label_elem = text(data.label)
@@ -584,7 +579,7 @@ impl SidebarFeatureV2 {
 
     pub fn view_toggle(&self) -> Element<'_, SidebarMessage> {
         let icon_char = if self.is_expanded { Icon::Return } else { Icon::BurgerMenu };
-        let btn = button(text(icon_char.as_str()).font(JETBRAINS_MONO).size(typography::TEXT_18).shaping(Shaping::Advanced))
+        let btn = button(icons::icon(icon_char, typography::TEXT_18))
             .style(button_style::minimal)
             .on_press(SidebarMessage::ToggleExpanded)
             .padding(spacing::SP_8);

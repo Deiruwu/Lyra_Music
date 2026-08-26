@@ -1,4 +1,3 @@
-use iced::Font;
 use crate::ui::assets::icons::Icon;
 
 /// Identificador único de cada distrito primario del sidebar.
@@ -18,13 +17,12 @@ pub enum NavId {
 #[derive(Debug, Clone, Copy)]
 pub struct ViewData {
     pub id: NavId,
-    pub icon: Icon, 
+    pub icon: Icon,
     pub label: &'static str,
-    pub icon_font: Font,
 }
 
 impl ViewData {
-    pub const fn new(id: NavId, icon: Icon, label: &'static str, icon_font: Font) -> Self {
-        Self { id, icon, label, icon_font }
+    pub const fn new(id: NavId, icon: Icon, label: &'static str) -> Self {
+        Self { id, icon, label }
     }
 }

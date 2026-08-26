@@ -4,17 +4,15 @@ use std::sync::Arc;
 use chrono::{Duration, Utc};
 use futures::future::join_all;
 use iced::border::rounded;
-use iced::widget::text::Shaping;
 use iced::widget::{button, column, container, image, mouse_area, responsive, row, rule, scrollable, space, text};
 use iced::{Alignment, Border, ContentFit, Element, Length, Padding, Task, Theme};
 
 use crate::ui::styles::button as button_style;
-use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;
 use crate::ui::assets::fonts::SF_PRO;
-use crate::ui::assets::icons::Icon;
+use crate::ui::assets::icons::{self, Icon};
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::artist_links::{album_link, artist_links};
@@ -28,7 +26,6 @@ pub const VIEW_DATA: ViewData = ViewData::new(
     NavId::Home,
     Icon::Home,
     "Home",
-    JETBRAINS_MONO,
 );
 
 const WINDOW_DAYS: i64 = 14;
@@ -518,7 +515,7 @@ fn view_carousel<'a, T>(
 
 /// Botón circular con flecha centrada; sin `on_press` cuando `on_press` es `None`.
 fn carousel_arrow(icon: Icon, on_press: Option<HomeViewMessage>) -> Element<'static, HomeViewMessage> {
-    let glyph = container(text(icon.as_str()).font(JETBRAINS_MONO).shaping(Shaping::Advanced).size(typography::TEXT_14))
+    let glyph = container(icons::icon(icon, typography::TEXT_14))
         .width(Length::Fixed(ARROW_SIZE))
         .height(Length::Fixed(ARROW_SIZE))
         .align_x(Alignment::Center)

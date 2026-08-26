@@ -42,11 +42,11 @@ use iced::widget::image::Handle;
 use iced::widget::{button, column, container, row, space, stack, text};
 use iced::{Alignment, Color, Element, Length, Padding, Theme};
 use iced::border::rounded;
-use crate::ui::assets::icons::Icon;
+use crate::ui::assets::icons::{self, Icon};
 use crate::ui::utils::playlist_metadata::{format_track_count, format_total_duration};
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 
-use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
+use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::{spacing, typography};
 use crate::ui::theme::theme;
 use crate::ui::assets::radii;
@@ -93,7 +93,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         let hover_button = button(
             container(
                 container(
-                    text(Icon::Camera.as_ref()).font(JETBRAINS_MONO).size(typography::TEXT_24),
+                    icons::icon(Icon::Camera, typography::TEXT_24),
                 )
                     .center_x(Length::Fill)
                     .center_y(Length::Fill),
@@ -165,7 +165,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
     let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
     let play_button = button(
         container(
-            text(play_icon.as_str()).font(JETBRAINS_MONO).size(typography::TEXT_20).color(theme().content.on_accent),
+            icons::icon(play_icon, typography::TEXT_20).color(theme().content.on_accent),
         )
             .width(Length::Fixed(PLAY_BUTTON_SIZE))
             .height(Length::Fixed(PLAY_BUTTON_SIZE))

@@ -1,18 +1,16 @@
 use iced::border::rounded;
 use iced::widget::image::Handle;
-use iced::widget::text::Shaping;
 use iced::widget::{button, column, container, mouse_area, row, text};
 use iced::{Alignment, Element, Length, Padding, Theme};
 
 use crate::model::{Track, TrackState};
 use crate::ui::assets::fonts::SF_PRO;
-use crate::ui::assets::icons::Icon;
+use crate::ui::assets::icons::{self, Icon};
 use crate::ui::theme::theme;
 use crate::ui::widgets::artist_links::{album_link, artist_links};
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
 use crate::utils::formatting::format_duration;
-use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::ui::assets::{spacing, typography};
 
 /// Celda líder numerada de una fila: el número de posición normalmente;
@@ -36,15 +34,12 @@ fn leading_index_cell<'a, Message: 'a>(
     let show_toggle_icon = !is_playing || icon_hovered;
 
     let glyph: Element<'a, Message> = if show_toggle_icon {
-        let icon = if is_playing { Icon::Pause } else { Icon::Play };
-        text(icon.as_str())
-            .font(JETBRAINS_MONO)
-            .shaping(Shaping::Advanced)
-            .size(typography::TEXT_13)
+        let icon_variant = if is_playing { Icon::Pause } else { Icon::Play };
+        icons::icon(icon_variant, typography::TEXT_13)
             .color(theme().accent.primary)
             .into()
     } else {
-        text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(typography::TEXT_11).color(theme().accent.primary).into()
+        icons::glyph(Icon::equalizer_frame(), typography::TEXT_11).color(theme().accent.primary).into()
     };
 
     container(glyph)

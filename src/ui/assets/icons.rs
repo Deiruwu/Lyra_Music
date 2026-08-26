@@ -1,5 +1,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
+use iced::widget::text::{self, Shaping, Text};
+use iced::{Renderer, Theme};
 use strum_macros::{AsRefStr, IntoStaticStr};
+
+use crate::ui::assets::fonts::JETBRAINS_MONO;
 
 #[derive(Debug, Clone, Copy, AsRefStr, IntoStaticStr)]
 pub enum Icon {
@@ -109,6 +113,9 @@ pub enum Icon {
     // Covers
     #[strum(serialize = "")]
     Camera,
+
+    #[strum(serialize = "󰋩")]
+    ImagePlaceholder,
 }
 
 impl Icon {
@@ -133,4 +140,20 @@ impl Icon {
             .map(|bar| LEVELS[((step + bar) % level_count) as usize].as_str())
             .collect()
     }
+}
+
+/// Único punto de renderizado de un `Icon`: fija la fuente Nerd Font y el
+/// shaping avanzado que sus glifos PUA necesitan, para que sea imposible
+/// construir un icono roto por olvidar uno de los dos.
+pub fn icon<'a>(icon: Icon, size: f32) -> Text<'a, Theme, Renderer> {
+    glyph(icon.as_str(), size)
+}
+
+/// Igual que [`icon`], para contenido de glifos que no es un único `Icon`
+/// (p.ej. `Icon::equalizer_frame`).
+pub fn glyph<'a>(s: impl text::IntoFragment<'a>, size: f32) -> Text<'a, Theme, Renderer> {
+    Text::new(s)
+        .font(JETBRAINS_MONO)
+        .shaping(Shaping::Advanced)
+        .size(size)
 }
