@@ -6,8 +6,9 @@ use futures::future::join_all;
 use iced::border::rounded;
 use iced::widget::text::Shaping;
 use iced::widget::{button, column, container, image, mouse_area, responsive, row, rule, scrollable, space, text};
-use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding, Task, Theme};
+use iced::{Alignment, Border, ContentFit, Element, Length, Padding, Task, Theme};
 
+use crate::ui::styles::button as button_style;
 use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::microservices::client::MicroserviceClient;
@@ -20,6 +21,8 @@ use crate::ui::widgets::artist_links::{album_link, artist_links};
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::truncate;
+use crate::ui::assets::{radii, spacing, typography};
+use crate::ui::theme::theme;
 
 pub const VIEW_DATA: ViewData = ViewData::new(
     NavId::Home,
@@ -202,8 +205,8 @@ impl HomeView {
 
         scrollable(
             column(children)
-                .spacing(28)
-                .padding(Padding { top: 24.0, right: 24.0, bottom: 32.0, left: 24.0 }),
+                .spacing(spacing::SP_28)
+                .padding(Padding { top: spacing::SP_24, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
         )
         .width(Length::Fill)
         .into()
@@ -223,7 +226,7 @@ impl HomeView {
             .collect();
 
         column![section_title("Escuchar ahora"), column(rows).spacing(BANNER_CARD_SPACING)]
-            .spacing(12)
+            .spacing(spacing::SP_12)
             .into()
     }
 
@@ -236,13 +239,13 @@ impl HomeView {
         };
         let thumb = async_thumbnail(thumbnail_state, BANNER_THUMBNAIL_SIZE, BANNER_THUMBNAIL_SIZE / 2.0);
 
-        let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, Color::WHITE, Length::Fill);
+        let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, theme().content.primary, Length::Fill);
 
         let artist = artist_links(
             &track.artists,
             SF_PRO,
             12.0,
-            Color::from_rgb(0.7, 0.7, 0.75),
+            theme().content.secondary,
             Length::Fill,
             HomeViewMessage::TopTrackArtistClicked,
         );
@@ -251,26 +254,26 @@ impl HomeView {
             track.album.as_ref(),
             SF_PRO,
             12.0,
-            Color::from_rgb(0.55, 0.55, 0.6),
+            theme().content.tertiary_alt2,
             Length::Fill,
             HomeViewMessage::TopTrackAlbumClicked,
         );
 
-        let info = column![title, artist, album].spacing(3).width(Length::Fill);
+        let info = column![title, artist, album].spacing(spacing::SP_3).width(Length::Fill);
 
-        let content = row![thumb, info].spacing(12).align_y(Alignment::Center);
+        let content = row![thumb, info].spacing(spacing::SP_12).align_y(Alignment::Center);
 
         let card = button(content)
             .width(Length::FillPortion(1))
-            .padding(10)
+            .padding(spacing::SP_10)
             .style(|_theme: &Theme, status| {
                 let hovered = status == button::Status::Hovered;
                 button::Style {
-                    background: Some(Color::from_rgba(1.0, 1.0, 1.0, if hovered { 0.05 } else { 0.025 }).into()),
-                    text_color: Color::WHITE,
+                    background: Some(if hovered { theme().overlay.card_hover } else { theme().overlay.card_idle }.into()),
+                    text_color: theme().content.primary,
                     border: Border {
                         radius: BANNER_CARD_RADIUS.into(),
-                        color: Color::from_rgba(1.0, 1.0, 1.0, if hovered { 0.16 } else { 0.10 }),
+                        color: if hovered { theme().overlay.card_border_hover } else { theme().overlay.card_border_idle },
                         width: 1.0,
                     },
                     ..Default::default()
@@ -293,7 +296,7 @@ impl HomeView {
                 .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .height(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(Color::from_rgb(0.18, 0.18, 0.18).into()),
+                    background: Some(theme().surface.placeholder.into()),
                     border: rounded(CARD_THUMBNAIL_SIZE / 2.0),
                     ..Default::default()
                 })
@@ -304,13 +307,13 @@ impl HomeView {
 
         let name = text(display_name)
             .font(SF_PRO)
-            .size(13)
-            .color(Color::WHITE)
+            .size(typography::TEXT_13)
+            .color(theme().content.primary)
             .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
             .height(Length::Fixed(CARD_NAME_LINE_HEIGHT))
             .align_x(Alignment::Center);
 
-        let content = column![thumbnail, name].spacing(8).align_x(Alignment::Center);
+        let content = column![thumbnail, name].spacing(spacing::SP_8).align_x(Alignment::Center);
 
         button(content)
             .padding(Padding {
@@ -319,7 +322,7 @@ impl HomeView {
                 bottom: CARD_HOVER_PADDING_BOTTOM,
                 left: CARD_HOVER_PADDING,
             })
-            .style(card_hover_style)
+            .style(button_style::card_hover(radii::R_12))
             .on_press(HomeViewMessage::TopArtistClicked(artist.artist_id.clone()))
             .into()
     }
@@ -336,7 +339,7 @@ impl HomeView {
                 .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .height(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(Color::from_rgb(0.18, 0.18, 0.18).into()),
+                    background: Some(theme().surface.placeholder.into()),
                     border: rounded(ALBUM_CARD_RADIUS),
                     ..Default::default()
                 })
@@ -345,20 +348,20 @@ impl HomeView {
 
         let display_name = truncate(album.album_name.as_str(), CARD_NAME_MAX_CHARS);
 
-        let name = container(text(display_name).font(SF_PRO).size(13).color(Color::WHITE))
+        let name = container(text(display_name).font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary))
             .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
             .height(Length::Fixed(CARD_NAME_LINE_HEIGHT))
             .clip(true);
 
         let subtitle = text(format!("{} reproducciones", album.play_count))
             .font(SF_PRO)
-            .size(12)
-            .color(Color::from_rgb(0.6, 0.6, 0.65))
+            .size(typography::TEXT_12)
+            .color(theme().content.tertiary)
             .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
             .height(Length::Fixed(CARD_SUBTITLE_LINE_HEIGHT));
 
-        let text_block = column![name, subtitle].spacing(4).width(Length::Fixed(CARD_THUMBNAIL_SIZE));
-        let content = column![thumbnail, text_block].spacing(8);
+        let text_block = column![name, subtitle].spacing(spacing::SP_4).width(Length::Fixed(CARD_THUMBNAIL_SIZE));
+        let content = column![thumbnail, text_block].spacing(spacing::SP_8);
 
         button(content)
             .padding(Padding {
@@ -367,7 +370,7 @@ impl HomeView {
                 bottom: CARD_HOVER_PADDING_BOTTOM,
                 left: CARD_HOVER_PADDING,
             })
-            .style(card_hover_style)
+            .style(button_style::card_hover(radii::R_12))
             .on_press(HomeViewMessage::TopAlbumClicked(album.album_id.clone()))
             .into()
     }
@@ -480,8 +483,8 @@ fn view_carousel<'a, T>(
         let page = page.min(total_pages.saturating_sub(1));
 
         let divider = rule::horizontal(1.0).style(|_theme: &Theme| rule::Style {
-            color: Color::from_rgba(1.0, 1.0, 1.0, 0.12),
-            radius: 0.0.into(),
+            color: theme().border.subtle,
+            radius: radii::R_NONE.into(),
             fill_mode: rule::FillMode::Full,
             snap: false,
         });
@@ -492,7 +495,7 @@ fn view_carousel<'a, T>(
             carousel_arrow(Icon::LeftArrow, (page > 0).then_some(on_prev.clone())),
             carousel_arrow(Icon::RightArrow, (page + 1 < total_pages).then_some(on_next.clone())),
         ]
-        .spacing(16)
+        .spacing(spacing::SP_16)
         .align_y(Alignment::Center);
 
         let start = page * per_page;
@@ -508,14 +511,14 @@ fn view_carousel<'a, T>(
 
         let cards: Vec<Element<'a, HomeViewMessage>> = items[start..end].iter().map(&card_fn).collect();
 
-        column![header, row(cards).spacing(gap)].spacing(12).into()
+        column![header, row(cards).spacing(gap)].spacing(spacing::SP_12).into()
     })
     .into()
 }
 
 /// Botón circular con flecha centrada; sin `on_press` cuando `on_press` es `None`.
 fn carousel_arrow(icon: Icon, on_press: Option<HomeViewMessage>) -> Element<'static, HomeViewMessage> {
-    let glyph = container(text(icon.as_str()).font(JETBRAINS_MONO).shaping(Shaping::Advanced).size(14))
+    let glyph = container(text(icon.as_str()).font(JETBRAINS_MONO).shaping(Shaping::Advanced).size(typography::TEXT_14))
         .width(Length::Fixed(ARROW_SIZE))
         .height(Length::Fixed(ARROW_SIZE))
         .align_x(Alignment::Center)
@@ -523,36 +526,15 @@ fn carousel_arrow(icon: Icon, on_press: Option<HomeViewMessage>) -> Element<'sta
 
     let enabled = on_press.is_some();
 
-    let mut arrow_button = button(glyph).padding(0).style(move |_theme: &Theme, status| {
-        let bg = if !enabled {
-            Color::from_rgba(1.0, 1.0, 1.0, 0.04)
-        } else {
-            match status {
-                button::Status::Hovered => Color::from_rgba(1.0, 1.0, 1.0, 0.18),
-                _ => Color::from_rgba(1.0, 1.0, 1.0, 0.1),
-            }
-        };
-        button::Style {
-            background: Some(bg.into()),
-            text_color: if enabled { Color::WHITE } else { Color::from_rgba(1.0, 1.0, 1.0, 0.3) },
-            border: rounded(ARROW_SIZE / 2.0),
-            ..Default::default()
-        }
-    });
+    let mut arrow_button = button(glyph)
+        .padding(spacing::SP_0)
+        .style(button_style::carousel_arrow(enabled, ARROW_SIZE));
 
     if let Some(message) = on_press {
         arrow_button = arrow_button.on_press(message);
     }
 
     arrow_button.into()
-}
-
-fn card_hover_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered => Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
-        _ => None,
-    };
-    button::Style { background, text_color: Color::WHITE, border: rounded(12.0), ..Default::default() }
 }
 
 /// Cuántas tarjetas de `CARD_UNIT_WIDTH` (+ `CARD_SPACING` entre ellas) caben en `width`.
@@ -570,11 +552,11 @@ fn top_album_key(album_id: &str) -> String {
 }
 
 fn section_title<'a, Message: 'a>(title: &'a str) -> Element<'a, Message> {
-    text(title).font(SF_PRO).size(18).color(Color::WHITE).into()
+    text(title).font(SF_PRO).size(typography::TEXT_18).color(theme().content.primary).into()
 }
 
 fn status_message(message: &str) -> Element<'_, HomeViewMessage> {
-    container(text(message.to_string()).font(SF_PRO).size(14).color(Color::from_rgb(0.6, 0.6, 0.65)))
+    container(text(message.to_string()).font(SF_PRO).size(typography::TEXT_14).color(theme().content.tertiary))
         .width(Length::Fill)
         .height(Length::Fixed(200.0))
         .align_x(Alignment::Center)

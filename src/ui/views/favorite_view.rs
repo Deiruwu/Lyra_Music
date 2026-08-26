@@ -1,6 +1,5 @@
 use iced::{Element, Length, Task};
 use iced::widget::{column, space, text};
-use iced::Color;
 use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::model::Track;
 use crate::ui::assets::fonts::SF_PRO;
@@ -13,6 +12,8 @@ use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusT
 use crate::ui::widgets::track_list_builder::{TrackBuilder, TrackEvent};
 use crate::ui::widgets::track_list_out_message::TrackListOutMessage;
 use crate::ui::widgets::track_context_builder::TrackContextMenuBuilder;
+use crate::ui::assets::typography;
+use crate::ui::theme::theme;
 
 pub const VIEW_DATA: ViewData = ViewData::new(
     NavId::Favorites,
@@ -105,9 +106,9 @@ impl FavoritesView {
         is_playing: bool,
     ) -> Element<'a, FavoritesMessage> {
         let title = text("Me gusta")
-            .size(28)
+            .size(typography::TEXT_28)
             .font(SF_PRO)
-            .style(|_| text::Style { color: Some(Color::WHITE) });
+            .style(|_| text::Style { color: Some(theme().content.primary) });
 
         let search_bar = catalog_search_input(
             "Buscar en tus favoritos...",

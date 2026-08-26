@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use iced::border::rounded;
 use iced::widget::scrollable::Viewport;
 use iced::widget::{button, column, container, image, row, scrollable, space, text, Id};
-use iced::{Alignment, Color, ContentFit, Element, Length, Padding, Task, Theme};
+use iced::{Alignment, ContentFit, Element, Length, Padding, Task, Theme};
 
 use crate::microservices::client::MicroserviceClient;
 use crate::model::{AlbumDto, Artist, Track};
@@ -13,6 +13,8 @@ use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::utils::playlist_metadata::{format_total_duration, format_track_count, track_stats};
 use crate::ui::widgets::artist_links::artist_links;
 use crate::ui::widgets::track_row_simple::track_row_numbered;
+use crate::ui::assets::{radii, spacing, typography};
+use crate::ui::theme::theme;
 
 const COVER_SIZE: f32 = 220.0;
 const COVER_RADIUS: f32 = 12.0;
@@ -118,8 +120,8 @@ impl AlbumView {
                         self.view_header(album, this_album_is_current, header_is_playing),
                         self.view_track_list(&album.tracks, now_playing_id, is_playing),
                     ]
-                        .spacing(24)
-                        .padding(Padding { top: 0.0, right: 24.0, bottom: 32.0, left: 24.0 }),
+                        .spacing(spacing::SP_24)
+                        .padding(Padding { top: spacing::SP_0, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
                 )
                 .width(Length::Fill)
                 .id(Id::new("album_view_scroll"))
@@ -143,7 +145,7 @@ impl AlbumView {
                 .width(Length::Fixed(COVER_SIZE))
                 .height(Length::Fixed(COVER_SIZE))
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(Color::from_rgb(0.18, 0.18, 0.18).into()),
+                    background: Some(theme().surface.placeholder.into()),
                     border: rounded(COVER_RADIUS),
                     ..Default::default()
                 })
@@ -152,7 +154,7 @@ impl AlbumView {
 
         let (track_count, total_duration) = track_stats(&album.tracks);
 
-        let title = text(album.name.as_str()).font(SF_PRO).size(36).color(Color::WHITE);
+        let title = text(album.name.as_str()).font(SF_PRO).size(typography::TEXT_36).color(theme().content.primary);
 
         let artists_and_type = self.view_artists_and_type(album);
 
@@ -162,32 +164,32 @@ impl AlbumView {
             format_total_duration(total_duration),
         ))
         .font(SF_PRO)
-        .size(13)
-        .color(Color::from_rgb(0.7, 0.7, 0.75));
+        .size(typography::TEXT_13)
+        .color(theme().content.secondary);
 
         let release_date = text(format!(
             "Fecha de salida: {}",
             album.year.as_deref().unwrap_or("—"),
         ))
         .font(SF_PRO)
-        .size(13)
-        .color(Color::from_rgb(0.6, 0.6, 0.65));
+        .size(typography::TEXT_13)
+        .color(theme().content.tertiary);
 
         let play_label = if header_is_playing { "Pausar" } else { "Reproducir" };
         let play_message = if this_album_is_current { AlbumMessage::TogglePlayback } else { AlbumMessage::PlayAlbumPressed };
 
-        let play_button = button(text(play_label).font(SF_PRO).size(14).color(Color::WHITE))
-            .padding(Padding { top: 8.0, right: 20.0, bottom: 8.0, left: 20.0 })
+        let play_button = button(text(play_label).font(SF_PRO).size(typography::TEXT_14).color(theme().content.primary))
+            .padding(Padding { top: spacing::SP_8, right: spacing::SP_20, bottom: spacing::SP_8, left: spacing::SP_20 })
             .style(|_theme: &Theme, status| {
-                let base = Color::from_rgb(0.55, 0.35, 0.85);
+                let base = theme().accent.strong;
                 let background = match status {
-                    button::Status::Hovered => Color::from_rgb(0.62, 0.42, 0.92),
+                    button::Status::Hovered => theme().accent.strong_hover,
                     _ => base,
                 };
                 button::Style {
                     background: Some(background.into()),
-                    text_color: Color::WHITE,
-                    border: rounded(20.0),
+                    text_color: theme().content.primary,
+                    border: rounded(radii::R_20),
                     ..Default::default()
                 }
             })
@@ -202,21 +204,21 @@ impl AlbumView {
             space().height(8),
             play_button,
         ]
-        .spacing(2)
+        .spacing(spacing::SP_2)
         .align_x(Alignment::Start);
 
         let content = row![cover, info]
-            .spacing(24)
+            .spacing(spacing::SP_24)
             .align_y(Alignment::End)
-            .padding(Padding { top: 32.0, bottom: 28.0, left: 8.0, right: 8.0 });
+            .padding(Padding { top: spacing::SP_32, bottom: spacing::SP_28, left: spacing::SP_8, right: spacing::SP_8 });
 
         container(content)
             .width(Length::Fill)
             .style(|_theme: &Theme| container::Style {
                 background: Some(
                     iced::gradient::Linear::new(std::f32::consts::PI * 1.5)
-                        .add_stop(0.0, Color::from_rgb(0.22, 0.16, 0.28))
-                        .add_stop(1.0, Color::from_rgb(0.09, 0.09, 0.10))
+                        .add_stop(0.0, theme().surface.gradient_start)
+                        .add_stop(1.0, theme().surface.gradient_end)
                         .into(),
                 ),
                 ..Default::default()
@@ -242,15 +244,15 @@ impl AlbumView {
             artists,
             SF_PRO,
             14.0,
-            Color::from_rgb(0.85, 0.85, 0.9),
+            theme().content.primary_alt,
             Length::Shrink,
             AlbumMessage::ArtistPressed,
         );
 
         let type_label = text(format!(" · {}", album.album_type.label()))
             .font(SF_PRO)
-            .size(14)
-            .color(Color::from_rgb(0.7, 0.7, 0.75));
+            .size(typography::TEXT_14)
+            .color(theme().content.secondary);
 
         row![artist_line, type_label].align_y(Alignment::Center).into()
     }
@@ -278,7 +280,7 @@ impl AlbumView {
             })
             .collect();
 
-        column(rows).spacing(4).into()
+        column(rows).spacing(spacing::SP_4).into()
     }
 
     /// Id del álbum mostrado — para cachear/restaurar el scroll por id
@@ -328,7 +330,7 @@ fn album_artists(tracks: &[Track]) -> Vec<&Artist> {
 }
 
 fn status_message(message: &str) -> Element<'_, AlbumMessage> {
-    container(text(message.to_string()).font(SF_PRO).size(14).color(Color::from_rgb(0.6, 0.6, 0.65)))
+    container(text(message.to_string()).font(SF_PRO).size(typography::TEXT_14).color(theme().content.tertiary))
         .width(Length::Fill)
         .height(Length::Fixed(200.0))
         .align_x(Alignment::Center)

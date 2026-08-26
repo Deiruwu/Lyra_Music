@@ -9,7 +9,7 @@ mod settings;
 
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::Ordering;
-use iced::{border, window, Background, Border, Color, Element, Length, Padding, Theme};
+use iced::{border, window, Background, Border, Element, Length, Padding, Theme};
 use iced::widget::{column, container, row, space, stack};
 
 use crate::audio::discord::DiscordPresence;
@@ -27,6 +27,7 @@ use crate::microservices::client::MicroserviceClient;
 use crate::settings::AppSettings;
 use crate::tray::TrayFlags;
 
+use crate::ui::assets::radii;
 use crate::ui::library_browser_feature::library_browser_feature::{
     LibraryBrowserFeature, LibraryBrowserMessage, LibraryBrowserOutMessage,
 };
@@ -40,6 +41,8 @@ use crate::ui::views::view_coordinator::{playlist_pairs, CoordinatorMessage};
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::views::catalog_store::CatalogStoreMessage;
 use crate::ui::widgets::context_menu::ContextMenuEvent;
+use crate::ui::assets::spacing;
+use crate::ui::theme::theme;
 
 
 static TRAY_FLAGS: OnceLock<Arc<TrayFlags>> = OnceLock::new();
@@ -477,11 +480,11 @@ impl App {
         let center_view = container(center_content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(20)
+            .padding(spacing::SP_20)
             .style(|_theme| container::Style {
-                background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.20))),
+                background: Some(Background::Color(theme().background.surface)),
                 border: Border {
-                    radius: border::Radius::from(18.0),
+                    radius: border::Radius::from(radii::R_18),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -501,10 +504,10 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(Padding {
-                top: 10.0,
-                right: 15.0,
-                bottom: 10.0,
-                left: 0.0,
+                top: spacing::SP_10,
+                right: spacing::SP_15,
+                bottom: spacing::SP_10,
+                left: spacing::SP_0,
             });
 
         // 1. EXTRAEMOS los overlays de aquí. Este stack ahora es netamente estructural
@@ -533,7 +536,7 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_theme| container::Style {
-                background: Some(Background::Color(Color::from_rgb(0.1, 0.1, 0.1))),
+                background: Some(Background::Color(theme().background.app)),
                 ..Default::default()
             });
 

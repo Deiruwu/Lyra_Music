@@ -5,11 +5,12 @@ use iced::widget::image::Handle;
 use iced::widget::scrollable::Viewport;
 use iced::widget::text::Shaping;
 use iced::widget::{button, column, container, image, responsive, row, rule, scrollable, space, stack, text, Id};
-use iced::{Alignment, Color, ContentFit, Element, Length, Padding, Task, Theme};
+use iced::{Alignment, ContentFit, Element, Length, Padding, Task, Theme};
 
 use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::{AlbumSummary, AlbumType, ArtistDto, Track};
+use crate::ui::styles::button as button_style;
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 use crate::ui::assets::icons::Icon;
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
@@ -18,6 +19,8 @@ use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::widgets::track_row::truncate;
 use crate::ui::widgets::track_row_simple::track_row_with_thumbnail;
 use crate::utils::formatting::format_views;
+use crate::ui::assets::{radii, spacing, typography};
+use crate::ui::theme::theme;
 
 const TOP_SONGS_COUNT: usize = 5;
 const CARD_THUMBNAIL_SIZE: f32 = 176.0;
@@ -193,8 +196,8 @@ impl ArtistView {
 
                 scrollable(
                     column(children)
-                        .spacing(28)
-                        .padding(Padding { top: 0.0, right: 24.0, bottom: 32.0, left: 24.0 }),
+                        .spacing(spacing::SP_28)
+                        .padding(Padding { top: spacing::SP_0, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
                 )
                 .width(Length::Fill)
                 .id(Id::new("artist_view_scroll"))
@@ -214,13 +217,13 @@ impl ArtistView {
                 None => banner_placeholder(banner_height),
             };
 
-            let name = text(artist.name.as_str()).font(SF_PRO).size(44).color(Color::WHITE);
+            let name = text(artist.name.as_str()).font(SF_PRO).size(typography::TEXT_44).color(theme().content.primary);
 
             let views: Element<'a, ArtistMessage> = match artist.views {
                 Some(views) => text(format!("{} reproducciones", format_views(views)))
                     .font(SF_PRO)
-                    .size(14)
-                    .color(Color::from_rgba(1.0, 1.0, 1.0, 0.75))
+                    .size(typography::TEXT_14)
+                    .color(theme().content.on_banner)
                     .into(),
                 None => space().into(),
             };
@@ -233,7 +236,7 @@ impl ArtistView {
                 .width(Length::Fill)
                 .height(Length::Fixed(banner_height))
                 .align_y(Alignment::End)
-                .padding(24);
+                .padding(spacing::SP_24);
 
             container(stack![background, name])
                 .width(Length::Fill)
@@ -271,8 +274,8 @@ impl ArtistView {
             })
             .collect();
 
-        column![section_title("Top canciones"), column(rows).spacing(4)]
-            .spacing(12)
+        column![section_title("Top canciones"), column(rows).spacing(spacing::SP_4)]
+            .spacing(spacing::SP_12)
             .into()
     }
 
@@ -291,8 +294,8 @@ impl ArtistView {
             let page = page.min(total_pages.saturating_sub(1));
 
             let divider = rule::horizontal(1.0).style(|_theme: &Theme| rule::Style {
-                color: Color::from_rgba(1.0, 1.0, 1.0, 0.12),
-                radius: 0.0.into(),
+                color: theme().border.subtle,
+                radius: radii::R_NONE.into(),
                 fill_mode: rule::FillMode::Full,
                 snap: false,
             });
@@ -303,7 +306,7 @@ impl ArtistView {
                 Self::carousel_arrow(Icon::LeftArrow, (page > 0).then_some(on_prev.clone())),
                 Self::carousel_arrow(Icon::RightArrow, (page + 1 < total_pages).then_some(on_next.clone())),
             ]
-            .spacing(16)
+            .spacing(spacing::SP_16)
             .align_y(Alignment::Center);
 
             let start = page * per_page;
@@ -322,7 +325,7 @@ impl ArtistView {
                 .map(|item| self.view_album_card(item))
                 .collect();
 
-            column![header, row(cards).spacing(gap)].spacing(12).into()
+            column![header, row(cards).spacing(gap)].spacing(spacing::SP_12).into()
         })
         .into()
     }
@@ -340,7 +343,7 @@ impl ArtistView {
                 .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .height(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(Color::from_rgb(0.18, 0.18, 0.18).into()),
+                    background: Some(theme().surface.placeholder.into()),
                     border: rounded(CARD_RADIUS),
                     ..Default::default()
                 })
@@ -350,7 +353,7 @@ impl ArtistView {
         let display_name = truncate(item.name.as_str(), CARD_NAME_MAX_CHARS);
         let name_lines = if display_name.chars().count() > CARD_NAME_CHARS_PER_LINE { 2.0 } else { 1.0 };
 
-        let name = container(text(display_name).font(SF_PRO).size(14).color(Color::WHITE))
+        let name = container(text(display_name).font(SF_PRO).size(typography::TEXT_14).color(theme().content.primary))
             .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
             .height(Length::Fixed(name_lines * CARD_NAME_LINE_HEIGHT))
             .clip(true);
@@ -361,16 +364,16 @@ impl ArtistView {
             item.album_type.label(),
         ))
         .font(SF_PRO)
-        .size(12)
-        .color(Color::from_rgb(0.6, 0.6, 0.65))
+        .size(typography::TEXT_12)
+        .color(theme().content.tertiary)
         .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
         .height(Length::Fixed(CARD_SUBTITLE_LINE_HEIGHT));
 
         let text_block = column![name, subtitle]
-            .spacing(4)
+            .spacing(spacing::SP_4)
             .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
             .height(Length::Fixed(CARD_TEXT_BLOCK_HEIGHT));
-        let content = column![thumbnail, text_block].spacing(6);
+        let content = column![thumbnail, text_block].spacing(spacing::SP_6);
 
         button(content)
             .padding(Padding {
@@ -379,7 +382,7 @@ impl ArtistView {
                 bottom: CARD_HOVER_PADDING_BOTTOM,
                 left: CARD_HOVER_PADDING,
             })
-            .style(card_hover_style)
+            .style(button_style::card_hover(CARD_RADIUS))
             .on_press(ArtistMessage::AlbumCardPressed(item.id.clone()))
             .into()
     }
@@ -387,7 +390,7 @@ impl ArtistView {
     /// Botón circular con flecha centrada; sin `on_press` cuando `on_press` es `None`.
     fn carousel_arrow(icon: Icon, on_press: Option<ArtistMessage>) -> Element<'static, ArtistMessage> {
         let glyph = container(
-            text(icon.as_str()).font(JETBRAINS_MONO).shaping(Shaping::Advanced).size(14),
+            text(icon.as_str()).font(JETBRAINS_MONO).shaping(Shaping::Advanced).size(typography::TEXT_14),
         )
         .width(Length::Fixed(ARROW_SIZE))
         .height(Length::Fixed(ARROW_SIZE))
@@ -396,22 +399,9 @@ impl ArtistView {
 
         let enabled = on_press.is_some();
 
-        let mut arrow_button = button(glyph).padding(0).style(move |_theme: &Theme, status| {
-            let bg = if !enabled {
-                Color::from_rgba(1.0, 1.0, 1.0, 0.04)
-            } else {
-                match status {
-                    button::Status::Hovered => Color::from_rgba(1.0, 1.0, 1.0, 0.18),
-                    _ => Color::from_rgba(1.0, 1.0, 1.0, 0.1),
-                }
-            };
-            button::Style {
-                background: Some(bg.into()),
-                text_color: if enabled { Color::WHITE } else { Color::from_rgba(1.0, 1.0, 1.0, 0.3) },
-                border: rounded(ARROW_SIZE / 2.0),
-                ..Default::default()
-            }
-        });
+        let mut arrow_button = button(glyph)
+            .padding(spacing::SP_0)
+            .style(button_style::carousel_arrow(enabled, ARROW_SIZE));
 
         if let Some(message) = on_press {
             arrow_button = arrow_button.on_press(message);
@@ -473,37 +463,24 @@ fn follow_button(is_followed: bool) -> Element<'static, ArtistMessage> {
     let label = if is_followed { "Siguiendo" } else { "Seguir" };
 
     let (idle, hovered) = if is_followed {
-        (Color::from_rgba(1.0, 1.0, 1.0, 0.22), Color::from_rgba(1.0, 1.0, 1.0, 0.28))
+        (theme().overlay.toggle_on_idle, theme().overlay.toggle_on_hover)
     } else {
-        (Color::from_rgba(1.0, 1.0, 1.0, 0.08), Color::from_rgba(1.0, 1.0, 1.0, 0.14))
+        (theme().overlay.selected, theme().overlay.toggle_hover)
     };
 
-    button(text(label).font(SF_PRO).size(13).color(Color::WHITE))
-        .padding(Padding { top: 6.0, right: 14.0, bottom: 6.0, left: 14.0 })
+    button(text(label).font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary))
+        .padding(Padding { top: spacing::SP_6, right: spacing::SP_14, bottom: spacing::SP_6, left: spacing::SP_14 })
         .style(move |_theme: &Theme, status| button::Style {
             background: Some(match status {
                 button::Status::Hovered => hovered,
                 _ => idle,
             }.into()),
-            text_color: Color::WHITE,
-            border: rounded(14.0),
+            text_color: theme().content.primary,
+            border: rounded(radii::R_14),
             ..Default::default()
         })
         .on_press(ArtistMessage::FollowPressed)
         .into()
-}
-
-fn card_hover_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered => Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
-        _ => None,
-    };
-    button::Style {
-        background,
-        text_color: Color::WHITE,
-        border: rounded(CARD_RADIUS),
-        ..Default::default()
-    }
 }
 
 /// Cuántas tarjetas de `CARD_UNIT_WIDTH` (+ `CARD_SPACING` entre ellas) caben en `width`.
@@ -533,7 +510,7 @@ fn banner_image<'a, Message: 'a>(handle: Handle, height: f32) -> Element<'a, Mes
     .height(Length::Fixed(height))
     .clip(true)
     .style(|_theme: &Theme| container::Style {
-        background: Some(Color::BLACK.into()),
+        background: Some(theme().content.on_accent.into()),
         ..Default::default()
     })
     .into()
@@ -544,14 +521,14 @@ fn banner_placeholder<'a, Message: 'a>(height: f32) -> Element<'a, Message> {
         .width(Length::Fill)
         .height(Length::Fixed(height))
         .style(|_theme: &Theme| container::Style {
-            background: Some(Color::from_rgb(0.14, 0.14, 0.16).into()),
+            background: Some(theme().surface.raised.into()),
             ..Default::default()
         })
         .into()
 }
 
 fn status_message(message: &str) -> Element<'_, ArtistMessage> {
-    container(text(message.to_string()).font(SF_PRO).size(14).color(Color::from_rgb(0.6, 0.6, 0.65)))
+    container(text(message.to_string()).font(SF_PRO).size(typography::TEXT_14).color(theme().content.tertiary))
         .width(Length::Fill)
         .height(Length::Fixed(200.0))
         .align_x(Alignment::Center)
@@ -560,5 +537,5 @@ fn status_message(message: &str) -> Element<'_, ArtistMessage> {
 }
 
 fn section_title<'a, Message: 'a>(title: &'a str) -> Element<'a, Message> {
-    text(title).font(SF_PRO).size(18).color(Color::WHITE).into()
+    text(title).font(SF_PRO).size(typography::TEXT_18).color(theme().content.primary).into()
 }
