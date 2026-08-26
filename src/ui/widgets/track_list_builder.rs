@@ -30,6 +30,17 @@ const INDEX_COL_WIDTH: f32 = 40.0;
 const DEFAULT_ROW_HEIGHT: f32 = 60.0;
 const DEFAULT_BUFFER_ROWS: usize = 15;
 
+/// Spacing entre celdas compartido por cabecera, fila y fila fantasma —
+/// deben coincidir para que las etiquetas de columna queden sobre sus datos.
+const ROW_GRID_SPACING: f32 = spacing::SP_16;
+
+/// Padding lateral compartido por cabecera, fila y fila fantasma; el
+/// vertical sí varía legítimamente (la cabecera no está constreñida en
+/// altura como las filas).
+fn row_grid_padding(vertical: f32) -> Padding {
+    Padding { top: vertical, bottom: vertical, left: spacing::SP_10, right: spacing::SP_16 }
+}
+
 #[derive(Debug, Clone)]
 pub enum TrackEvent {
     Clicked(Track, usize),
@@ -358,9 +369,9 @@ where
         }
 
         row(cells)
-            .spacing(spacing::SP_10)
+            .spacing(ROW_GRID_SPACING)
             .align_y(Alignment::Center)
-            .padding(Padding { top: spacing::SP_4, bottom: spacing::SP_4, left: spacing::SP_10, right: spacing::SP_16 })
+            .padding(row_grid_padding(spacing::SP_4))
             .into()
     }
 
@@ -493,9 +504,9 @@ where
         }
 
         let row_content = row(row_children)
-            .spacing(spacing::SP_16)
+            .spacing(ROW_GRID_SPACING)
             .align_y(Alignment::Center)
-            .padding(Padding { top: spacing::SP_0, bottom: spacing::SP_0, left: spacing::SP_10, right: spacing::SP_16 });
+            .padding(row_grid_padding(spacing::SP_0));
 
         // display_index es 1-based (para mostrar "#1, #2..."); el índice
         // real dentro del vector visible es display_index - 1.
@@ -577,9 +588,9 @@ where
         }
 
         let ghost_row = row(row_children)
-            .spacing(spacing::SP_10)
+            .spacing(ROW_GRID_SPACING)
             .align_y(Alignment::Center)
-            .padding(Padding { top: spacing::SP_0, bottom: spacing::SP_0, left: spacing::SP_10, right: spacing::SP_16 });
+            .padding(row_grid_padding(spacing::SP_0));
 
         let ghost_content = container(ghost_row)
             .width(Length::Fill)
