@@ -10,7 +10,7 @@ use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::audio::manager::manager::QueueSlot;
 use crate::model::Track;
 use crate::ui::playback_feature::player::TrackLink;
-use crate::ui::styles::styles::{minimal_button};
+use crate::ui::styles::button as button_style;
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::widgets::track_row::{queue_track_row, DragRowParams};
@@ -484,7 +484,7 @@ impl QueuePanel {
     pub fn view_toggle_button(&self) -> Element<'_, QueueMessage> {
         let can_show_queue = !self.queue.is_empty();
         let btn = button(text("󰲸").font(JETBRAINS_MONO).size(18))
-            .style(minimal_button);
+            .style(button_style::minimal);
 
         if can_show_queue {
             btn.on_press(QueueMessage::Toggle)

@@ -1,46 +1,9 @@
-use iced::{Border, Color, Theme};
-use iced::widget::{button, container};
+use iced::border::radius;
+use iced::widget::container;
+use iced::{Border, Theme};
 
-pub fn transparent_button(_theme: &Theme, status: button::Status) -> button::Style {
-    let (background, text_color) = match status {
-        button::Status::Disabled => (None, Color::from_rgb(0.35, 0.35, 0.38)),
-        button::Status::Hovered => (
-            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.03).into()),
-            Color::WHITE
-        ),
-        _ => (None, Color::WHITE),
-    };
-
-    button::Style {
-        background,
-        text_color,
-        ..Default::default()
-    }
-}
-
-pub fn minimal_button(_theme: &Theme, status: button::Status) -> button::Style {
-    let text_color = match status {
-        button::Status::Disabled => {
-            Color::from_rgb(0.35, 0.35, 0.38)
-        }
-
-        button::Status::Hovered
-        | button::Status::Pressed => {
-            Color::WHITE
-        }
-
-        button::Status::Active => {
-            Color::from_rgb(0.82, 0.82, 0.82)
-        }
-    };
-
-    button::Style {
-        background: None,
-        text_color,
-        border: Border::default(),
-        ..Default::default()
-    }
-}
+use crate::ui::assets::radii;
+use crate::ui::theme::theme;
 
 /// Posición de una fila dentro de un bloque contiguo de filas seleccionadas.
 /// Determina qué esquinas llevan radio y si el borde interior (el que
@@ -75,11 +38,7 @@ impl RowSelectionShape {
     }
 }
 
-/// Color de acento para la fila que está sonando.
-pub const NOW_PLAYING_ACCENT: Color = Color::from_rgb(0.74, 0.58, 0.98);
-
-/// Fondo + borde para la fila seleccionada.
-/// Mayor contraste en el canal alfa para diferenciar selección de hover.
+/// Fondo de la fila seleccionada.
 ///
 /// Cuando varias filas contiguas están seleccionadas se "fusionan": el
 /// radio de esquina solo aparece en los bordes externos del bloque
@@ -88,18 +47,16 @@ pub const NOW_PLAYING_ACCENT: Color = Color::from_rgb(0.74, 0.58, 0.98);
 /// comparta color con la vecina, sigue siendo una línea visible en el
 /// punto de contacto; sin borde, el fondo compartido entre filas
 /// contiguas se ve como un solo bloque continuo.
-pub fn selected_row_container(shape: RowSelectionShape) -> impl Fn(&Theme) -> container::Style {
+pub fn selected(shape: RowSelectionShape) -> impl Fn(&Theme) -> container::Style {
     move |_theme: &Theme| {
-        use iced::border::radius;
-
-        let background = Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into());
+        let background = Some(theme().overlay.selected.into());
 
         match shape {
             RowSelectionShape::None => container::Style::default(),
             RowSelectionShape::Solo => container::Style {
                 background,
                 border: Border {
-                    radius: radius(6.0),
+                    radius: radius(radii::R_6),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -107,8 +64,7 @@ pub fn selected_row_container(shape: RowSelectionShape) -> impl Fn(&Theme) -> co
             RowSelectionShape::First => container::Style {
                 background,
                 border: Border {
-                    // Radio solo en las esquinas superiores.
-                    radius: iced::border::radius(0).top(6.0),
+                    radius: radius(radii::R_NONE).top(radii::R_6),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -116,7 +72,7 @@ pub fn selected_row_container(shape: RowSelectionShape) -> impl Fn(&Theme) -> co
             RowSelectionShape::Middle => container::Style {
                 background,
                 border: Border {
-                    radius: radius(0.0),
+                    radius: radius(radii::R_NONE),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -124,42 +80,11 @@ pub fn selected_row_container(shape: RowSelectionShape) -> impl Fn(&Theme) -> co
             RowSelectionShape::Last => container::Style {
                 background,
                 border: Border {
-                    // Radio solo en las esquinas inferiores.
-                    radius: iced::border::radius(0).bottom(6.0),
+                    radius: radius(radii::R_NONE).bottom(radii::R_6),
                     ..Default::default()
                 },
                 ..Default::default()
             },
         }
-    }
-}
-
-/// Menú contextual estilo panel flotante oscuro.
-/// Fondo antracita semi-sólido para evitar que el texto de la fila inferior distraiga.
-pub fn context_menu_container(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb(0.10, 0.10, 0.12).into()),
-        border: Border {
-            radius: 8.0.into(),
-            color: Color::from_rgba(1.0, 1.0, 1.0, 0.12),
-            width: 1.0,
-        },
-        ..Default::default()
-    }
-}
-
-pub fn context_menu_item(_theme: &Theme, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered => Some(Color::from_rgba(1.0, 1.0, 1.0, 0.10).into()),
-        _ => None,
-    };
-    button::Style {
-        background,
-        text_color: Color::WHITE,
-        border: Border {
-            radius: 5.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
     }
 }

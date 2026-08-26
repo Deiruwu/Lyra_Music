@@ -40,7 +40,8 @@
 use iced::{Alignment, Color, Element, Length, Padding};
 use iced::widget::{button, column, container, mouse_area, row, text};
 use crate::ui::assets::fonts::SF_PRO;
-use crate::ui::styles::styles::{context_menu_container, context_menu_item};
+use crate::ui::styles::button as button_style;
+use crate::ui::styles::container as container_style;
 
 #[derive(Debug, Clone)]
 pub struct ConfirmDialog<Item> {
@@ -91,14 +92,14 @@ impl<Item: Clone> ConfirmDialog<Item> {
         let confirm_btn = button(
             text("Confirmar").font(SF_PRO).size(13).color(Color::WHITE),
         )
-            .style(context_menu_item)
+            .style(button_style::context_menu_item)
             .padding(Padding { top: 8.0, bottom: 8.0, left: 18.0, right: 18.0 })
             .on_press(confirm_msg);
 
         let cancel_btn = button(
             text("Cancelar").font(SF_PRO).size(13).color(Color::from_rgb(0.7, 0.7, 0.75)),
         )
-            .style(context_menu_item)
+            .style(button_style::context_menu_item)
             .padding(Padding { top: 8.0, bottom: 8.0, left: 18.0, right: 18.0 })
             .on_press(cancel_msg.clone());
 
@@ -114,7 +115,7 @@ impl<Item: Clone> ConfirmDialog<Item> {
                 .spacing(4),
         )
             .padding(24)
-            .style(context_menu_container);
+            .style(container_style::context_menu);
 
         let backdrop = mouse_area(
             container(card)

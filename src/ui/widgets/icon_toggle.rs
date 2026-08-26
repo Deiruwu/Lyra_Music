@@ -1,6 +1,6 @@
 use iced::widget::{button, container, row, space, stack, text};
 use iced::{border, Alignment, Color, Element, Length};
-use crate::ui::styles::styles::transparent_button;
+use crate::ui::styles::button as button_style;
 use crate::ui::assets::fonts::JETBRAINS_MONO;
 
 pub struct IconToggle<'a, Message> {
@@ -89,7 +89,7 @@ where
 
         button(track)
             .padding(0)
-            .style(transparent_button)
+            .style(button_style::transparent)
             .on_press((self.on_toggle)(!self.is_active))
             .into()
     }

@@ -8,7 +8,7 @@ use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
 use crate::ui::assets::icons::Icon;
-use crate::ui::styles::styles::{minimal_button};
+use crate::ui::styles::button as button_style;
 use crate::ui::widgets::artist_links::artist_links;
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail;
@@ -114,24 +114,24 @@ impl Player {
                     .size(16)
                     .style(move |_: &Theme| text::Style { color: Some(color) }),
             )
-                .style(minimal_button)
+                .style(button_style::minimal)
                 .on_press(PlayerMessage::UiToggleShuffle)
         };
 
         let prev_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
-                button(text(Icon::SkipPrevious.as_ref()).font(JETBRAINS_MONO).size(18)).style(minimal_button);
+                button(text(Icon::SkipPrevious.as_ref()).font(JETBRAINS_MONO).size(18)).style(button_style::minimal);
             if has_history { b.on_press(PlayerMessage::UiPrev) } else { b }
         };
 
         let play_button = {
-            let b = button(play_icon).style(minimal_button);
+            let b = button(play_icon).style(button_style::minimal);
             if has_track { b.on_press(PlayerMessage::UiTogglePlayback) } else { b }
         };
 
         let next_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
-                button(text(Icon::SkipNext.as_ref()).font(JETBRAINS_MONO).size(18)).style(minimal_button);
+                button(text(Icon::SkipNext.as_ref()).font(JETBRAINS_MONO).size(18)).style(button_style::minimal);
             if has_track { b.on_press(PlayerMessage::UiNext) } else { b }
         };
 
@@ -147,7 +147,7 @@ impl Player {
                     .size(16)
                     .style(move |_: &Theme| text::Style { color: Some(color) }),
             )
-                .style(minimal_button)
+                .style(button_style::minimal)
                 .on_press(PlayerMessage::UiCycleRepeat)
         };
 
@@ -254,7 +254,7 @@ impl Player {
                 .size(18)
                 .style(move |_: &Theme| text::Style { color: Some(color) }),
         )
-            .style(minimal_button)
+            .style(button_style::minimal)
             .on_press(PlayerMessage::UiToggleLike(track_id))
             .into()
     }

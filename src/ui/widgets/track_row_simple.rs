@@ -7,7 +7,7 @@ use iced::{Alignment, Color, Element, Length, Padding, Theme};
 use crate::model::{Track, TrackState};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;
-use crate::ui::styles::styles::NOW_PLAYING_ACCENT;
+use crate::ui::theme::theme;
 use crate::ui::widgets::artist_links::{album_link, artist_links};
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
@@ -40,10 +40,10 @@ fn leading_index_cell<'a, Message: 'a>(
             .font(JETBRAINS_MONO)
             .shaping(Shaping::Advanced)
             .size(13)
-            .color(NOW_PLAYING_ACCENT)
+            .color(theme().accent.primary)
             .into()
     } else {
-        text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(11).color(NOW_PLAYING_ACCENT).into()
+        text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(11).color(theme().accent.primary).into()
     };
 
     container(glyph)
@@ -112,7 +112,7 @@ fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(Strin
 ) -> Element<'a, Message> {
     let cached = matches!(track.state, TrackState::Cached);
 
-    let title_color = if is_playing_row { NOW_PLAYING_ACCENT } else { Color::WHITE };
+    let title_color = if is_playing_row { theme().accent.primary } else { Color::WHITE };
     let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, title_color, TITLE_WIDTH);
 
     let artist = artist_links(
@@ -184,7 +184,7 @@ pub fn track_row_numbered<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a
 
     let index = leading_index_cell(position, is_playing_row, is_playing, icon_hovered, Length::Fixed(NUMBERED_INDEX_WIDTH));
 
-    let title_color = if is_playing_row { NOW_PLAYING_ACCENT } else { Color::WHITE };
+    let title_color = if is_playing_row { theme().accent.primary } else { Color::WHITE };
     let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, title_color, Length::Fill);
     let artist = artist_links(&track.artists, SF_PRO, 13.0, Color::from_rgb(0.7, 0.7, 0.75), Length::Fill, on_artist_click);
     let title_artist = column![title, artist].spacing(2).width(Length::Fill);

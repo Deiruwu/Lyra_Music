@@ -5,7 +5,7 @@ use crate::model::Track;
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 use crate::ui::widgets::artist_links::{album_link, artist_links, artist_names_text};
 use crate::ui::widgets::single_line_text::single_line_text;
-use crate::ui::styles::styles::transparent_button;
+use crate::ui::styles::button as button_style;
 use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::ui::assets::icons::Icon;
 
@@ -79,7 +79,7 @@ pub fn track_row<'a, Message: Clone + 'a>(
     button(basic_track_view(track, thumbnail))
         .width(Length::Fill)
         .on_press(on_press)
-        .style(transparent_button)
+        .style(button_style::transparent)
         .into()
 }
 
@@ -221,7 +221,7 @@ where
                 .align_y(Alignment::Center)
         )
             .on_press(on_delete)
-            .style(transparent_button)
+            .style(button_style::transparent)
             .padding(0)
     )
         .on_enter(on_delete_hover)

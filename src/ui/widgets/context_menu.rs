@@ -4,7 +4,8 @@ use iced::{Alignment, Color, Element, Length, Padding, Point, Size};
 use iced::widget::{button, column, container, mouse_area, pin, row, space, stack, text};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;
-use crate::ui::styles::styles::{context_menu_container, context_menu_item};
+use crate::ui::styles::button as button_style;
+use crate::ui::styles::container as container_style;
 
 const ICON_COLUMN_WIDTH: f32 = 20.0;
 const MENU_WIDTH: f32 = 180.0;
@@ -205,7 +206,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                     let leaf_button = button(row_content)
                         .width(Length::Fixed(MENU_WIDTH))
                         .padding(Padding { top: 8.0, bottom: 8.0, left: 12.0, right: 12.0 })
-                        .style(context_menu_item)
+                        .style(button_style::context_menu_item)
                         .on_press(to_msg(action, item_clone));
 
                     let hoverable_leaf = mouse_area(leaf_button)
@@ -240,7 +241,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                     let submenu_button = button(row_content)
                         .width(Length::Fixed(MENU_WIDTH))
                         .padding(Padding { top: 8.0, bottom: 8.0, left: 12.0, right: 12.0 })
-                        .style(context_menu_item);
+                        .style(button_style::context_menu_item);
 
                     let hoverable_submenu = mouse_area(submenu_button)
                         .on_enter(on_submenu_hover(Some(id)));
@@ -254,7 +255,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
             }
         }
 
-        let menu = container(list).padding(4).style(context_menu_container);
+        let menu = container(list).padding(4).style(container_style::context_menu);
 
         let mut layers: Vec<Element<'a, Msg>> = Vec::new();
 
@@ -298,13 +299,13 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                         button(row_content)
                             .width(Length::Fixed(SUBMENU_WIDTH))
                             .padding(Padding { top: 8.0, bottom: 8.0, left: 12.0, right: 12.0 })
-                            .style(context_menu_item)
+                            .style(button_style::context_menu_item)
                             .on_press(to_msg(action, item_clone)),
                     );
                 }
             }
 
-            let submenu_container = container(sub_list).padding(4).style(context_menu_container);
+            let submenu_container = container(sub_list).padding(4).style(container_style::context_menu);
 
             let submenu_hoverable = mouse_area(submenu_container)
                 .on_enter(on_submenu_hover(submenu_id_for_flyout));

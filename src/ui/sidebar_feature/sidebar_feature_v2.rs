@@ -13,7 +13,7 @@ use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 use crate::ui::assets::icons::Icon;
-use crate::ui::styles::styles::{minimal_button, transparent_button};
+use crate::ui::styles::button as button_style;
 use crate::ui::utils::cover_manager::CoverVariant;
 use crate::ui::views::view_coordinator::{ActiveRoute, CoordinatorMessage, CoordinatorOutMessage, ViewCoordinator};
 use crate::ui::views::home_view;
@@ -354,7 +354,7 @@ impl SidebarFeatureV2 {
             let add_playlist_button = button(
                 text("+").font(SF_PRO).size(14).color(Color::from_rgb(0.5, 0.53, 0.6)))
                 .padding(Padding { top: 2.0, bottom: 2.0, left: 6.0, right: 6.0 })
-                .style(minimal_button)
+                .style(button_style::minimal)
                 .on_press(SidebarMessage::ShowCreatePlaylistInput);
 
             row![
@@ -436,7 +436,7 @@ impl SidebarFeatureV2 {
         button(content)
             .width(Length::Fill)
             .padding(Padding { top: 9.0, bottom: 9.0, left: 12.0, right: 12.0 })
-            .style(transparent_button)
+            .style(button_style::transparent)
             .on_press(on_press_msg)
             .into()
     }
@@ -583,7 +583,7 @@ impl SidebarFeatureV2 {
     pub fn view_toggle(&self) -> Element<'_, SidebarMessage> {
         let icon_char = if self.is_expanded { Icon::Return } else { Icon::BurgerMenu };
         let btn = button(text(icon_char.as_str()).font(JETBRAINS_MONO).size(18).shaping(Shaping::Advanced))
-            .style(minimal_button)
+            .style(button_style::minimal)
             .on_press(SidebarMessage::ToggleExpanded)
             .padding(8);
 

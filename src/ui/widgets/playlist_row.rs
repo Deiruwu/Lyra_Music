@@ -17,7 +17,7 @@ use iced::widget::image::Handle;
 use iced::{Alignment, Color, Element, Length, Padding, Theme};
 
 use crate::ui::assets::fonts::SF_PRO;
-use crate::ui::styles::styles::transparent_button;
+use crate::ui::styles::button as button_style;
 use crate::ui::utils::playlist_metadata::{format_track_count, format_total_duration};
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 
@@ -155,7 +155,7 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
         let row_button = button(content)
             .width(Length::Fill)
             .padding(Padding { top: 6.0, bottom: 6.0, left: 12.0, right: 12.0 })
-            .style(transparent_button)
+            .style(button_style::transparent)
             .on_press(on_select);
 
         mouse_area(row_button)

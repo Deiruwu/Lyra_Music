@@ -10,7 +10,10 @@ use strum_macros::AsRefStr;
 use crate::model::{Album, Artist, Track};
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 use crate::ui::assets::icons::Icon;
-use crate::ui::styles::styles::{minimal_button, selected_row_container, transparent_button, RowSelectionShape, NOW_PLAYING_ACCENT};
+use crate::ui::styles::button as button_style;
+use crate::ui::styles::row as row_style;
+use crate::ui::styles::RowSelectionShape;
+use crate::ui::theme::theme;
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::row_animator::RowAnimator;
 use crate::ui::utils::virtual_list::ScrollTracker;
@@ -379,7 +382,7 @@ where
                 .size(10.5)
                 .style(move |_| text::Style { color: Some(color) }),
         )
-            .style(minimal_button)
+            .style(button_style::minimal)
             .width(field.width())
             .padding(0)
             .on_press(emit(TrackEvent::Sorted(sort_key)))
@@ -449,10 +452,10 @@ where
                 .font(JETBRAINS_MONO)
                 .shaping(Shaping::Advanced)
                 .size(13)
-                .color(NOW_PLAYING_ACCENT)
+                .color(theme().accent.primary)
                 .into()
         } else {
-            text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(11).color(NOW_PLAYING_ACCENT).into()
+            text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(11).color(theme().accent.primary).into()
         };
 
         container(glyph)
@@ -480,7 +483,7 @@ where
 
         for &field in fields {
             let display = if field == TrackColumn::Title && is_current_row {
-                DisplayValue::ColoredText(track.title.clone(), NOW_PLAYING_ACCENT)
+                DisplayValue::ColoredText(track.title.clone(), theme().accent.primary)
             } else {
                 field.display_value(track, display_index)
             };
@@ -513,14 +516,14 @@ where
             .width(Length::Fill)
             .height(Length::Fixed(self.row_height))
             .padding(0)
-            .style(transparent_button)
+            .style(button_style::transparent)
             .on_press(on_press);
 
         let styled = container(btn)
             .width(Length::Fill)
             .height(Length::Fixed(self.row_height))
             .align_y(Alignment::Center)
-            .style(selected_row_container(shape));
+            .style(row_style::selected(shape));
 
         let area = mouse_area(styled).on_right_press(emit(TrackEvent::RightClicked(right_click_id)));
 

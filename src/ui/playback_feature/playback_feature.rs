@@ -16,7 +16,7 @@ use crate::ui::playback_feature::player::{Player, PlayerMessage, PlayerOutMessag
 use crate::ui::playback_feature::queue::queue_panel::{QueueMessage, QueueOutMessage, QueuePanel};
 use crate::ui::playback_feature::theater::theater_panel::{TheaterMessage, TheaterOutMessage, TheaterPanel};
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
-use crate::ui::styles::styles::minimal_button;
+use crate::ui::styles::button as button_style;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::ui::widgets::track_context_builder::{TrackContextAction, TrackContextMenuBuilder};
@@ -532,7 +532,7 @@ impl PlaybackFeature {
         let icon = if is_theater_mode { "" } else { "" };
 
         button(text(icon).font(crate::ui::assets::fonts::JETBRAINS_MONO).size(18))
-            .style(minimal_button)
+            .style(button_style::minimal)
             .on_press(PlaybackFeatureMessage::ToggleTheaterMode)
             .into()
     }
