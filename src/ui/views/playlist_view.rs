@@ -25,6 +25,8 @@ pub enum PlaylistMessage {
 
     /// Botón ▶ del header: reproduce la playlist completa desde el primer track visible.
     PlayAll,
+    /// Botón del header cuando ya suena una canción de esta playlist: pausa/reanuda in-place.
+    TogglePlayback,
 
     // Drag & Drop (Pura UI)
     GlobalMousePress,
@@ -164,6 +166,7 @@ impl PlaylistView {
                     ListAction::PlayContext(id) => PlaylistOutMessage::RequestPlayContext { start_track_id: id },
                     ListAction::OpenArtist(id) => PlaylistOutMessage::RequestOpenArtist(id),
                     ListAction::OpenAlbum(id) => PlaylistOutMessage::RequestOpenAlbum(id),
+                    ListAction::TogglePlayback => PlaylistOutMessage::RequestTogglePlayback,
                     ListAction::None => PlaylistOutMessage::Idle,
 
                     ListAction::SortChanged(key) => {
@@ -213,6 +216,10 @@ impl PlaylistView {
                 if !rendered_tracks.is_empty() {
                     out = PlaylistOutMessage::RequestPlayAll;
                 }
+            }
+
+            PlaylistMessage::TogglePlayback => {
+                out = PlaylistOutMessage::RequestTogglePlayback;
             }
 
             // ─── DRAG & DROP GLOBALES ──────────────────────────────────────
@@ -297,10 +304,22 @@ impl PlaylistView {
         cover: Option<iced::widget::image::Handle>,
         rendered_tracks: Vec<&'a Track>,
         thumbnails: &'a AsyncThumbnail,
+        now_playing_id: Option<String>,
+        is_playing: bool,
     ) -> Element<'a, PlaylistMessage> {
         let track_count = rendered_tracks.len();
         let total_duration_seconds: i64 =
             rendered_tracks.iter().map(|t| t.duration_seconds as i64).sum();
+
+        let this_playlist_is_current = now_playing_id
+            .as_deref()
+            .is_some_and(|id| rendered_tracks.iter().any(|t| t.id == id));
+        let header_is_playing = this_playlist_is_current && is_playing;
+        let header_message = if this_playlist_is_current {
+            PlaylistMessage::TogglePlayback
+        } else {
+            PlaylistMessage::PlayAll
+        };
 
         let header = playlist_header(
             PlaylistHeaderData {
@@ -310,8 +329,9 @@ impl PlaylistView {
                 total_duration_seconds,
             },
             cover,
-            PlaylistMessage::PlayAll,
+            header_message,
             Some(PlaylistMessage::RequestCoverChange),
+            header_is_playing,
         );
 
         let search_bar = catalog_search_input(
@@ -342,6 +362,8 @@ impl PlaylistView {
             )
                 .index_sortable()
                 .sort(self.list.active_sort_key, self.list.sort_direction_asc)
+                .playing(now_playing_id, is_playing)
+                .icon_hovered(self.list.playing_icon_hovered)
                 .on_event(PlaylistMessage::Table);
 
             if let Some(drag) = &self.drag_state {

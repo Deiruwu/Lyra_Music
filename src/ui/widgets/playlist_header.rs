@@ -66,10 +66,9 @@ pub struct PlaylistHeaderData<'a> {
 }
 
 /// Construye el banner completo. `on_play` es el mensaje disparado al
-/// presionar el botón ▶ grande (reproducir la playlist completa desde
-/// el principio) — la vista decide qué significa eso (p. ej.
+/// presionar el botón grande — la vista decide qué significa eso (p. ej.
 /// `RequestPlayContext(tracks, 0)`, mismo patrón que ya usa
-/// `FavoritesView::PlayTrack`).
+/// `FavoritesView::PlayTrack`). `is_playing` controla el glifo (▶/⏸).
 ///
 /// `on_cover_click` es opcional: si es `Some`, la portada se envuelve en
 /// un overlay de "cambiar portada" que aparece al hacer hover; si es
@@ -80,6 +79,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
     cover: Option<Handle>,
     on_play: Message,
     on_cover_click: Option<Message>,
+    is_playing: bool,
 ) -> Element<'a, Message> {
     let cover_state = match cover {
         Some(handle) => ThumbnailState::Loaded(handle),
@@ -160,9 +160,10 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         .size(13)
         .color(Color::from_rgb(0.7, 0.7, 0.75));
 
+    let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
     let play_button = button(
         container(
-            text(Icon::Play.as_ref()).font(JETBRAINS_MONO_ICON).size(20).color(Color::BLACK),
+            text(play_icon.as_str()).font(JETBRAINS_MONO_ICON).size(20).color(Color::BLACK),
         )
             .width(Length::Fixed(PLAY_BUTTON_SIZE))
             .height(Length::Fixed(PLAY_BUTTON_SIZE))

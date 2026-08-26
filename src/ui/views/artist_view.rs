@@ -56,6 +56,7 @@ pub struct ArtistView {
     /// guarde/restaure al navegar entre artistas/álbumes (ver
     /// `stash_active_route_scroll`).
     pub scroll: ScrollTracker,
+    icon_hovered: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +74,8 @@ pub enum ArtistMessage {
     TopSongRightClicked(String),
     TopSongArtistPressed(String),
     TopSongAlbumPressed(String),
+    TopSongTogglePlayback,
+    TopSongIconHover(bool),
     FollowPressed,
     Scrolled(Viewport),
 }
@@ -84,6 +87,7 @@ pub enum ArtistOutMessage {
     PlayTopSong(String),
     TrackRightClicked(String),
     OpenTrackArtist(String),
+    RequestTogglePlayback,
     ToggleFollow(String, String, Option<String>),
 }
 
@@ -103,6 +107,7 @@ impl ArtistView {
             albums_page: 0,
             singles_page: 0,
             scroll: ScrollTracker::default(),
+            icon_hovered: false,
         };
 
         let load_task = Task::perform(
@@ -139,6 +144,8 @@ impl ArtistView {
             ArtistMessage::TopSongRightClicked(id) => out = ArtistOutMessage::TrackRightClicked(id),
             ArtistMessage::TopSongArtistPressed(id) => out = ArtistOutMessage::OpenTrackArtist(id),
             ArtistMessage::TopSongAlbumPressed(id) => out = ArtistOutMessage::OpenAlbum(id),
+            ArtistMessage::TopSongTogglePlayback => out = ArtistOutMessage::RequestTogglePlayback,
+            ArtistMessage::TopSongIconHover(hovered) => self.icon_hovered = hovered,
             ArtistMessage::FollowPressed => {
                 self.is_followed = !self.is_followed;
                 if let ArtistViewData::Loaded(artist) = &self.data {
@@ -154,7 +161,7 @@ impl ArtistView {
         (Task::batch([sync_task, gallery_task]), out)
     }
 
-    pub fn view(&self) -> Element<'_, ArtistMessage> {
+    pub fn view(&self, now_playing_id: Option<String>, is_playing: bool) -> Element<'_, ArtistMessage> {
         match &self.data {
             ArtistViewData::Loading => status_message("Cargando artista…"),
             ArtistViewData::Error(error) => status_message(error),
@@ -162,7 +169,7 @@ impl ArtistView {
                 let (albums, singles_and_eps) = partition_albums(artist);
 
                 let mut children: Vec<Element<'_, ArtistMessage>> =
-                    vec![self.view_header(artist), self.view_top_songs(&artist.songs)];
+                    vec![self.view_header(artist), self.view_top_songs(&artist.songs, now_playing_id, is_playing)];
 
                 if !albums.is_empty() {
                     children.push(self.view_album_section(
@@ -237,20 +244,29 @@ impl ArtistView {
         .into()
     }
 
-    /// Top 5 canciones del artista, fila simple sin `TrackBuilder`, con thumbnail.
-    fn view_top_songs<'a>(&'a self, songs: &'a [Track]) -> Element<'a, ArtistMessage> {
+    /// Top 5 canciones del artista, fila simple sin `TrackBuilder`, con número + thumbnail.
+    fn view_top_songs<'a>(&'a self, songs: &'a [Track], now_playing_id: Option<String>, is_playing: bool) -> Element<'a, ArtistMessage> {
         let rows: Vec<Element<'a, ArtistMessage>> = songs
             .iter()
             .take(TOP_SONGS_COUNT)
-            .map(|track| {
+            .enumerate()
+            .map(|(index, track)| {
                 let thumbnail = self.thumbnails.get(&thumb_key(track)).cloned();
+                let is_playing_row = now_playing_id.as_deref() == Some(track.id.as_str());
                 track_row_with_thumbnail(
+                    index + 1,
                     track,
                     thumbnail,
                     ArtistMessage::TopSongClicked(track.id.clone()),
                     ArtistMessage::TopSongRightClicked(track.id.clone()),
                     ArtistMessage::TopSongArtistPressed,
                     ArtistMessage::TopSongAlbumPressed,
+                    is_playing_row,
+                    is_playing,
+                    self.icon_hovered,
+                    ArtistMessage::TopSongTogglePlayback,
+                    ArtistMessage::TopSongIconHover(true),
+                    ArtistMessage::TopSongIconHover(false),
                 )
             })
             .collect();

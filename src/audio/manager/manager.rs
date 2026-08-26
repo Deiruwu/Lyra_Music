@@ -43,6 +43,17 @@ pub enum RepeatMode {
     Track,
 }
 
+/// Vista desde la que se originó la reproducción actual.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlaybackOrigin {
+    Explorer,
+    Favorites,
+    Playlist(String),
+    Album(String),
+    Artist(String),
+    Home,
+}
+
 /// Todo el estado mutable de reproducción vive aquí, detrás de un único
 /// `Mutex`. Esto evita el patrón anterior de tomar y soltar locks separados
 /// para `current_track`, `queue`, `history` y `auto_advance` por turnos
@@ -187,6 +198,8 @@ pub struct TrackManager {
 
     pub(super) playback: Arc<Mutex<PlaybackState>>,
 
+    origin: Mutex<Option<PlaybackOrigin>>,
+
     pub event_tx: broadcast::Sender<TrackEvent>,
     pub queue_tx: broadcast::Sender<QueueEvent>,
 }
@@ -286,6 +299,7 @@ impl TrackManager {
             engine_tx,
             state,
             playback,
+            origin: Mutex::new(None),
             event_tx,
             queue_tx,
         };
@@ -424,6 +438,14 @@ impl TrackManager {
 
     pub fn repeat_mode(&self) -> RepeatMode {
         self.playback.lock().unwrap().repeat_mode
+    }
+
+    pub fn set_playback_origin(&self, origin: PlaybackOrigin) {
+        *self.origin.lock().unwrap() = Some(origin);
+    }
+
+    pub fn get_playback_origin(&self) -> Option<PlaybackOrigin> {
+        self.origin.lock().unwrap().clone()
     }
 
 }

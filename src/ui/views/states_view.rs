@@ -70,6 +70,7 @@ pub enum ListAction {
     OpenContextMenu { anchor_id: String, selected_ids: HashSet<String> },
     OpenArtist(String),
     OpenAlbum(String),
+    TogglePlayback,
     None,
 }
 
@@ -82,6 +83,8 @@ pub struct TrackViewState {
     pub scroll: ScrollTracker,
 
     pub mouse_position: Option<Point>,
+
+    pub playing_icon_hovered: bool,
 
     /// Override explícito del usuario (click en un header). `None` =
     /// sin override, se usa `default_sort_key`/`default_sort_ascending`.
@@ -119,6 +122,7 @@ impl Default for TrackViewState {
             tracks_selection: SelectionState::new(),
             scroll: ScrollTracker::default(),
             mouse_position: None,
+            playing_icon_hovered: false,
             active_sort_key: None,
             sort_direction_asc: true,
             default_sort_key: Some(0),
@@ -317,6 +321,11 @@ impl TrackViewState {
             }
             TrackEvent::ArtistClicked(artist_id) => ListAction::OpenArtist(artist_id),
             TrackEvent::AlbumClicked(album_id) => ListAction::OpenAlbum(album_id),
+            TrackEvent::TogglePlayback => ListAction::TogglePlayback,
+            TrackEvent::PlayingIconHover(hovered) => {
+                self.playing_icon_hovered = hovered;
+                ListAction::None
+            }
         }
     }
 }

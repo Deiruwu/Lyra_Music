@@ -1,3 +1,4 @@
+use std::time::{SystemTime, UNIX_EPOCH};
 use strum_macros::{AsRefStr, IntoStaticStr};
 
 #[derive(Debug, Clone, Copy, AsRefStr, IntoStaticStr)]
@@ -8,6 +9,16 @@ pub enum Icon {
 
     #[strum(serialize = "")]
     Pause,
+
+    // Niveles del ecualizador animado (ver `Icon::equalizer_frame`).
+    #[strum(serialize = "▂")]
+    EqualizerLow,
+
+    #[strum(serialize = "▅")]
+    EqualizerMid,
+
+    #[strum(serialize = "█")]
+    EqualizerHigh,
 
     #[strum(serialize = "󰒮")]
     SkipPrevious,
@@ -103,5 +114,23 @@ pub enum Icon {
 impl Icon {
     pub fn as_str(self) -> &'static str {
         self.into()
+    }
+
+    /// Fotograma actual del ecualizador animado.
+    pub fn equalizer_frame() -> String {
+        const LEVELS: [Icon; 3] = [Icon::EqualizerLow, Icon::EqualizerMid, Icon::EqualizerHigh];
+        const BAR_COUNT: u128 = 5;
+        const STEP_MS: u128 = 110;
+
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let step = millis / STEP_MS;
+        let level_count = LEVELS.len() as u128;
+
+        (0..BAR_COUNT)
+            .map(|bar| LEVELS[((step + bar) % level_count) as usize].as_str())
+            .collect()
     }
 }

@@ -73,6 +73,7 @@ impl ExplorerView {
                     ListAction::SortChanged(key) => ExplorerOutMessage::RequestChangeSort(key),
                     ListAction::OpenArtist(id) => ExplorerOutMessage::RequestOpenArtist(id),
                     ListAction::OpenAlbum(id) => ExplorerOutMessage::RequestOpenAlbum(id),
+                    ListAction::TogglePlayback => ExplorerOutMessage::RequestTogglePlayback,
                     ListAction::None => ExplorerOutMessage::Idle,
 
                     ListAction::OpenContextMenu { anchor_id, selected_ids } => {
@@ -124,6 +125,8 @@ impl ExplorerView {
         &'a self,
         rendered_tracks: Vec<&'a Track>,
         thumbnails: &'a AsyncThumbnail,
+        now_playing_id: Option<String>,
+        is_playing: bool,
     ) -> Element<'a, ExplorerMessage> {
         let title = text("Catálogo de Pistas")
             .size(28)
@@ -164,6 +167,8 @@ impl ExplorerView {
             )
                 .with_added_at()
                 .sort(self.list.active_sort_key, self.list.sort_direction_asc)
+                .playing(now_playing_id, is_playing)
+                .icon_hovered(self.list.playing_icon_hovered)
                 .on_event(ExplorerMessage::Table)
                 .overlay(confirm_overlay)
                 .build()

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use iced::keyboard::Modifiers;
 use iced::{Element, Size, Task};
 
-use crate::audio::manager::manager::TrackManager;
+use crate::audio::manager::manager::{PlaybackOrigin, TrackManager};
 use crate::db::playlist_manager::PlaylistManager;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::db::followed_artist_manager::FollowedArtistManager;
@@ -269,7 +269,7 @@ impl ViewCoordinator {
                 let (task, out) = self.explorer_view.update(inner, &rendered_refs, &playlists);
                 let view_task = task.map(CoordinatorMessage::Explorer);
 
-                let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, |store, extra| match extra {
+                let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, PlaybackOrigin::Explorer, |store, extra| match extra {
                     ExplorerExtra::RequestDelete(ids) => {
                         // TODO: delete_track es singular; se batchea id a id
                         // hasta que CatalogStore soporte borrado múltiple.
@@ -293,7 +293,7 @@ impl ViewCoordinator {
                 let (task, out) = self.favorites_view.update(inner, &rendered_refs, &playlists);
                 let view_task = task.map(CoordinatorMessage::Favorites);
 
-                let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, |_store, extra| match extra {});
+                let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, PlaybackOrigin::Favorites, |_store, extra| match extra {});
 
                 (Task::batch([view_task, out_task]), coordinator_out)
             }
@@ -313,7 +313,7 @@ impl ViewCoordinator {
                 let (task, out) = playlist_view.update(inner, &rendered_refs, &playlists);
                 let view_task = task.map(CoordinatorMessage::PlaylistDetail);
 
-                let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, |store, extra| match extra {
+                let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, PlaybackOrigin::Playlist(playlist_id.clone()), |store, extra| match extra {
                     PlaylistExtra::RequestReorder { playlist_id, from, to } => {
                         store.reorder_track_in_playlist(&playlist_id, from, to)
                             .map(CoordinatorMessage::Catalog)
@@ -355,6 +355,7 @@ impl ViewCoordinator {
                     HomeViewOutMessage::PlayTrack(id) => {
                         let tracks = self.home_view.top_tracks();
                         if let Some(index) = tracks.iter().position(|t| t.id == id) {
+                            self.manager.set_playback_origin(PlaybackOrigin::Home);
                             self.manager.play_context(tracks.to_vec(), index);
                         }
                         (task, CoordinatorOutMessage::Idle)
@@ -440,6 +441,7 @@ impl ViewCoordinator {
         &mut self,
         out: TrackListOutMessage<Extra>,
         play_context: &[Track],
+        origin: PlaybackOrigin,
         on_extra: impl FnOnce(&mut CatalogStore, Extra) -> Task<CoordinatorMessage>,
     ) -> (Task<CoordinatorMessage>, CoordinatorOutMessage) {
         let coordinator_out = match &out {
@@ -455,11 +457,13 @@ impl ViewCoordinator {
 
             TrackListOutMessage::RequestPlayContext { start_track_id } => {
                 if let Some(start_index) = play_context.iter().position(|t| t.id == start_track_id) {
+                    self.manager.set_playback_origin(origin);
                     self.manager.play_context(play_context.to_vec(), start_index);
                 }
                 Task::none()
             }
             TrackListOutMessage::RequestPlayAll => {
+                self.manager.set_playback_origin(origin);
                 self.manager.play_context_shuffled(play_context.to_vec());
                 Task::none()
             }
@@ -484,6 +488,10 @@ impl ViewCoordinator {
             TrackListOutMessage::RequestPlayRadio(_track_id) => {
                 // TODO: TrackManager no expone play_radio en esta lista de
                 // firmas; falta decidir cómo se arma el modo radio.
+                Task::none()
+            }
+            TrackListOutMessage::RequestTogglePlayback => {
+                if self.manager.state.is_playing() { self.manager.pause(); } else { self.manager.resume(); }
                 Task::none()
             }
 
@@ -735,6 +743,20 @@ impl ViewCoordinator {
     /// Anidando el stack ACÁ, `pin(menu).x(anchor.x)` vuelve a estar en
     /// el mismo contenedor padre que originó el `Point`.
     pub fn view_content(&self) -> Element<'_, CoordinatorMessage> {
+        let is_playing = self.manager.state.is_playing();
+
+        let origin_matches_active_route = match &self.active_route {
+            ActiveRoute::Nav(NavId::Explorer) => self.manager.get_playback_origin() == Some(PlaybackOrigin::Explorer),
+            ActiveRoute::Nav(NavId::Favorites) => self.manager.get_playback_origin() == Some(PlaybackOrigin::Favorites),
+            ActiveRoute::Playlist(id) => self.manager.get_playback_origin() == Some(PlaybackOrigin::Playlist(id.clone())),
+            _ => false,
+        };
+        let now_playing_id = if origin_matches_active_route {
+            self.manager.get_current_track().map(|t| t.track.id.clone())
+        } else {
+            None
+        };
+
         match &self.active_route {
             ActiveRoute::Nav(NavId::Home) => {
                 self.home_view.view().map(CoordinatorMessage::Home)
@@ -744,7 +766,7 @@ impl ViewCoordinator {
                 let rendered_tracks = self.explorer_view.list.rendered(&all_refs, &self.catalog_store);
 
                 self.explorer_view
-                    .view(rendered_tracks, &self.thumbnails)
+                    .view(rendered_tracks, &self.thumbnails, now_playing_id, is_playing)
                     .map(CoordinatorMessage::Explorer)
             }
             ActiveRoute::Nav(NavId::Favorites) => {
@@ -753,7 +775,7 @@ impl ViewCoordinator {
                 let liked_tracks = self.favorites_view.list.rendered(&liked_tracks, &self.catalog_store);
 
                 self.favorites_view
-                    .view(liked_tracks, &self.thumbnails)
+                    .view(liked_tracks, &self.thumbnails, now_playing_id, is_playing)
                     .map(CoordinatorMessage::Favorites)
             }
             ActiveRoute::Playlist(id) => {
@@ -768,7 +790,7 @@ impl ViewCoordinator {
 
                         let cover_handle = self.covers.get(&crate::ui::utils::cover_manager::CoverVariant::Large.key(id)).cloned();
 
-                        view.view(&meta.1, cover_handle, tracks_refs, &self.thumbnails)
+                        view.view(&meta.1, cover_handle, tracks_refs, &self.thumbnails, now_playing_id, is_playing)
                             .map(CoordinatorMessage::PlaylistDetail)
                     } else {
                         iced::widget::space().into()

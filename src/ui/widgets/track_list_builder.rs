@@ -4,11 +4,13 @@ use std::time::Instant;
 use iced::widget::image::Handle;
 use iced::widget::scrollable::Viewport;
 use iced::widget::{button, column, container, mouse_area, row, scrollable, space, stack, text, Id};
+use iced::widget::text::Shaping;
 use iced::{Alignment, Color, Element, Length, Padding, Point};
 use strum_macros::AsRefStr;
 use crate::model::{Album, Artist, Track};
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
-use crate::ui::styles::styles::{minimal_button, selected_row_container, transparent_button, RowSelectionShape};
+use crate::ui::assets::icons::Icon;
+use crate::ui::styles::styles::{minimal_button, selected_row_container, transparent_button, RowSelectionShape, NOW_PLAYING_ACCENT};
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::row_animator::RowAnimator;
 use crate::ui::utils::virtual_list::ScrollTracker;
@@ -33,6 +35,8 @@ pub enum TrackEvent {
     ViewportExited,
     ArtistClicked(String),
     AlbumClicked(String),
+    TogglePlayback,
+    PlayingIconHover(bool),
 }
 
 // ── La fila de fábrica ────────────────────────────────────────────
@@ -201,6 +205,10 @@ pub struct TrackBuilder<'a, Message> {
     selected_ids: &'a HashSet<String>,
     scrollable_id: &'static str,
 
+    playing_id: Option<String>,
+    is_playing: bool,
+    icon_hovered: bool,
+
     row_height: f32,
     buffer_rows: usize,
 
@@ -235,6 +243,9 @@ where
             thumbnails,
             selected_ids,
             scrollable_id,
+            playing_id: None,
+            is_playing: false,
+            icon_hovered: false,
             row_height: DEFAULT_ROW_HEIGHT,
             buffer_rows: DEFAULT_BUFFER_ROWS,
             show_added_at: false,
@@ -267,6 +278,19 @@ where
     pub fn sort(mut self, active_key: Option<usize>, asc: bool) -> Self {
         self.active_sort_key = active_key;
         self.sort_direction_asc = asc;
+        self
+    }
+
+    /// Fija cuál track (si alguno) está sonando ahora mismo.
+    pub fn playing(mut self, playing_id: Option<String>, is_playing: bool) -> Self {
+        self.playing_id = playing_id;
+        self.is_playing = is_playing;
+        self
+    }
+
+    /// Si el mouse está sobre el icono de la fila que suena.
+    pub fn icon_hovered(mut self, hovered: bool) -> Self {
+        self.icon_hovered = hovered;
         self
     }
 
@@ -409,6 +433,36 @@ where
         }
     }
 
+    /// Celda líder de la fila: número de orden normalmente; si es la fila
+    /// que está sonando, el ecualizador animado o el icono de play/pausa
+    /// al pasar el mouse por encima de la fila.
+    fn render_leading_cell(&self, display_index: usize, is_current_row: bool) -> Element<'a, Message> {
+        if !is_current_row {
+            return self.render_cell(DisplayValue::Index(display_index), Length::Fixed(INDEX_COL_WIDTH), None);
+        }
+
+        let show_toggle_icon = !self.is_playing || self.icon_hovered;
+
+        let glyph: Element<'a, Message> = if show_toggle_icon {
+            let icon = if self.is_playing { Icon::Pause } else { Icon::Play };
+            text(icon.as_str())
+                .font(JETBRAINS_MONO)
+                .shaping(Shaping::Advanced)
+                .size(13)
+                .color(NOW_PLAYING_ACCENT)
+                .into()
+        } else {
+            text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(11).color(NOW_PLAYING_ACCENT).into()
+        };
+
+        container(glyph)
+            .width(Length::Fixed(INDEX_COL_WIDTH))
+            .height(Length::Fixed(self.row_height))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .into()
+    }
+
     fn render_row(
         &self,
         fields: &[TrackColumn],
@@ -416,15 +470,21 @@ where
         display_index: usize,
         handle: Option<Handle>,
         shape: RowSelectionShape,
+        is_current_row: bool,
         emit: &Rc<dyn Fn(TrackEvent) -> Message + 'a>,
     ) -> Element<'a, Message> {
         let mut row_children: Vec<Element<'a, Message>> = Vec::with_capacity(fields.len() + 2);
 
-        row_children.push(self.render_cell(DisplayValue::Index(display_index), Length::Fixed(INDEX_COL_WIDTH), None));
+        row_children.push(self.render_leading_cell(display_index, is_current_row));
         row_children.push(self.render_cell(DisplayValue::Thumbnail(handle), Length::Fixed(THUMBNAIL_COL_WIDTH), None));
 
         for &field in fields {
-            row_children.push(self.render_cell(field.display_value(track, display_index), field.width(), Some(emit)));
+            let display = if field == TrackColumn::Title && is_current_row {
+                DisplayValue::ColoredText(track.title.clone(), NOW_PLAYING_ACCENT)
+            } else {
+                field.display_value(track, display_index)
+            };
+            row_children.push(self.render_cell(display, field.width(), Some(emit)));
         }
 
         let row_content = row(row_children)
@@ -443,12 +503,18 @@ where
             .height(Length::Fixed(self.row_height))
             .align_y(Alignment::Center);
 
+        let on_press = if is_current_row {
+            emit(TrackEvent::TogglePlayback)
+        } else {
+            emit(TrackEvent::Clicked(click_track, visible_idx))
+        };
+
         let btn = button(centered_content)
             .width(Length::Fill)
             .height(Length::Fixed(self.row_height))
             .padding(0)
             .style(transparent_button)
-            .on_press(emit(TrackEvent::Clicked(click_track, visible_idx)));
+            .on_press(on_press);
 
         let styled = container(btn)
             .width(Length::Fill)
@@ -456,9 +522,15 @@ where
             .align_y(Alignment::Center)
             .style(selected_row_container(shape));
 
-        mouse_area(styled)
-            .on_right_press(emit(TrackEvent::RightClicked(right_click_id)))
-            .into()
+        let area = mouse_area(styled).on_right_press(emit(TrackEvent::RightClicked(right_click_id)));
+
+        if is_current_row {
+            area.on_enter(emit(TrackEvent::PlayingIconHover(true)))
+                .on_exit(emit(TrackEvent::PlayingIconHover(false)))
+                .into()
+        } else {
+            area.into()
+        }
     }
 
     /// Resuelve thumbnail/selección/vecinos y arma la fila en `visible_idx`
@@ -478,9 +550,10 @@ where
             && self.tracks.get(visible_idx - 1).is_some_and(|t| self.selected_ids.contains(t.id.as_str()));
         let next_selected = self.tracks.get(visible_idx + 1).is_some_and(|t| self.selected_ids.contains(t.id.as_str()));
         let shape = RowSelectionShape::from_neighbors(is_selected, prev_selected, next_selected);
+        let is_current_row = self.playing_id.as_deref() == Some(track.id.as_str());
 
         let display_index = visible_idx + 1;
-        Some(self.render_row(fields, track, display_index, handle, shape, emit))
+        Some(self.render_row(fields, track, display_index, handle, shape, is_current_row, emit))
     }
 
     // ── Ghost row (drag) ──────────────────────────────────────────

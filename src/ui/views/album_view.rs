@@ -33,6 +33,7 @@ pub struct AlbumView {
     /// guarde/restaure al navegar entre artistas/álbumes (ver
     /// `stash_active_route_scroll`).
     pub scroll: ScrollTracker,
+    icon_hovered: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,8 @@ pub enum AlbumMessage {
     TrackRowPressed(String),
     TrackRowRightClicked(String),
     TrackArtistPressed(String),
+    TogglePlayback,
+    TrackIconHover(bool),
     PlayAlbumPressed,
     Scrolled(Viewport),
 }
@@ -55,6 +58,7 @@ pub enum AlbumOutMessage {
     PlayAlbum,
     TrackRightClicked(String),
     OpenTrackArtist(String),
+    RequestTogglePlayback,
 }
 
 impl AlbumView {
@@ -65,6 +69,7 @@ impl AlbumView {
             data: AlbumViewData::Loading,
             gallery: GalleryThumbnail::new(),
             scroll: ScrollTracker::default(),
+            icon_hovered: false,
         };
 
         let task = Task::perform(
@@ -86,6 +91,8 @@ impl AlbumView {
             AlbumMessage::TrackRowPressed(id) => out = AlbumOutMessage::PlayTrack(id),
             AlbumMessage::TrackRowRightClicked(id) => out = AlbumOutMessage::TrackRightClicked(id),
             AlbumMessage::TrackArtistPressed(id) => out = AlbumOutMessage::OpenTrackArtist(id),
+            AlbumMessage::TogglePlayback => out = AlbumOutMessage::RequestTogglePlayback,
+            AlbumMessage::TrackIconHover(hovered) => self.icon_hovered = hovered,
             AlbumMessage::PlayAlbumPressed => out = AlbumOutMessage::PlayAlbum,
             AlbumMessage::Scrolled(viewport) => self.scroll.update(viewport),
         }
@@ -96,25 +103,35 @@ impl AlbumView {
         (task, out)
     }
 
-    pub fn view(&self) -> Element<'_, AlbumMessage> {
+    pub fn view(&self, now_playing_id: Option<String>, is_playing: bool) -> Element<'_, AlbumMessage> {
         match &self.data {
             AlbumViewData::Loading => status_message("Cargando álbum…"),
             AlbumViewData::Error(error) => status_message(error),
-            AlbumViewData::Loaded(album) => scrollable(
-                column![self.view_header(album), self.view_track_list(&album.tracks)]
-                    .spacing(24)
-                    .padding(Padding { top: 0.0, right: 24.0, bottom: 32.0, left: 24.0 }),
-            )
-            .width(Length::Fill)
-            .id(Id::new("album_view_scroll"))
-            .on_scroll(AlbumMessage::Scrolled)
-            .into(),
+            AlbumViewData::Loaded(album) => {
+                let this_album_is_current = now_playing_id
+                    .as_deref()
+                    .is_some_and(|id| album.tracks.iter().any(|t| t.id == id));
+                let header_is_playing = this_album_is_current && is_playing;
+
+                scrollable(
+                    column![
+                        self.view_header(album, this_album_is_current, header_is_playing),
+                        self.view_track_list(&album.tracks, now_playing_id, is_playing),
+                    ]
+                        .spacing(24)
+                        .padding(Padding { top: 0.0, right: 24.0, bottom: 32.0, left: 24.0 }),
+                )
+                .width(Length::Fill)
+                .id(Id::new("album_view_scroll"))
+                .on_scroll(AlbumMessage::Scrolled)
+                .into()
+            }
         }
     }
 
     /// Header estilo playlist: gradiente + `thumbnail_large` como portada, nombre,
     /// total de canciones/duración y fecha de salida.
-    fn view_header<'a>(&'a self, album: &'a AlbumDto) -> Element<'a, AlbumMessage> {
+    fn view_header<'a>(&'a self, album: &'a AlbumDto, this_album_is_current: bool, header_is_playing: bool) -> Element<'a, AlbumMessage> {
         let cover: Element<'a, AlbumMessage> = match self.gallery.get(&album.id) {
             Some(handle) => image(handle.clone())
                 .width(Length::Fixed(COVER_SIZE))
@@ -156,7 +173,10 @@ impl AlbumView {
         .size(13)
         .color(Color::from_rgb(0.6, 0.6, 0.65));
 
-        let play_button = button(text("Reproducir").font(SF_PRO).size(14).color(Color::WHITE))
+        let play_label = if header_is_playing { "Pausar" } else { "Reproducir" };
+        let play_message = if this_album_is_current { AlbumMessage::TogglePlayback } else { AlbumMessage::PlayAlbumPressed };
+
+        let play_button = button(text(play_label).font(SF_PRO).size(14).color(Color::WHITE))
             .padding(Padding { top: 8.0, right: 20.0, bottom: 8.0, left: 20.0 })
             .style(|_theme: &Theme, status| {
                 let base = Color::from_rgb(0.55, 0.35, 0.85);
@@ -171,7 +191,7 @@ impl AlbumView {
                     ..Default::default()
                 }
             })
-            .on_press(AlbumMessage::PlayAlbumPressed);
+            .on_press(play_message);
 
         let info = column![
             title,
@@ -236,17 +256,24 @@ impl AlbumView {
     }
 
     /// Lista completa de tracks del álbum: fila numerada, título/artista apilados, caché y duración.
-    fn view_track_list<'a>(&'a self, tracks: &'a [Track]) -> Element<'a, AlbumMessage> {
+    fn view_track_list<'a>(&'a self, tracks: &'a [Track], now_playing_id: Option<String>, is_playing: bool) -> Element<'a, AlbumMessage> {
         let rows: Vec<Element<'a, AlbumMessage>> = tracks
             .iter()
             .enumerate()
             .map(|(index, track)| {
+                let is_playing_row = now_playing_id.as_deref() == Some(track.id.as_str());
                 track_row_numbered(
                     index + 1,
                     track,
                     AlbumMessage::TrackRowPressed(track.id.clone()),
                     AlbumMessage::TrackRowRightClicked(track.id.clone()),
                     AlbumMessage::TrackArtistPressed,
+                    is_playing_row,
+                    is_playing,
+                    self.icon_hovered,
+                    AlbumMessage::TogglePlayback,
+                    AlbumMessage::TrackIconHover(true),
+                    AlbumMessage::TrackIconHover(false),
                 )
             })
             .collect();

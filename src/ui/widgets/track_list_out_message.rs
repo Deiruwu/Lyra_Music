@@ -20,6 +20,7 @@ pub enum TrackListOutMessage<Extra> {
     RequestEnqueue(Vec<String>),
     RequestFrontEnqueue(Vec<String>),
     RequestPlayRadio(String),
+    RequestTogglePlayback,
 
     // ─── Mutación de BD (Dominio) común ─────────────────────────
     RequestToggleLike(Vec<String>),

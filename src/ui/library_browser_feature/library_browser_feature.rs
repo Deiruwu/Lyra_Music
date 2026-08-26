@@ -4,7 +4,7 @@ use std::sync::Arc;
 use iced::widget::space;
 use iced::{Element, Task};
 
-use crate::audio::manager::manager::TrackManager;
+use crate::audio::manager::manager::{PlaybackOrigin, TrackManager};
 use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;
@@ -230,6 +230,7 @@ impl LibraryBrowserFeature {
                         ArtistOutMessage::PlayTopSong(id) => {
                             let songs = view.top_songs();
                             if let Some(index) = songs.iter().position(|t| t.id == id) {
+                                self.manager.set_playback_origin(PlaybackOrigin::Artist(view.artist_id().to_string()));
                                 self.manager.play_context(songs, index);
                             }
                             (task, LibraryBrowserOutMessage::Idle)
@@ -260,6 +261,10 @@ impl LibraryBrowserFeature {
                         ArtistOutMessage::ToggleFollow(id, name, photo) => {
                             (task, LibraryBrowserOutMessage::RequestToggleFollowArtist(id, name, photo))
                         }
+                        ArtistOutMessage::RequestTogglePlayback => {
+                            if self.manager.state.is_playing() { self.manager.pause(); } else { self.manager.resume(); }
+                            (task, LibraryBrowserOutMessage::Idle)
+                        }
                     }
                 }
                 _ => (Task::none(), LibraryBrowserOutMessage::Idle),
@@ -286,11 +291,13 @@ impl LibraryBrowserFeature {
                         AlbumOutMessage::PlayTrack(id) => {
                             let tracks = view.tracks();
                             if let Some(index) = tracks.iter().position(|t| t.id == id) {
+                                self.manager.set_playback_origin(PlaybackOrigin::Album(view.album_id().to_string()));
                                 self.manager.play_context(tracks.to_vec(), index);
                             }
                             (task, LibraryBrowserOutMessage::Idle)
                         }
                         AlbumOutMessage::PlayAlbum => {
+                            self.manager.set_playback_origin(PlaybackOrigin::Album(view.album_id().to_string()));
                             self.manager.play_context_shuffled(view.tracks().to_vec());
                             (task, LibraryBrowserOutMessage::Idle)
                         }
@@ -317,6 +324,10 @@ impl LibraryBrowserFeature {
                             (out_task, LibraryBrowserOutMessage::Idle)
                         }
                         AlbumOutMessage::Idle => (task, LibraryBrowserOutMessage::Idle),
+                        AlbumOutMessage::RequestTogglePlayback => {
+                            if self.manager.state.is_playing() { self.manager.pause(); } else { self.manager.resume(); }
+                            (task, LibraryBrowserOutMessage::Idle)
+                        }
                     }
                 }
                 _ => (Task::none(), LibraryBrowserOutMessage::Idle),
@@ -325,9 +336,30 @@ impl LibraryBrowserFeature {
     }
 
     pub fn view(&self) -> Element<'_, LibraryBrowserMessage> {
+        let is_playing = self.manager.state.is_playing();
+
+        let origin_matches_active_route = match &self.active {
+            Some(LibraryBrowserRoute::Artist(view)) => {
+                self.manager.get_playback_origin() == Some(PlaybackOrigin::Artist(view.artist_id().to_string()))
+            }
+            Some(LibraryBrowserRoute::Album(view)) => {
+                self.manager.get_playback_origin() == Some(PlaybackOrigin::Album(view.album_id().to_string()))
+            }
+            None => false,
+        };
+        let now_playing_id = if origin_matches_active_route {
+            self.manager.get_current_track().map(|t| t.track.id.clone())
+        } else {
+            None
+        };
+
         match &self.active {
-            Some(LibraryBrowserRoute::Artist(view)) => view.view().map(LibraryBrowserMessage::Artist),
-            Some(LibraryBrowserRoute::Album(view)) => view.view().map(LibraryBrowserMessage::Album),
+            Some(LibraryBrowserRoute::Artist(view)) => {
+                view.view(now_playing_id, is_playing).map(LibraryBrowserMessage::Artist)
+            }
+            Some(LibraryBrowserRoute::Album(view)) => {
+                view.view(now_playing_id, is_playing).map(LibraryBrowserMessage::Album)
+            }
             None => space().into(),
         }
     }

@@ -67,6 +67,7 @@ impl FavoritesView {
                     ListAction::SortChanged(key) => FavoritesOutMessage::RequestChangeSort(key),
                     ListAction::OpenArtist(id) => FavoritesOutMessage::RequestOpenArtist(id),
                     ListAction::OpenAlbum(id) => FavoritesOutMessage::RequestOpenAlbum(id),
+                    ListAction::TogglePlayback => FavoritesOutMessage::RequestTogglePlayback,
                     ListAction::None => FavoritesOutMessage::Idle,
 
                     ListAction::OpenContextMenu { anchor_id, selected_ids } => {
@@ -100,6 +101,8 @@ impl FavoritesView {
         &'a self,
         rendered_tracks: Vec<&'a Track>,
         thumbnails: &'a AsyncThumbnail,
+        now_playing_id: Option<String>,
+        is_playing: bool,
     ) -> Element<'a, FavoritesMessage> {
         let title = text("Me gusta")
             .size(28)
@@ -135,6 +138,8 @@ impl FavoritesView {
             )
                 .index_sortable()
                 .sort(self.list.active_sort_key, self.list.sort_direction_asc)
+                .playing(now_playing_id, is_playing)
+                .icon_hovered(self.list.playing_icon_hovered)
                 .on_event(FavoritesMessage::Table)
                 .build()
         };
