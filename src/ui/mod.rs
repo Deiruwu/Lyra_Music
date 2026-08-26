@@ -1,4 +1,5 @@
 pub mod styles;
+pub mod theme;
 pub mod utils;
 pub mod widgets;
 pub mod library_browser_feature;

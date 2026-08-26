@@ -1,0 +1,19 @@
+// Escala de espaciado y padding, en píxeles lógicos.
+pub const SP_0: f32 = 0.0;
+pub const SP_2: f32 = 2.0;
+pub const SP_3: f32 = 3.0;
+pub const SP_4: f32 = 4.0;
+pub const SP_6: f32 = 6.0;
+pub const SP_8: f32 = 8.0;
+pub const SP_9: f32 = 9.0;
+pub const SP_10: f32 = 10.0;
+pub const SP_12: f32 = 12.0;
+pub const SP_14: f32 = 14.0;
+pub const SP_15: f32 = 15.0;
+pub const SP_16: f32 = 16.0;
+pub const SP_18: f32 = 18.0;
+pub const SP_20: f32 = 20.0;
+pub const SP_24: f32 = 24.0;
+pub const SP_28: f32 = 28.0;
+pub const SP_32: f32 = 32.0;
+pub const SP_40: f32 = 40.0;
