@@ -42,6 +42,8 @@ use iced::widget::{button, column, container, mouse_area, row, text};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::styles::button as button_style;
 use crate::ui::styles::container as container_style;
+use crate::ui::assets::{spacing, typography};
+use crate::ui::theme::theme;
 
 #[derive(Debug, Clone)]
 pub struct ConfirmDialog<Item> {
@@ -86,21 +88,21 @@ impl<Item: Clone> ConfirmDialog<Item> {
 
         let prompt_text = text(prompt.clone())
             .font(SF_PRO)
-            .size(14)
-            .color(Color::WHITE);
+            .size(typography::TEXT_14)
+            .color(theme().content.primary);
 
         let confirm_btn = button(
-            text("Confirmar").font(SF_PRO).size(13).color(Color::WHITE),
+            text("Confirmar").font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary),
         )
             .style(button_style::context_menu_item)
-            .padding(Padding { top: 8.0, bottom: 8.0, left: 18.0, right: 18.0 })
+            .padding(Padding { top: spacing::SP_8, bottom: spacing::SP_8, left: spacing::SP_18, right: spacing::SP_18 })
             .on_press(confirm_msg);
 
         let cancel_btn = button(
-            text("Cancelar").font(SF_PRO).size(13).color(Color::from_rgb(0.7, 0.7, 0.75)),
+            text("Cancelar").font(SF_PRO).size(typography::TEXT_13).color(theme().content.secondary),
         )
             .style(button_style::context_menu_item)
-            .padding(Padding { top: 8.0, bottom: 8.0, left: 18.0, right: 18.0 })
+            .padding(Padding { top: spacing::SP_8, bottom: spacing::SP_8, left: spacing::SP_18, right: spacing::SP_18 })
             .on_press(cancel_msg.clone());
 
         let card = container(
@@ -108,13 +110,13 @@ impl<Item: Clone> ConfirmDialog<Item> {
                 container(prompt_text)
                     .width(Length::Fixed(260.0))
                     .align_x(Alignment::Center)
-                    .padding(Padding { top: 4.0, bottom: 16.0, left: 4.0, right: 4.0 }),
-                row![confirm_btn, cancel_btn].spacing(10).align_y(Alignment::Center),
+                    .padding(Padding { top: spacing::SP_4, bottom: spacing::SP_16, left: spacing::SP_4, right: spacing::SP_4 }),
+                row![confirm_btn, cancel_btn].spacing(spacing::SP_10).align_y(Alignment::Center),
             ]
                 .align_x(Alignment::Center)
-                .spacing(4),
+                .spacing(spacing::SP_4),
         )
-            .padding(24)
+            .padding(spacing::SP_24)
             .style(container_style::context_menu);
 
         let backdrop = mouse_area(
@@ -124,7 +126,7 @@ impl<Item: Clone> ConfirmDialog<Item> {
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
                 .style(|_| container::Style {
-                    background: Some(Color { r: 0.0, g: 0.0, b: 0.0, a: 0.55 }.into()),
+                    background: Some(theme().overlay.scrim_strong.into()),
                     ..Default::default()
                 }),
         )

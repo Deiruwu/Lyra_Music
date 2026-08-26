@@ -13,6 +13,7 @@ use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
 use crate::utils::formatting::format_duration;
 use crate::ui::assets::fonts::JETBRAINS_MONO;
+use crate::ui::assets::{spacing, typography};
 
 /// Celda líder numerada de una fila: el número de posición normalmente;
 /// si es la fila que está sonando, el ecualizador animado o el ícono de
@@ -25,7 +26,7 @@ fn leading_index_cell<'a, Message: 'a>(
     size: Length,
 ) -> Element<'a, Message> {
     if !is_playing_row {
-        return container(text(position.to_string()).font(SF_PRO).size(13).color(Color::from_rgb(0.6, 0.6, 0.65)))
+        return container(text(position.to_string()).font(SF_PRO).size(typography::TEXT_13).color(theme().content.tertiary))
             .width(size)
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
@@ -39,11 +40,11 @@ fn leading_index_cell<'a, Message: 'a>(
         text(icon.as_str())
             .font(JETBRAINS_MONO)
             .shaping(Shaping::Advanced)
-            .size(13)
+            .size(typography::TEXT_13)
             .color(theme().accent.primary)
             .into()
     } else {
-        text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(11).color(theme().accent.primary).into()
+        text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(typography::TEXT_11).color(theme().accent.primary).into()
     };
 
     container(glyph)
@@ -112,14 +113,14 @@ fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(Strin
 ) -> Element<'a, Message> {
     let cached = matches!(track.state, TrackState::Cached);
 
-    let title_color = if is_playing_row { theme().accent.primary } else { Color::WHITE };
+    let title_color = if is_playing_row { theme().accent.primary } else { theme().content.primary };
     let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, title_color, TITLE_WIDTH);
 
     let artist = artist_links(
         &track.artists,
         SF_PRO,
         13.0,
-        Color::from_rgb(0.7, 0.7, 0.75),
+        theme().content.secondary,
         ARTIST_WIDTH,
         on_artist_click,
     );
@@ -128,30 +129,30 @@ fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(Strin
         track.album.as_ref(),
         SF_PRO,
         13.0,
-        Color::from_rgb(0.7, 0.7, 0.75),
+        theme().content.secondary,
         ALBUM_WIDTH,
         on_album_click,
     );
 
     let duration = text(format_duration(track.duration_seconds))
         .font(SF_PRO)
-        .size(13)
-        .color(Color::from_rgb(0.7, 0.7, 0.75))
+        .size(typography::TEXT_13)
+        .color(theme().content.secondary)
         .width(DURATION_WIDTH);
 
     let content = row![index, thumbnail, title, artist, album, duration, cache_indicator(cached)]
-        .spacing(18)
+        .spacing(spacing::SP_18)
         .align_y(Alignment::Center)
-        .padding([6, 8]);
+        .padding([spacing::SP_6, spacing::SP_8]);
 
     let btn = button(content)
-        .padding(0)
+        .padding(spacing::SP_0)
         .style(|_theme: &Theme, status| {
             let background = match status {
-                button::Status::Hovered => Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
+                button::Status::Hovered => Some(theme().overlay.hover_row.into()),
                 _ => None,
             };
-            button::Style { background, text_color: Color::WHITE, ..Default::default() }
+            button::Style { background, text_color: theme().content.primary, ..Default::default() }
         })
         .on_press(if is_playing_row { on_toggle } else { on_play });
 
@@ -184,30 +185,30 @@ pub fn track_row_numbered<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a
 
     let index = leading_index_cell(position, is_playing_row, is_playing, icon_hovered, Length::Fixed(NUMBERED_INDEX_WIDTH));
 
-    let title_color = if is_playing_row { theme().accent.primary } else { Color::WHITE };
+    let title_color = if is_playing_row { theme().accent.primary } else { theme().content.primary };
     let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, title_color, Length::Fill);
-    let artist = artist_links(&track.artists, SF_PRO, 13.0, Color::from_rgb(0.7, 0.7, 0.75), Length::Fill, on_artist_click);
-    let title_artist = column![title, artist].spacing(2).width(Length::Fill);
+    let artist = artist_links(&track.artists, SF_PRO, 13.0, theme().content.secondary, Length::Fill, on_artist_click);
+    let title_artist = column![title, artist].spacing(spacing::SP_2).width(Length::Fill);
 
     let duration = text(format_duration(track.duration_seconds))
         .font(SF_PRO)
-        .size(13)
-        .color(Color::from_rgb(0.7, 0.7, 0.75))
+        .size(typography::TEXT_13)
+        .color(theme().content.secondary)
         .width(DURATION_WIDTH);
 
     let content = row![index, title_artist, cache_indicator(cached), duration]
-        .spacing(18)
+        .spacing(spacing::SP_18)
         .align_y(Alignment::Center)
-        .padding(Padding { top: 10.0, right: 8.0, bottom: 10.0, left: 8.0 });
+        .padding(Padding { top: spacing::SP_10, right: spacing::SP_8, bottom: spacing::SP_10, left: spacing::SP_8 });
 
     let btn = button(content)
-        .padding(0)
+        .padding(spacing::SP_0)
         .style(|_theme: &Theme, status| {
             let background = match status {
-                button::Status::Hovered => Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
+                button::Status::Hovered => Some(theme().overlay.hover_row.into()),
                 _ => None,
             };
-            button::Style { background, text_color: Color::WHITE, ..Default::default() }
+            button::Style { background, text_color: theme().content.primary, ..Default::default() }
         })
         .on_press(if is_playing_row { on_toggle } else { on_play });
 
@@ -223,9 +224,9 @@ pub fn track_row_numbered<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a
 /// Punto circular indicador de "en caché" según `track.state`.
 pub(crate) fn cache_indicator<'a, Message: 'a>(cached: bool) -> Element<'a, Message> {
     let color = if cached {
-        Color::from_rgb(0.4, 0.85, 0.5)
+        theme().status.cached
     } else {
-        Color::from_rgb(0.45, 0.45, 0.45)
+        theme().content.faint_alt
     };
 
     container(text(""))

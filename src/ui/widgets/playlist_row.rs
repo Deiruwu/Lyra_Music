@@ -20,6 +20,8 @@ use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::styles::button as button_style;
 use crate::ui::utils::playlist_metadata::{format_track_count, format_total_duration};
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
+use crate::ui::assets::{spacing, typography};
+use crate::ui::theme::theme;
 
 /// Tamaños propios de la fila de playlist — más grande que una fila de
 /// track (36px) pero mucho más chica que el header (176px). Constantes
@@ -81,10 +83,10 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
             )
                 .width(Length::Fixed(ROW_COVER_SIZE))
                 .height(Length::Fixed(ROW_COVER_SIZE))
-                .padding(0)
+                .padding(spacing::SP_0)
                 .style(|_theme: &Theme, status| {
                     let bg = match status {
-                        button::Status::Hovered => Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+                        button::Status::Hovered => theme().overlay.scrim_cover,
                         _ => Color::TRANSPARENT,
                     };
                     button::Style {
@@ -104,21 +106,21 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
             border: iced::Border {
                 radius: ROW_COVER_RADIUS.into(),
                 width: if data.is_active { 2.0 } else { 0.0 },
-                color: Color::from_rgb(0.74, 0.58, 0.98),
+                color: theme().accent.primary,
             },
             ..Default::default()
         })
         .into();
 
     let row_color = if data.is_active {
-        Color::from_rgb(0.74, 0.58, 0.98)
+        theme().accent.primary
     } else {
-        Color::WHITE
+        theme().content.primary
     };
 
     let content: Element<'a, Message> = if is_expanded {
         let name = text(data.name.to_string())
-            .size(13)
+            .size(typography::TEXT_13)
             .font(SF_PRO)
             .color(row_color);
 
@@ -127,11 +129,11 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
             format_track_count(data.track_count),
             format_total_duration(data.total_duration_seconds),
         ))
-            .size(11)
+            .size(typography::TEXT_11)
             .font(SF_PRO)
-            .color(Color::from_rgb(0.5, 0.53, 0.6));
+            .color(theme().content.muted);
 
-        let text_column = column![name, metadata].spacing(2).align_x(Alignment::Start);
+        let text_column = column![name, metadata].spacing(spacing::SP_2).align_x(Alignment::Start);
 
         row![
             cover_element,
@@ -154,7 +156,7 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
         // apretado.
         let row_button = button(content)
             .width(Length::Fill)
-            .padding(Padding { top: 6.0, bottom: 6.0, left: 12.0, right: 12.0 })
+            .padding(Padding { top: spacing::SP_6, bottom: spacing::SP_6, left: spacing::SP_12, right: spacing::SP_12 })
             .style(button_style::transparent)
             .on_press(on_select);
 
@@ -170,7 +172,7 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
         // contextual, sin highlight de fondo de fila que se vea "sucio".
         let clickable = container(content)
             .width(Length::Fill)
-            .padding(Padding { top: 4.0, bottom: 4.0, left: 0.0, right: 0.0 });
+            .padding(Padding { top: spacing::SP_4, bottom: spacing::SP_4, left: spacing::SP_0, right: spacing::SP_0 });
 
         mouse_area(clickable)
             .on_press(on_select)

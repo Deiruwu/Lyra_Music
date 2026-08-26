@@ -5,7 +5,9 @@ use crate::model::Track;
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 use crate::ui::widgets::artist_links::{album_link, artist_links, artist_names_text};
 use crate::ui::widgets::single_line_text::single_line_text;
+use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::styles::button as button_style;
+use crate::ui::theme::theme;
 use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::ui::assets::icons::Icon;
 
@@ -44,9 +46,9 @@ pub fn track_info<'a, Message: Clone + 'a>(track: &'a Track, width: Length) -> E
     let album_name = track.album.as_ref().map_or("".to_string(), |album| album.name.clone());
 
     let (title_color, artist_color) = if is_downloaded {
-        (iced::Color::WHITE, iced::Color::from_rgb(0.6, 0.6, 0.6))
+        (theme().content.primary, theme().content.tertiary_alt)
     } else {
-        (iced::Color::from_rgb(0.4, 0.4, 0.4), iced::Color::from_rgb(0.3, 0.3, 0.3))
+        (theme().content.disabled_alt, theme().content.disabled_alt2)
     };
 
     column![
@@ -66,7 +68,7 @@ pub fn basic_track_view<'a, Message: Clone + 'a>(
         track_thumbnail(thumbnail),
         track_info(track, Length::Fixed(260.0))
     ]
-        .spacing(10)
+        .spacing(spacing::SP_10)
         .align_y(Alignment::Center)
         .into()
 }
@@ -109,8 +111,8 @@ where
             .width(Length::Fixed(50.0))
             .height(Length::Fixed(50.0))
             .style(|_theme: &Theme| container::Style {
-                background: Some(iced::Color::from_rgb(0.2, 0.2, 0.2).into()),
-                border: iced::border::rounded(5),
+                background: Some(theme().surface.control.into()),
+                border: iced::border::rounded(radii::R_5),
                 ..Default::default()
             })
             .into(),
@@ -119,7 +121,7 @@ where
     if hovered {
         let play_btn = button(
             container(
-                text(Icon::Play.as_ref()).font(JETBRAINS_MONO).size(18).color(iced::Color::WHITE)
+                text(Icon::Play.as_ref()).font(JETBRAINS_MONO).size(typography::TEXT_18).color(theme().content.primary)
             )
                 .width(Length::Fixed(55.0))
                 .height(Length::Fixed(55.0))
@@ -129,9 +131,9 @@ where
             .on_press(on_play)
             .width(Length::Fixed(55.0))
             .height(Length::Fixed(55.0))
-            .padding(0)
+            .padding(spacing::SP_0)
             .style(|_: &Theme, _| button::Style {
-                background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                background: Some(theme().overlay.scrim_play.into()),
                 ..Default::default()
             });
 
@@ -150,15 +152,15 @@ where
     Message: Clone + 'a,
 {
     let icon_color = if is_dragging {
-        iced::Color::WHITE
+        theme().content.primary
     } else {
-        iced::Color::from_rgb(0.45, 0.45, 0.45)
+        theme().content.faint_alt
     };
 
     let handle = container(
         text("")
             .font(JETBRAINS_MONO)
-            .size(16)
+            .size(typography::TEXT_16)
             .color(icon_color)
     )
         .width(Length::Fixed(28.0))
@@ -196,9 +198,9 @@ where
 
     let is_downloaded = track.file_path.as_ref().map_or(false, |p| !p.is_empty());
     let (title_color, artist_color) = if is_downloaded {
-        (iced::Color::WHITE, iced::Color::from_rgb(0.6, 0.6, 0.6))
+        (theme().content.primary, theme().content.tertiary_alt)
     } else {
-        (iced::Color::from_rgb(0.4, 0.4, 0.4), iced::Color::from_rgb(0.3, 0.3, 0.3))
+        (theme().content.disabled_alt, theme().content.disabled_alt2)
     };
 
     let info = column![
@@ -213,7 +215,7 @@ where
             container(
                 text(if delete_hovered { "󰛌" } else { "󰆴" })
                     .font(JETBRAINS_MONO)
-                    .size(16)
+                    .size(typography::TEXT_16)
             )
                 .width(Length::Fixed(44.0))
                 .height(Length::Fixed(44.0))
@@ -222,7 +224,7 @@ where
         )
             .on_press(on_delete)
             .style(button_style::transparent)
-            .padding(0)
+            .padding(spacing::SP_0)
     )
         .on_enter(on_delete_hover)
         .on_exit(on_delete_leave);
@@ -231,9 +233,9 @@ where
 
     let row_content = mouse_area(
         row![handle, thumb, info]
-            .spacing(15)
+            .spacing(spacing::SP_15)
             .align_y(Alignment::Center)
-            .padding([8, 12])
+            .padding([spacing::SP_8, spacing::SP_12])
             .width(Length::Fill)
     )
         .on_right_press(on_right_click);
@@ -247,9 +249,9 @@ where
         .style(move |_theme: &Theme| {
             if drag.is_dragging {
                 container::Style {
-                    background: Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
-                    border: iced::border::rounded(6)
-                        .color(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.15))
+                    background: Some(theme().overlay.hover_row.into()),
+                    border: iced::border::rounded(radii::R_6)
+                        .color(theme().border.drag)
                         .width(1.0),
                     ..Default::default()
                 }

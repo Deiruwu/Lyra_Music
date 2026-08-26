@@ -6,6 +6,8 @@ use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;
 use crate::ui::styles::button as button_style;
 use crate::ui::styles::container as container_style;
+use crate::ui::assets::{spacing, typography};
+use crate::ui::theme::theme;
 
 const ICON_COLUMN_WIDTH: f32 = 20.0;
 const MENU_WIDTH: f32 = 180.0;
@@ -176,7 +178,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
     ) -> Element<'a, Msg> {
         let anchor = self.clamp_anchor(raw_anchor, items.len());
 
-        let mut list = column![].spacing(2);
+        let mut list = column![].spacing(spacing::SP_2);
         let mut submenu_flyout: Option<(f32, Vec<ContextMenuItem<Action>>)> = None;
         let mut row_index: f32 = 0.0;
 
@@ -191,21 +193,21 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                     let icon_cell = container(
                         text(icon.unwrap_or(""))
                             .font(SF_PRO)
-                            .size(13)
-                            .color(Color::WHITE),
+                            .size(typography::TEXT_13)
+                            .color(theme().content.primary),
                     )
                         .width(Length::Fixed(ICON_COLUMN_WIDTH))
                         .align_x(Alignment::Center);
 
-                    let label_cell = text(label.clone()).font(SF_PRO).size(13).color(Color::WHITE);
+                    let label_cell = text(label.clone()).font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary);
 
                     let row_content = row![icon_cell, label_cell]
-                        .spacing(8)
+                        .spacing(spacing::SP_8)
                         .align_y(Alignment::Center);
 
                     let leaf_button = button(row_content)
                         .width(Length::Fixed(MENU_WIDTH))
-                        .padding(Padding { top: 8.0, bottom: 8.0, left: 12.0, right: 12.0 })
+                        .padding(Padding { top: spacing::SP_8, bottom: spacing::SP_8, left: spacing::SP_12, right: spacing::SP_12 })
                         .style(button_style::context_menu_item)
                         .on_press(to_msg(action, item_clone));
 
@@ -220,14 +222,14 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                     let icon_cell = container(
                         text(icon.unwrap_or(""))
                             .font(SF_PRO)
-                            .size(13)
-                            .color(Color::WHITE),
+                            .size(typography::TEXT_13)
+                            .color(theme().content.primary),
                     )
                         .width(Length::Fixed(ICON_COLUMN_WIDTH))
                         .align_x(Alignment::Center);
 
-                    let label_cell = text(label.clone()).font(SF_PRO).size(13).color(Color::WHITE);
-                    let chevron = text("›").font(SF_PRO).size(14).color(Color::from_rgb(0.6, 0.6, 0.65));
+                    let label_cell = text(label.clone()).font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary);
+                    let chevron = text("›").font(SF_PRO).size(typography::TEXT_14).color(theme().content.tertiary);
 
                     let row_content = row![
                         icon_cell,
@@ -235,12 +237,12 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                         space().width(Length::Fill),
                         chevron,
                     ]
-                        .spacing(8)
+                        .spacing(spacing::SP_8)
                         .align_y(Alignment::Center);
 
                     let submenu_button = button(row_content)
                         .width(Length::Fixed(MENU_WIDTH))
-                        .padding(Padding { top: 8.0, bottom: 8.0, left: 12.0, right: 12.0 })
+                        .padding(Padding { top: spacing::SP_8, bottom: spacing::SP_8, left: spacing::SP_12, right: spacing::SP_12 })
                         .style(button_style::context_menu_item);
 
                     let hoverable_submenu = mouse_area(submenu_button)
@@ -255,7 +257,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
             }
         }
 
-        let menu = container(list).padding(4).style(container_style::context_menu);
+        let menu = container(list).padding(spacing::SP_4).style(container_style::context_menu);
 
         let mut layers: Vec<Element<'a, Msg>> = Vec::new();
 
@@ -274,7 +276,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
 
         if let Some((submenu_row_index, children)) = submenu_flyout {
             let submenu_id_for_flyout = self.open_submenu;
-            let mut sub_list = column![].spacing(2);
+            let mut sub_list = column![].spacing(spacing::SP_2);
 
             for child in children {
                 if let ContextMenuItem::Leaf { label, icon, action } = child {
@@ -283,29 +285,29 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                     let icon_cell = container(
                         text(icon.unwrap_or(""))
                             .font(SF_PRO)
-                            .size(13)
-                            .color(Color::WHITE),
+                            .size(typography::TEXT_13)
+                            .color(theme().content.primary),
                     )
                         .width(Length::Fixed(ICON_COLUMN_WIDTH))
                         .align_x(Alignment::Center);
 
-                    let label_cell = text(label.clone()).font(SF_PRO).size(13).color(Color::WHITE);
+                    let label_cell = text(label.clone()).font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary);
 
                     let row_content = row![icon_cell, label_cell]
-                        .spacing(8)
+                        .spacing(spacing::SP_8)
                         .align_y(Alignment::Center);
 
                     sub_list = sub_list.push(
                         button(row_content)
                             .width(Length::Fixed(SUBMENU_WIDTH))
-                            .padding(Padding { top: 8.0, bottom: 8.0, left: 12.0, right: 12.0 })
+                            .padding(Padding { top: spacing::SP_8, bottom: spacing::SP_8, left: spacing::SP_12, right: spacing::SP_12 })
                             .style(button_style::context_menu_item)
                             .on_press(to_msg(action, item_clone)),
                     );
                 }
             }
 
-            let submenu_container = container(sub_list).padding(4).style(container_style::context_menu);
+            let submenu_container = container(sub_list).padding(spacing::SP_4).style(container_style::context_menu);
 
             let submenu_hoverable = mouse_area(submenu_container)
                 .on_enter(on_submenu_hover(submenu_id_for_flyout));
