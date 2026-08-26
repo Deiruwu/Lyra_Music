@@ -27,6 +27,8 @@
 
 use iced::widget::{container, text};
 use iced::{Alignment, Color, Element, Length};
+use crate::ui::assets::{spacing, typography};
+use crate::ui::theme::theme;
 
 /// Los tres tonos de color que ya usaban Explorer/Favorites/Playlists
 /// para sus mensajes de estado. `Neutral` no fija `text_color`
@@ -43,8 +45,8 @@ impl StatusTone {
     fn color(&self) -> Option<Color> {
         match self {
             StatusTone::Neutral => None,
-            StatusTone::Error => Some(Color::from_rgb(0.9, 0.4, 0.4)),
-            StatusTone::Muted => Some(Color::from_rgb(0.6, 0.6, 0.65)),
+            StatusTone::Error => Some(theme().status.error),
+            StatusTone::Muted => Some(theme().content.tertiary),
         }
     }
 }
@@ -63,10 +65,10 @@ pub fn catalog_status_message<'a, Message: 'a>(
     container(
         text(message.into())
             .font(crate::ui::assets::fonts::SF_PRO)
-            .size(14),
+            .size(typography::TEXT_14),
     )
         .width(Length::Fill)
-        .padding(40)
+        .padding(spacing::SP_40)
         .align_x(Alignment::Center)
         .style(move |_| container::Style {
             text_color: color,

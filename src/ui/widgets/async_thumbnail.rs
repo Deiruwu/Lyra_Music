@@ -1,6 +1,7 @@
 use iced::{Element, Length, ContentFit};
 use iced::widget::{container, image, text};
 use iced::widget::image::Handle;
+use crate::ui::theme::theme;
 
 pub enum ThumbnailState {
     Loading,
@@ -31,7 +32,7 @@ where
             .align_x(iced::alignment::Horizontal::Center)
             .align_y(iced::alignment::Vertical::Center)
             .style(move |_theme: &iced::Theme| container::Style {
-                background: Some(iced::Color::from_rgb(0.18, 0.18, 0.18).into()),
+                background: Some(theme().surface.placeholder.into()),
                 border: iced::border::rounded(radius),
                 ..Default::default()
             })
