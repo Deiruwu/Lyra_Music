@@ -15,6 +15,7 @@ use super::lyrics::lyrics_panel::{LyricsMessage, LyricsOutMessage, LyricsPanel};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::{radii, spacing};
 use crate::ui::theme::theme;
+use crate::ui::assets::typography;
 const ARTWORK_MAX_SIZE: f32 = 544.0;
 
 #[derive(Debug, Clone)]
@@ -98,11 +99,7 @@ impl TheaterPanel {
                         background: style_bg.map(Into::into),
                         border: iced::border::rounded(radii::R_16),
                         shadow: if style_bg.is_none() {
-                            iced::Shadow {
-                                color: theme().overlay.shadow,
-                                offset: iced::Vector::new(0.0, 8.0),
-                                blur_radius: 32.0,
-                            }
+                            theme().elevation.shadow
                         } else {
                             Default::default()
                         },
@@ -128,7 +125,7 @@ impl TheaterPanel {
             };
 
             let header = column![
-                single_line_text_aligned(title.as_str(), SF_PRO, 20.0, theme().content.primary, Length::Fixed(side), Horizontal::Center),
+                single_line_text_aligned(title.as_str(), SF_PRO, typography::TEXT_20, theme().content.primary, Length::Fixed(side), Horizontal::Center),
                 artist_names_text_aligned(
                     &artists,
                     SF_PRO,

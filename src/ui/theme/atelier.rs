@@ -1,3 +1,5 @@
+use crate::ui::assets::spacing;
+
 use super::palette::*;
 use super::semantic::*;
 
@@ -49,7 +51,6 @@ pub const ATELIER: Semantic = Semantic {
         strong: VIOLET_55,
         strong_hover: VIOLET_62,
         control_active: VIOLET_62,
-        tint: VIOLET_22,
     },
     overlay: Overlay {
         hover_subtle: WHITE_A03,
@@ -70,7 +71,13 @@ pub const ATELIER: Semantic = Semantic {
         scrim_cover: BLACK_A40,
         scrim_strong: BLACK_A55,
         scrim_play: BLACK_A60,
-        shadow: BLACK_A45,
+    },
+    elevation: Elevation {
+        shadow: iced::Shadow {
+            color: BLACK_A45,
+            offset: iced::Vector::new(0.0, spacing::SP_8),
+            blur_radius: spacing::SP_32,
+        },
     },
     status: Status {
         liked: CRIMSON,

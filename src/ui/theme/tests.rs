@@ -66,7 +66,6 @@ fn accent_tokens_match_original_literals() {
     assert_eq!(t.accent.strong, Color::from_rgb(0.55, 0.35, 0.85));
     assert_eq!(t.accent.strong_hover, Color::from_rgb(0.62, 0.42, 0.92));
     assert_eq!(t.accent.control_active, Color::from_rgb(0.62, 0.42, 0.92));
-    assert_eq!(t.accent.tint, Color::from_rgb(0.22, 0.16, 0.28));
 }
 
 #[test]
@@ -90,7 +89,14 @@ fn overlay_tokens_match_original_literals() {
     assert_eq!(t.overlay.scrim_cover, Color::from_rgba(0.0, 0.0, 0.0, 0.4));
     assert_eq!(t.overlay.scrim_strong, Color { r: 0.0, g: 0.0, b: 0.0, a: 0.55 });
     assert_eq!(t.overlay.scrim_play, Color::from_rgba(0.0, 0.0, 0.0, 0.6));
-    assert_eq!(t.overlay.shadow, Color::from_rgba(0.0, 0.0, 0.0, 0.45));
+}
+
+#[test]
+fn elevation_matches_original_literals() {
+    let t = theme();
+    assert_eq!(t.elevation.shadow.color, Color::from_rgba(0.0, 0.0, 0.0, 0.45));
+    assert_eq!(t.elevation.shadow.offset, iced::Vector::new(0.0, 8.0));
+    assert_eq!(t.elevation.shadow.blur_radius, 32.0);
 }
 
 #[test]

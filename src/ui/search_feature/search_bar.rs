@@ -167,7 +167,7 @@ impl SearchInput {
                 .width(Length::Fill)
                 .style(|_theme: &Theme| container::Style {
                     background: Some(theme().surface.field.into()),
-                    border: border::color(theme().content.disabled_alt2).width(1.0).rounded(radii::R_8),
+                    border: border::color(theme().border.field).width(1.0).rounded(radii::R_8),
                     ..Default::default()
                 }),
         ]

@@ -11,12 +11,12 @@ use crate::audio::manager::manager::QueueSlot;
 use crate::model::Track;
 use crate::ui::playback_feature::player::TrackLink;
 use crate::ui::styles::button as button_style;
+use crate::ui::styles::container as container_style;
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::widgets::track_row::{queue_track_row, DragRowParams};
 use super::animator::QueueAnimator;
-use crate::ui::assets::{radii, typography};
-use crate::ui::theme::theme;
+use crate::ui::assets::typography;
 
 pub(crate) const ROW_HEIGHT: f32 = 66.0;
 pub(crate) const ROW_SPACING: f32 = 4.0;
@@ -371,7 +371,7 @@ impl QueuePanel {
                 .padding(dynamic_padding)
                 .width(Length::Fixed(self.queue_width))
                 .height(Length::Fill)
-                .style(queue_panel_style)
+                .style(container_style::queue_panel)
                 .into();
         }
 
@@ -479,7 +479,7 @@ impl QueuePanel {
             .padding(dynamic_padding)
             .width(Length::Fixed(self.queue_width))
             .height(Length::Fill)
-            .style(queue_panel_style)
+            .style(container_style::queue_panel)
             .into()
     }
 
@@ -527,12 +527,3 @@ impl QueuePanel {
     }
 }
 
-/// Fondo común del panel de la cola (se usa tanto en el caso vacío como
-/// en el render normal).
-fn queue_panel_style(_theme: &iced::Theme) -> container::Style {
-    container::Style {
-        background: Some(theme().surface.panel.into()),
-        border: iced::border::rounded(radii::R_12),
-        ..Default::default()
-    }
-}

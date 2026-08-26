@@ -12,6 +12,7 @@ pub struct Semantic {
     pub border: Border,
     pub accent: Accent,
     pub overlay: Overlay,
+    pub elevation: Elevation,
     pub status: Status,
 }
 
@@ -66,7 +67,6 @@ pub struct Accent {
     pub strong: Color,
     pub strong_hover: Color,
     pub control_active: Color,
-    pub tint: Color,
 }
 
 pub struct Overlay {
@@ -88,7 +88,10 @@ pub struct Overlay {
     pub scrim_cover: Color,
     pub scrim_strong: Color,
     pub scrim_play: Color,
-    pub shadow: Color,
+}
+
+pub struct Elevation {
+    pub shadow: iced::Shadow,
 }
 
 pub struct Status {

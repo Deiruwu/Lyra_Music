@@ -239,7 +239,7 @@ impl HomeView {
         };
         let thumb = async_thumbnail(thumbnail_state, BANNER_THUMBNAIL_SIZE, BANNER_THUMBNAIL_SIZE / 2.0);
 
-        let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, theme().content.primary, Length::Fill);
+        let title = single_line_text(track.title.as_str(), SF_PRO, typography::TEXT_14, theme().content.primary, Length::Fill);
 
         let artist = artist_links(
             &track.artists,

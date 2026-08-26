@@ -465,7 +465,7 @@ fn follow_button(is_followed: bool) -> Element<'static, ArtistMessage> {
     let (idle, hovered) = if is_followed {
         (theme().overlay.toggle_on_idle, theme().overlay.toggle_on_hover)
     } else {
-        (theme().overlay.selected, theme().overlay.toggle_hover)
+        (theme().overlay.toggle_idle, theme().overlay.toggle_hover)
     };
 
     button(text(label).font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary))

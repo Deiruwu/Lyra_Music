@@ -52,9 +52,9 @@ pub fn track_info<'a, Message: Clone + 'a>(track: &'a Track, width: Length) -> E
     };
 
     column![
-        single_line_text(&track.title, Font::default(), 14.0, title_color, width),
-        artist_names_text(&track.artists, Font::default(), 11.0, artist_color, width),
-        single_line_text(album_name, Font::default(), 11.0, artist_color, width),
+        single_line_text(&track.title, Font::default(), typography::TEXT_14, title_color, width),
+        artist_names_text(&track.artists, Font::default(), typography::TEXT_11, artist_color, width),
+        single_line_text(album_name, Font::default(), typography::TEXT_11, artist_color, width),
     ]
         .align_x(Alignment::Start)
         .into()
@@ -204,9 +204,9 @@ where
     };
 
     let info = column![
-        single_line_text(&track.title, Font::default(), 14.0, title_color, Length::Fill),
-        artist_links(&track.artists, Font::default(), 11.0, artist_color, Length::Fill, on_artist_click),
-        album_link(track.album.as_ref(), Font::default(), 11.0, artist_color, Length::Fill, on_album_click),
+        single_line_text(&track.title, Font::default(), typography::TEXT_14, title_color, Length::Fill),
+        artist_links(&track.artists, Font::default(), typography::TEXT_11, artist_color, Length::Fill, on_artist_click),
+        album_link(track.album.as_ref(), Font::default(), typography::TEXT_11, artist_color, Length::Fill, on_album_click),
     ]
         .align_x(Alignment::Start);
 

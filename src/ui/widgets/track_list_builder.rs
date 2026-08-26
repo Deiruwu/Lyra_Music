@@ -412,27 +412,27 @@ where
                 .width(width)
                 .align_y(Alignment::Center)
                 .into(),
-            DisplayValue::Text(s) => single_line_text(s, SF_PRO, 13.5, theme().content.secondary, width),
-            DisplayValue::ColoredText(s, c) => single_line_text(s, SF_PRO, 13.5, c, width),
+            DisplayValue::Text(s) => single_line_text(s, SF_PRO, typography::TEXT_13_5, theme().content.secondary, width),
+            DisplayValue::ColoredText(s, c) => single_line_text(s, SF_PRO, typography::TEXT_13_5, c, width),
             DisplayValue::Artists(artists) => match emit {
                 Some(emit) => {
                     let emit = Rc::clone(emit);
-                    artist_links(&artists, SF_PRO, 13.5, theme().content.secondary, width, move |id| {
+                    artist_links(&artists, SF_PRO, typography::TEXT_13_5, theme().content.secondary, width, move |id| {
                         emit(TrackEvent::ArtistClicked(id))
                     })
                 }
-                None => artist_names_text(&artists, SF_PRO, 13.5, theme().content.secondary, width),
+                None => artist_names_text(&artists, SF_PRO, typography::TEXT_13_5, theme().content.secondary, width),
             },
             DisplayValue::AlbumLink(album) => match emit {
                 Some(emit) => {
                     let emit = Rc::clone(emit);
-                    album_link(album.as_ref(), SF_PRO, 13.5, theme().content.secondary, width, move |id| {
+                    album_link(album.as_ref(), SF_PRO, typography::TEXT_13_5, theme().content.secondary, width, move |id| {
                         emit(TrackEvent::AlbumClicked(id))
                     })
                 }
                 None => {
                     let name = album.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "-".to_string());
-                    single_line_text(name, SF_PRO, 13.5, theme().content.secondary, width)
+                    single_line_text(name, SF_PRO, typography::TEXT_13_5, theme().content.secondary, width)
                 }
             },
         }

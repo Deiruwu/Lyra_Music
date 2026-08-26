@@ -105,7 +105,7 @@ impl Player {
             text(Icon::Play.as_ref()).font(JETBRAINS_MONO)
         };
 
-        let active_color = theme().accent.strong_hover;
+        let active_color = theme().accent.control_active;
         let inactive_color = theme().content.tertiary_alt;
 
         let shuffle_button = {
@@ -192,7 +192,7 @@ impl Player {
         thumbnail: Option<Handle>,
         trailing: Element<'a, PlayerMessage>,
     ) -> Element<'a, PlayerMessage> {
-        let title = single_line_text(&track.title, iced::Font::default(), 14.0, theme().content.primary, Length::Shrink);
+        let title = single_line_text(&track.title, iced::Font::default(), typography::TEXT_14, theme().content.primary, Length::Shrink);
 
         let subtitle_color = theme().content.tertiary_alt;
 

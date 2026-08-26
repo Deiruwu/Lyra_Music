@@ -114,7 +114,7 @@ fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(Strin
     let cached = matches!(track.state, TrackState::Cached);
 
     let title_color = if is_playing_row { theme().accent.primary } else { theme().content.primary };
-    let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, title_color, TITLE_WIDTH);
+    let title = single_line_text(track.title.as_str(), SF_PRO, typography::TEXT_14, title_color, TITLE_WIDTH);
 
     let artist = artist_links(
         &track.artists,
@@ -186,8 +186,8 @@ pub fn track_row_numbered<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a
     let index = leading_index_cell(position, is_playing_row, is_playing, icon_hovered, Length::Fixed(NUMBERED_INDEX_WIDTH));
 
     let title_color = if is_playing_row { theme().accent.primary } else { theme().content.primary };
-    let title = single_line_text(track.title.as_str(), SF_PRO, 14.0, title_color, Length::Fill);
-    let artist = artist_links(&track.artists, SF_PRO, 13.0, theme().content.secondary, Length::Fill, on_artist_click);
+    let title = single_line_text(track.title.as_str(), SF_PRO, typography::TEXT_14, title_color, Length::Fill);
+    let artist = artist_links(&track.artists, SF_PRO, typography::TEXT_13, theme().content.secondary, Length::Fill, on_artist_click);
     let title_artist = column![title, artist].spacing(spacing::SP_2).width(Length::Fill);
 
     let duration = text(format_duration(track.duration_seconds))

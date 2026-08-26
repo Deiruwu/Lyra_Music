@@ -69,4 +69,3 @@ pub const BLACK_A60: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.60);
 
 pub const WHITE: Color = Color::WHITE;
 pub const BLACK: Color = Color::BLACK;
-pub const TRANSPARENT: Color = Color::TRANSPARENT;
