@@ -5,12 +5,12 @@ use std::time::{Duration, Instant};
 use iced::animation::{Animation, Easing};
 use iced::widget::{column, container, mouse_area, scrollable, text, Id as WidgetId};
 use iced::widget::scrollable::RelativeOffset;
-use iced::{Color, Element, Font, Length, Padding, Task};
+use iced::{Color, Element, Length, Padding, Task};
 use iced::widget::operation::snap_to;
 use crate::model::audio_tech::PlayableTrack;
 use super::lrc_parser::{parse_lrc, SyncedLyrics};
 
-const LYRICS_FONT: Font = Font::with_name("SF Pro Display");
+use crate::ui::assets::fonts::SF_PRO;
 
 const LINE_SHIFT_PX: f32 = 10.0;
 
@@ -198,7 +198,7 @@ impl LyricsPanel {
                     let offset_y = LINE_SHIFT_PX * (1.0 - weight);
 
                     let line_text = text(line.text.clone())
-                        .font(LYRICS_FONT)
+                        .font(SF_PRO)
                         .size(size)
                         .color(color);
 
@@ -241,7 +241,7 @@ fn now() -> Instant {
 
 fn status_message(msg: &str) -> Element<'_, LyricsMessage> {
     text(msg.to_string())
-        .font(LYRICS_FONT)
+        .font(SF_PRO)
         .size(15)
         .color(Color::from_rgb(0.45, 0.45, 0.5))
         .into()

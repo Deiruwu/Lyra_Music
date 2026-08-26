@@ -12,7 +12,7 @@ use crate::ui::widgets::artist_links::{album_link, artist_links};
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
 use crate::utils::formatting::format_duration;
-use crate::JETBRAINS_MONO;
+use crate::ui::assets::fonts::JETBRAINS_MONO;
 
 /// Celda líder numerada de una fila: el número de posición normalmente;
 /// si es la fila que está sonando, el ecualizador animado o el ícono de

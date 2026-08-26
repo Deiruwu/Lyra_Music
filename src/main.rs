@@ -9,7 +9,7 @@ mod settings;
 
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::Ordering;
-use iced::{border, window, Background, Border, Color, Element, Font, Length, Padding, Theme};
+use iced::{border, window, Background, Border, Color, Element, Length, Padding, Theme};
 use iced::widget::{column, container, row, space, stack};
 
 use crate::audio::discord::DiscordPresence;
@@ -41,7 +41,6 @@ use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::views::catalog_store::CatalogStoreMessage;
 use crate::ui::widgets::context_menu::ContextMenuEvent;
 
-const JETBRAINS_MONO: Font = Font::with_name("JetBrainsMono Nerd Font");
 
 static TRAY_FLAGS: OnceLock<Arc<TrayFlags>> = OnceLock::new();
 

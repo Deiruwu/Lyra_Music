@@ -6,7 +6,7 @@ use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 use crate::ui::widgets::artist_links::{album_link, artist_links, artist_names_text};
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::styles::styles::transparent_button;
-use crate::JETBRAINS_MONO;
+use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::ui::assets::icons::Icon;
 
 pub fn truncate(s: &str, max: usize) -> String {

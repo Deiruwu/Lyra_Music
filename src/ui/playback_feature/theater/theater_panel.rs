@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use iced::widget::image::Handle;
 use iced::widget::{column, container, image, responsive, row, space};
-use iced::{alignment::Horizontal, Alignment, Color, Element, Font, Length, Task, Theme};
+use iced::{alignment::Horizontal, Alignment, Color, Element, Length, Task, Theme};
 use crate::model::audio_tech::PlayableTrack;
 use crate::model::Artist;
 use crate::ui::widgets::artist_links::artist_names_text_aligned;
@@ -12,7 +12,7 @@ use crate::ui::widgets::single_line_text::single_line_text_aligned;
 // ACTUALIZADO A LA NUEVA RUTA:
 use super::lyrics::lyrics_panel::{LyricsMessage, LyricsOutMessage, LyricsPanel};
 
-const PRO_DISPLAY: Font = Font::with_name("SF Pro Display");
+use crate::ui::assets::fonts::SF_PRO;
 const ARTWORK_MAX_SIZE: f32 = 544.0;
 
 #[derive(Debug, Clone)]
@@ -126,10 +126,10 @@ impl TheaterPanel {
             };
 
             let header = column![
-                single_line_text_aligned(title.as_str(), PRO_DISPLAY, 20.0, Color::WHITE, Length::Fixed(side), Horizontal::Center),
+                single_line_text_aligned(title.as_str(), SF_PRO, 20.0, Color::WHITE, Length::Fixed(side), Horizontal::Center),
                 artist_names_text_aligned(
                     &artists,
-                    PRO_DISPLAY,
+                    SF_PRO,
                     14.0,
                     Color::from_rgb(0.65, 0.65, 0.7),
                     Length::Fixed(side),

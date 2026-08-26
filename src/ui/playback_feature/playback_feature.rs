@@ -531,7 +531,7 @@ impl PlaybackFeature {
 
         let icon = if is_theater_mode { "" } else { "" };
 
-        button(text(icon).font(crate::JETBRAINS_MONO).size(18))
+        button(text(icon).font(crate::ui::assets::fonts::JETBRAINS_MONO).size(18))
             .style(minimal_button)
             .on_press(PlaybackFeatureMessage::ToggleTheaterMode)
             .into()

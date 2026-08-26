@@ -8,7 +8,7 @@ use iced::widget::text::Shaping;
 use iced::widget::{button, column, container, image, mouse_area, responsive, row, rule, scrollable, space, text};
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding, Task, Theme};
 
-use crate::JETBRAINS_MONO;
+use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;

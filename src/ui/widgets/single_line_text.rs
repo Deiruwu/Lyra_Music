@@ -3,7 +3,7 @@ use iced::widget::{container, text};
 use iced::{alignment::Horizontal, Color, Element, Font, Length};
 
 /// Ancho promedio de un glifo como fracción del tamaño de fuente, calibrado
-/// para las fuentes proporcionales usadas en la app (SF Pro / PRO_DISPLAY).
+/// para las fuentes proporcionales usadas en la app (SF Pro).
 const AVG_GLYPH_WIDTH_RATIO: f32 = 0.55;
 
 fn truncate_to_px(content: &str, max_px: f32, size: f32) -> String {

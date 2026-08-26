@@ -40,14 +40,13 @@
 
 use iced::widget::image::Handle;
 use iced::widget::{button, column, container, row, space, stack, text};
-use iced::{Alignment, Color, Element, Font, Length, Padding, Theme};
+use iced::{Alignment, Color, Element, Length, Padding, Theme};
 use iced::border::rounded;
 use crate::ui::assets::icons::Icon;
 use crate::ui::utils::playlist_metadata::{format_track_count, format_total_duration};
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 
-pub const SF_PRO: Font = Font::with_name("SF Pro Display");
-pub const JETBRAINS_MONO_ICON: Font = Font::with_name("JetBrainsMono Nerd Font");
+use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
 
 const COVER_SIZE: f32 = 176.0;
 const PLAY_BUTTON_SIZE: f32 = 52.0;
@@ -91,7 +90,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         let hover_button = button(
             container(
                 container(
-                    text(Icon::Camera.as_ref()).font(JETBRAINS_MONO_ICON).size(24),
+                    text(Icon::Camera.as_ref()).font(JETBRAINS_MONO).size(24),
                 )
                     .center_x(Length::Fill)
                     .center_y(Length::Fill),
@@ -163,7 +162,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
     let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
     let play_button = button(
         container(
-            text(play_icon.as_str()).font(JETBRAINS_MONO_ICON).size(20).color(Color::BLACK),
+            text(play_icon.as_str()).font(JETBRAINS_MONO).size(20).color(Color::BLACK),
         )
             .width(Length::Fixed(PLAY_BUTTON_SIZE))
             .height(Length::Fixed(PLAY_BUTTON_SIZE))

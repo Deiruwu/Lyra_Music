@@ -1,7 +1,7 @@
 use iced::{Element, Length, Task};
 use iced::widget::{column, space, text};
 use iced::Color;
-use crate::JETBRAINS_MONO;
+use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::model::Track;
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;

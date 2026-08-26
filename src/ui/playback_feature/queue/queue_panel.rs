@@ -6,7 +6,7 @@ use iced::widget::operation::scroll_by;
 use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::{button, container, scrollable, space, stack, text, Id};
 use uuid::Uuid;
-use crate::JETBRAINS_MONO;
+use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::audio::manager::manager::QueueSlot;
 use crate::model::Track;
 use crate::ui::playback_feature::player::TrackLink;

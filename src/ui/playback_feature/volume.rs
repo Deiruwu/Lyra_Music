@@ -1,7 +1,7 @@
 use iced::{Element};
 use iced::widget::{row, slider, text};
 use iced::Task;
-use crate::JETBRAINS_MONO;
+use crate::ui::assets::fonts::JETBRAINS_MONO;
 
 #[derive(Debug, Clone)]
 pub enum VolumeMessage {

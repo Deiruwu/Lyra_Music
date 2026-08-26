@@ -4,7 +4,7 @@ use iced::widget::image::Handle;
 use iced::widget::{button, column, container, mouse_area, rich_text, row, slider, space, text};
 use crate::audio::manager::manager::RepeatMode;
 use crate::audio::track_event::TrackEvent;
-use crate::JETBRAINS_MONO;
+use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
 use crate::ui::assets::icons::Icon;

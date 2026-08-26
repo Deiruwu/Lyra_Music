@@ -1,7 +1,7 @@
 use iced::widget::{button, container, row, space, stack, text};
 use iced::{border, Alignment, Color, Element, Length};
 use crate::ui::styles::styles::transparent_button;
-use crate::JETBRAINS_MONO;
+use crate::ui::assets::fonts::JETBRAINS_MONO;
 
 pub struct IconToggle<'a, Message> {
     is_active: bool,
