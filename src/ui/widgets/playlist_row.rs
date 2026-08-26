@@ -150,14 +150,10 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
     };
 
     if is_expanded {
-        // Variante expandida: botón real con hover (estilo transparente
-        // ya existente) — acá el hover tiene sentido porque hay texto +
-        // suficiente área para que el feedback visual no se sienta
-        // apretado.
         let row_button = button(content)
             .width(Length::Fill)
             .padding(Padding { top: spacing::SP_6, bottom: spacing::SP_6, left: spacing::SP_12, right: spacing::SP_12 })
-            .style(button_style::transparent)
+            .style(button_style::sidebar_item)
             .on_press(on_select);
 
         mouse_area(row_button)

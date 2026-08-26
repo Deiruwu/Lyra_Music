@@ -438,7 +438,7 @@ impl SidebarFeatureV2 {
         button(content)
             .width(Length::Fill)
             .padding(Padding { top: spacing::SP_9, bottom: spacing::SP_9, left: spacing::SP_12, right: spacing::SP_12 })
-            .style(button_style::transparent)
+            .style(button_style::sidebar_item)
             .on_press(on_press_msg)
             .into()
     }

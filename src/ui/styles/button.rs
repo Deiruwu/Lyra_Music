@@ -2,6 +2,7 @@ use iced::border::rounded;
 use iced::widget::button;
 use iced::{Border, Theme};
 
+use crate::ui::assets::radii;
 use crate::ui::theme::theme;
 
 /// Botón sin fondo que solo se insinúa al pasar por encima.
@@ -17,6 +18,26 @@ pub fn transparent(_theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background,
         text_color,
+        ..Default::default()
+    }
+}
+
+pub fn sidebar_item(_theme: &Theme, status: button::Status) -> button::Style {
+    let t = theme();
+
+    let (background, text_color) = match status {
+        button::Status::Disabled => (None, t.content.disabled),
+        button::Status::Hovered => (Some(t.overlay.hover_accent.into()), t.content.primary),
+        _ => (None, t.content.primary),
+    };
+
+    button::Style {
+        background,
+        text_color,
+        border: Border {
+            radius: iced::border::radius(radii::R_NONE).right(radii::R_8),
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

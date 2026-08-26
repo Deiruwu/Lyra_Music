@@ -72,6 +72,7 @@ pub struct Accent {
 pub struct Overlay {
     pub hover_subtle: Color,
     pub hover_row: Color,
+    pub hover_accent: Color,
     pub hover_item: Color,
     pub selected: Color,
     pub card_idle: Color,

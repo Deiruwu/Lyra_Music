@@ -37,6 +37,7 @@ pub const VIOLET_74: Color = Color::from_rgb(0.74, 0.58, 0.98);
 pub const VIOLET_62: Color = Color::from_rgb(0.62, 0.42, 0.92);
 pub const VIOLET_55: Color = Color::from_rgb(0.55, 0.35, 0.85);
 pub const VIOLET_22: Color = Color::from_rgb(0.22, 0.16, 0.28);
+pub const VIOLET_62_A14: Color = Color::from_rgba(0.62, 0.42, 0.92, 0.14);
 
 // Colores de estado.
 pub const CRIMSON: Color = Color::from_rgb(0.94, 0.23, 0.35);

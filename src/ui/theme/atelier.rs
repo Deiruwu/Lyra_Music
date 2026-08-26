@@ -55,6 +55,7 @@ pub const ATELIER: Semantic = Semantic {
     overlay: Overlay {
         hover_subtle: WHITE_A03,
         hover_row: WHITE_A06,
+        hover_accent: VIOLET_62_A14,
         hover_item: WHITE_A10,
         selected: WHITE_A08,
         card_idle: WHITE_A025,
