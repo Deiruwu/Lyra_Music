@@ -8,6 +8,7 @@ use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
 use crate::ui::assets::icons::{self, Icon};
 use crate::ui::styles::button as button_style;
+use crate::ui::styles::slider as slider_style;
 use crate::ui::widgets::artist_links::artist_links;
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail;
@@ -264,7 +265,9 @@ impl Player {
 
         row![
             text(format!("{}:{:02}", (current_position / 60.0) as u32, (current_position % 60.0) as u32)).size(typography::TEXT_12),
-            slider(0.0..=display_duration, current_position, PlayerMessage::UiSeek).step(1.0),
+            slider(0.0..=display_duration, current_position, PlayerMessage::UiSeek)
+                .step(1.0)
+                .style(slider_style::track),
             text(format!("{}:{:02}", (display_duration / 60.0) as u32, (display_duration % 60.0) as u32)).size(typography::TEXT_12),
         ]
             .spacing(spacing::SP_10)

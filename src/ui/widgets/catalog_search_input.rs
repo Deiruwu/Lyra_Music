@@ -22,7 +22,8 @@
 
 use iced::widget::{text_input, TextInput};
 use iced::{Length, Padding};
-use crate::ui::assets::{radii, spacing, typography};
+use crate::ui::assets::{spacing, typography};
+use crate::ui::styles::text_input as text_input_style;
 
 /// Construye el `text_input` de filtro con el estilo compartido
 /// (padding, tamaño, radio de borde) usado por Explorer/Favorites/
@@ -39,11 +40,7 @@ where
         .font(crate::ui::assets::fonts::SF_PRO)
         .size(typography::TEXT_14)
         .padding(Padding { top: spacing::SP_10, bottom: spacing::SP_10, left: spacing::SP_14, right: spacing::SP_14 })
-        .style(|theme, status| {
-            let mut style = text_input::default(theme, status);
-            style.border.radius = radii::R_8.into();
-            style
-        })
+        .style(text_input_style::field)
         .on_input(on_change)
         .width(Length::Fill)
 }

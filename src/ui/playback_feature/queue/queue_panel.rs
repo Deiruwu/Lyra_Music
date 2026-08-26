@@ -17,6 +17,7 @@ use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::widgets::track_row::{queue_track_row, DragRowParams};
 use super::animator::QueueAnimator;
 use crate::ui::assets::typography;
+use crate::ui::styles::scrollable as scrollable_style;
 
 pub(crate) const ROW_HEIGHT: f32 = 66.0;
 pub(crate) const ROW_SPACING: f32 = 4.0;
@@ -474,6 +475,7 @@ impl QueuePanel {
             scrollable(interactive_area)
                 .id(Id::new(QUEUE_SCROLL_ID))
                 .height(Length::Fill)
+                .style(scrollable_style::discreet)
                 .on_scroll(QueueMessage::Scrolled),
         )
             .padding(dynamic_padding)

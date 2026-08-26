@@ -6,6 +6,8 @@ use crate::ui::widgets::track_row::track_row;
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::theme::theme;
+use crate::ui::styles::button as button_style;
+use crate::ui::styles::text_input as text_input_style;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchFilter {
@@ -99,6 +101,7 @@ impl SearchInput {
                 .on_input(SearchMessage::InputChanged)
                 .on_submit(SearchMessage::Submit)
                 .padding(spacing::SP_10)
+                .style(text_input_style::field)
                 .width(Length::Fill),
 
             IconToggle::new(
@@ -116,6 +119,7 @@ impl SearchInput {
             button("Buscar")
                 .on_press(SearchMessage::Submit)
                 .padding(spacing::SP_10)
+                .style(button_style::transparent)
         ]
             .spacing(spacing::SP_10)
             .align_y(Alignment::Center);

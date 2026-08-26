@@ -20,6 +20,7 @@ use crate::ui::widgets::track_row_simple::track_row_with_thumbnail;
 use crate::utils::formatting::format_views;
 use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::theme::theme;
+use crate::ui::styles::scrollable as scrollable_style;
 
 const TOP_SONGS_COUNT: usize = 5;
 const CARD_THUMBNAIL_SIZE: f32 = 176.0;
@@ -199,6 +200,7 @@ impl ArtistView {
                         .padding(Padding { top: spacing::SP_0, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
                 )
                 .width(Length::Fill)
+                .style(scrollable_style::discreet)
                 .id(Id::new("artist_view_scroll"))
                 .on_scroll(ArtistMessage::Scrolled)
                 .into()

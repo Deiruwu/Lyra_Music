@@ -7,8 +7,9 @@ pub mod db;
 pub mod utils;
 mod settings;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::sync::atomic::Ordering;
+use iced::theme::Palette;
 use iced::{border, window, Background, Border, Element, Length, Padding, Theme};
 use iced::widget::{column, container, row, space, stack};
 
@@ -615,9 +616,26 @@ impl App {
     }
 
     pub fn theme(&self, _window: window::Id) -> Theme {
-        Theme::Dracula
+        ATELIER_THEME.clone()
     }
 }
+
+/// Tema de iced derivado de los tokens: alimenta todo widget sin `.style()`.
+static ATELIER_THEME: LazyLock<Theme> = LazyLock::new(|| {
+    let t = ui::theme::theme();
+
+    Theme::custom(
+        "Atelier",
+        Palette {
+            background: t.background.app,
+            text: t.content.primary,
+            primary: t.accent.primary,
+            success: t.status.cached,
+            warning: t.status.error,
+            danger: t.status.error,
+        },
+    )
+});
 
 fn main() -> iced::Result {
     unsafe {

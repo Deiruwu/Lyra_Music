@@ -1,57 +1,62 @@
-//! Afirma que cada token vale exactamente el literal que sustituye en la
-//! rama previa al refactor. Es la red que detecta una transcripción torcida
-//! entre los ~170 literales de color que había repartidos por `src/ui/`.
+//! Fija la paleta vigente: cada token vale exactamente el color que el tema
+//! le asigna hoy. Es la red que detecta un remapeo torcido entre los ~170
+//! puntos de color repartidos por `src/ui/`.
 
 use super::theme;
 use iced::Color;
 
 #[test]
-fn background_tokens_match_original_literals() {
+fn background_tokens_match_palette() {
     let t = theme();
-    assert_eq!(t.background.app, Color::from_rgb(0.1, 0.1, 0.1));
-    assert_eq!(t.background.surface, Color::from_rgb(0.15, 0.15, 0.20));
+    assert_eq!(t.background.app, Color::from_rgb(0.10, 0.10, 0.10));
+    assert_eq!(t.background.surface, Color::from_rgb(0.15, 0.15, 0.15));
 }
 
 #[test]
-fn surface_tokens_match_original_literals() {
+fn surface_tokens_match_palette() {
     let t = theme();
-    assert_eq!(t.surface.elevated, Color::from_rgb(0.10, 0.10, 0.12));
+    assert_eq!(t.surface.elevated, Color::from_rgb(0.11, 0.11, 0.11));
     assert_eq!(t.surface.panel, Color::from_rgb(0.12, 0.12, 0.12));
-    assert_eq!(t.surface.raised, Color::from_rgb(0.14, 0.14, 0.16));
+    assert_eq!(t.surface.raised, Color::from_rgb(0.14, 0.14, 0.14));
     assert_eq!(t.surface.field, Color::from_rgb(0.15, 0.15, 0.15));
-    assert_eq!(t.surface.control, Color::from_rgb(0.2, 0.2, 0.2));
+    assert_eq!(t.surface.control, Color::from_rgb(0.20, 0.20, 0.20));
     assert_eq!(t.surface.placeholder, Color::from_rgb(0.18, 0.18, 0.18));
     assert_eq!(t.surface.gradient_start, Color::from_rgb(0.22, 0.16, 0.28));
-    assert_eq!(t.surface.gradient_end, Color::from_rgb(0.09, 0.09, 0.10));
+    assert_eq!(t.surface.gradient_end, Color::from_rgb(0.09, 0.09, 0.09));
 }
 
 #[test]
-fn content_tokens_match_original_literals() {
+fn content_tokens_match_palette() {
     let t = theme();
-    assert_eq!(t.content.primary, Color::WHITE);
-    assert_eq!(t.content.primary_alt, Color::from_rgb(0.85, 0.85, 0.9));
-    assert_eq!(t.content.active, Color::from_rgb(0.82, 0.82, 0.82));
-    assert_eq!(t.content.secondary, Color::from_rgb(0.7, 0.7, 0.75));
-    assert_eq!(t.content.secondary_alt, Color::from_rgb(0.75, 0.75, 0.8));
-    assert_eq!(t.content.secondary_alt2, Color::from_rgb(0.65, 0.65, 0.7));
-    assert_eq!(t.content.tertiary, Color::from_rgb(0.6, 0.6, 0.65));
-    assert_eq!(t.content.tertiary_alt, Color::from_rgb(0.6, 0.6, 0.6));
-    assert_eq!(t.content.tertiary_alt2, Color::from_rgb(0.55, 0.55, 0.6));
-    assert_eq!(t.content.muted, Color::from_rgb(0.5, 0.53, 0.6));
-    assert_eq!(t.content.muted_alt, Color::from_rgb(0.5, 0.5, 0.55));
-    assert_eq!(t.content.muted_alt2, Color::from_rgb(0.4, 0.43, 0.5));
-    assert_eq!(t.content.faint, Color::from_rgb(0.45, 0.45, 0.5));
-    assert_eq!(t.content.faint_alt, Color::from_rgb(0.45, 0.45, 0.45));
-    assert_eq!(t.content.disabled, Color::from_rgb(0.35, 0.35, 0.38));
-    assert_eq!(t.content.disabled_alt, Color::from_rgb(0.4, 0.4, 0.4));
-    assert_eq!(t.content.disabled_alt2, Color::from_rgb(0.3, 0.3, 0.3));
+    let bone = Color::from_rgb(0.957, 0.925, 0.863);
+    let soft = Color::from_rgb(0.77, 0.73, 0.69);
+    let warm = Color::from_rgb(0.573, 0.514, 0.455);
+    let faint = Color::from_rgb(0.43, 0.40, 0.36);
+
+    assert_eq!(t.content.primary, bone);
+    assert_eq!(t.content.primary_alt, bone);
+    assert_eq!(t.content.active, bone);
+    assert_eq!(t.content.secondary, soft);
+    assert_eq!(t.content.secondary_alt, soft);
+    assert_eq!(t.content.secondary_alt2, soft);
+    assert_eq!(t.content.tertiary, warm);
+    assert_eq!(t.content.tertiary_alt, warm);
+    assert_eq!(t.content.tertiary_alt2, warm);
+    assert_eq!(t.content.muted, warm);
+    assert_eq!(t.content.muted_alt, warm);
+    assert_eq!(t.content.muted_alt2, warm);
+    assert_eq!(t.content.faint, faint);
+    assert_eq!(t.content.faint_alt, faint);
+    assert_eq!(t.content.disabled, warm);
+    assert_eq!(t.content.disabled_alt, warm);
+    assert_eq!(t.content.disabled_alt2, warm);
     assert_eq!(t.content.on_accent, Color::BLACK);
     assert_eq!(t.content.on_banner, Color::from_rgba(1.0, 1.0, 1.0, 0.75));
     assert_eq!(t.content.on_control_disabled, Color::from_rgba(1.0, 1.0, 1.0, 0.3));
 }
 
 #[test]
-fn border_tokens_match_original_literals() {
+fn border_tokens_match_palette() {
     let t = theme();
     assert_eq!(t.border.subtle, Color::from_rgba(1.0, 1.0, 1.0, 0.12));
     assert_eq!(t.border.field, Color::from_rgb(0.3, 0.3, 0.3));
@@ -59,17 +64,17 @@ fn border_tokens_match_original_literals() {
 }
 
 #[test]
-fn accent_tokens_match_original_literals() {
+fn accent_tokens_match_palette() {
     let t = theme();
-    assert_eq!(t.accent.primary, Color::from_rgb(0.74, 0.58, 0.98));
-    assert_eq!(t.accent.hover, Color::from_rgb(0.85, 0.68, 1.0));
-    assert_eq!(t.accent.strong, Color::from_rgb(0.55, 0.35, 0.85));
-    assert_eq!(t.accent.strong_hover, Color::from_rgb(0.62, 0.42, 0.92));
-    assert_eq!(t.accent.control_active, Color::from_rgb(0.62, 0.42, 0.92));
+    assert_eq!(t.accent.primary, Color::from_rgb(0.62, 0.50, 0.84));
+    assert_eq!(t.accent.hover, Color::from_rgb(0.72, 0.63, 0.91));
+    assert_eq!(t.accent.strong, Color::from_rgb(0.49, 0.37, 0.72));
+    assert_eq!(t.accent.strong_hover, Color::from_rgb(0.55, 0.43, 0.78));
+    assert_eq!(t.accent.control_active, Color::from_rgb(0.62, 0.50, 0.84));
 }
 
 #[test]
-fn overlay_tokens_match_original_literals() {
+fn overlay_tokens_match_palette() {
     let t = theme();
     assert_eq!(t.overlay.hover_subtle, Color::from_rgba(1.0, 1.0, 1.0, 0.03));
     assert_eq!(t.overlay.hover_row, Color::from_rgba(1.0, 1.0, 1.0, 0.06));
@@ -92,7 +97,7 @@ fn overlay_tokens_match_original_literals() {
 }
 
 #[test]
-fn elevation_matches_original_literals() {
+fn elevation_matches_palette() {
     let t = theme();
     assert_eq!(t.elevation.shadow.color, Color::from_rgba(0.0, 0.0, 0.0, 0.45));
     assert_eq!(t.elevation.shadow.offset, iced::Vector::new(0.0, 8.0));
@@ -100,9 +105,9 @@ fn elevation_matches_original_literals() {
 }
 
 #[test]
-fn status_tokens_match_original_literals() {
+fn status_tokens_match_palette() {
     let t = theme();
-    assert_eq!(t.status.liked, Color::from_rgb(0.94, 0.23, 0.35));
-    assert_eq!(t.status.cached, Color::from_rgb(0.4, 0.85, 0.5));
-    assert_eq!(t.status.error, Color::from_rgb(0.9, 0.4, 0.4));
+    assert_eq!(t.status.liked, Color::from_rgb(0.91, 0.39, 0.62));
+    assert_eq!(t.status.cached, Color::from_rgb(0.50, 0.60, 0.60));
+    assert_eq!(t.status.error, Color::from_rgb(0.73, 0.49, 0.49));
 }

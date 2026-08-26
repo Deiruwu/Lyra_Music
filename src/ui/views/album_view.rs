@@ -15,6 +15,7 @@ use crate::ui::widgets::artist_links::artist_links;
 use crate::ui::widgets::track_row_simple::track_row_numbered;
 use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::theme::theme;
+use crate::ui::styles::scrollable as scrollable_style;
 
 const COVER_SIZE: f32 = 220.0;
 const COVER_RADIUS: f32 = 12.0;
@@ -124,6 +125,7 @@ impl AlbumView {
                         .padding(Padding { top: spacing::SP_0, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
                 )
                 .width(Length::Fill)
+                .style(scrollable_style::discreet)
                 .id(Id::new("album_view_scroll"))
                 .on_scroll(AlbumMessage::Scrolled)
                 .into()

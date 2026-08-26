@@ -22,6 +22,7 @@ use crate::ui::widgets::track_row::track_thumbnail_sized;
 use crate::utils::formatting::{format_added_at, format_duration};
 use crate::ui::assets::{spacing, typography};
 use crate::ui::assets::radii;
+use crate::ui::styles::scrollable as scrollable_style;
 
 const THUMBNAIL_COL_WIDTH: f32 = 56.0;
 const THUMBNAIL_SIZE: f32 = 44.0;
@@ -102,7 +103,7 @@ impl TrackColumn {
     fn display_value(self, track: &Track, display_index: usize) -> DisplayValue {
         match self {
             TrackColumn::Index => DisplayValue::Index(display_index),
-            TrackColumn::Title => DisplayValue::Text(track.title.clone()),
+            TrackColumn::Title => DisplayValue::ColoredText(track.title.clone(), theme().content.primary),
             TrackColumn::Artist => DisplayValue::Artists(track.artists.clone()),
             TrackColumn::Album => DisplayValue::AlbumLink(track.album.clone()),
             TrackColumn::Duration => DisplayValue::Text(format_duration(track.duration_seconds)),
@@ -687,6 +688,7 @@ where
             .id(Id::new(self.scrollable_id))
             .width(Length::Fill)
             .height(Length::Fill)
+            .style(scrollable_style::discreet)
             .on_scroll(move |v| emit_scroll(TrackEvent::Scrolled(v)))
             .into();
 

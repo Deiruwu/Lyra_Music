@@ -21,6 +21,7 @@ use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::truncate;
 use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::theme::theme;
+use crate::ui::styles::scrollable as scrollable_style;
 
 pub const VIEW_DATA: ViewData = ViewData::new(
     NavId::Home,
@@ -206,6 +207,7 @@ impl HomeView {
                 .padding(Padding { top: spacing::SP_24, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
         )
         .width(Length::Fill)
+        .style(scrollable_style::discreet)
         .into()
     }
 

@@ -42,14 +42,14 @@ pub fn sidebar_item(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Botón de solo icono que reacciona aclarando el texto.
+/// Botón de solo icono que solo reacciona al pulsarse, tiñéndose de acento.
 pub fn minimal(_theme: &Theme, status: button::Status) -> button::Style {
     let t = theme();
 
     let text_color = match status {
         button::Status::Disabled => t.content.disabled,
-        button::Status::Hovered | button::Status::Pressed => t.content.primary,
-        button::Status::Active => t.content.active,
+        button::Status::Pressed => t.accent.primary,
+        button::Status::Active | button::Status::Hovered => t.content.active,
     };
 
     button::Style {

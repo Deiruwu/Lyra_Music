@@ -25,6 +25,8 @@ use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMen
 use crate::ui::widgets::playlist_row::{playlist_row, PlaylistRowData};
 use crate::ui::assets::{spacing, typography};
 use crate::ui::theme::theme;
+use crate::ui::styles::text_input as text_input_style;
+use crate::ui::styles::scrollable as scrollable_style;
 
 const COLLAPSED_WIDTH: f32 = 60.0;
 const EXPANDED_WIDTH: f32 = 200.0;
@@ -389,7 +391,8 @@ impl SidebarFeatureV2 {
             separator_line,
             playlists_section,
             space().height(20),
-        ]);
+        ])
+        .style(scrollable_style::discreet);
 
         let base = container(sidebar_scroll)
             .width(Length::Fixed(width))
@@ -409,7 +412,7 @@ impl SidebarFeatureV2 {
         let text_color = if is_active {
             theme().accent.primary
         } else {
-            theme().content.muted
+            theme().content.secondary
         };
 
         let icon_elem = icons::icon(data.icon, typography::TEXT_16).color(text_color);
@@ -507,7 +510,8 @@ impl SidebarFeatureV2 {
                 .size(typography::TEXT_12)
                 .padding(Padding { top: spacing::SP_6, bottom: spacing::SP_6, left: spacing::SP_8, right: spacing::SP_8 })
                 .on_input(SidebarMessage::NewPlaylistNameChanged)
-                .on_submit(SidebarMessage::SubmitNewPlaylist);
+                .on_submit(SidebarMessage::SubmitNewPlaylist)
+                .style(text_input_style::field);
 
             let input_row = container(input)
                 .width(Length::Fill)

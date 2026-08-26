@@ -14,6 +14,7 @@ use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::{spacing, typography};
 use crate::ui::styles::text as text_style;
 use crate::ui::theme::theme;
+use crate::ui::styles::scrollable as scrollable_style;
 
 const LINE_SHIFT_PX: f32 = 10.0;
 
@@ -219,6 +220,7 @@ impl LyricsPanel {
                     .id(self.scroll_id.clone())
                     .width(Length::Fill)
                     .height(Length::Fill)
+                    .style(scrollable_style::discreet)
                     .into()
             }
         };
