@@ -47,6 +47,9 @@ use crate::ui::utils::playlist_metadata::{format_track_count, format_total_durat
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
 
 use crate::ui::assets::fonts::{JETBRAINS_MONO, SF_PRO};
+use crate::ui::assets::{spacing, typography};
+use crate::ui::theme::theme;
+use crate::ui::assets::radii;
 
 const COVER_SIZE: f32 = 176.0;
 const PLAY_BUTTON_SIZE: f32 = 52.0;
@@ -90,7 +93,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         let hover_button = button(
             container(
                 container(
-                    text(Icon::Camera.as_ref()).font(JETBRAINS_MONO).size(24),
+                    text(Icon::Camera.as_ref()).font(JETBRAINS_MONO).size(typography::TEXT_24),
                 )
                     .center_x(Length::Fill)
                     .center_y(Length::Fill),
@@ -102,16 +105,16 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
             .height(Length::Fixed(COVER_SIZE))
             .style(|_theme: &Theme, status| {
                 let bg = match status {
-                    button::Status::Hovered => Color::from_rgba(0.0, 0.0, 0.0, 0.55),
+                    button::Status::Hovered => theme().overlay.scrim_strong,
                     _ => Color::TRANSPARENT,
                 };
                 button::Style {
                     background: Some(bg.into()),
                     text_color: match status {
-                        button::Status::Hovered => Color::WHITE,
+                        button::Status::Hovered => theme().content.primary,
                         _ => Color::TRANSPARENT,
                     },
-                    border: rounded(13.5),
+                    border: rounded(radii::R_13_5),
                     ..Default::default()
                 }
             })
@@ -139,16 +142,16 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
     let kicker: Element<'a, Message> = match data.kicker {
         Some(k) => text(k)
             .font(SF_PRO)
-            .size(12)
-            .color(Color::from_rgb(0.75, 0.75, 0.8))
+            .size(typography::TEXT_12)
+            .color(theme().content.secondary_alt)
             .into(),
         None => space().height(0).into(),
     };
 
     let title = text(data.name)
         .font(SF_PRO)
-        .size(40)
-        .color(Color::WHITE);
+        .size(typography::TEXT_40)
+        .color(theme().content.primary);
 
     let metadata = text(format!(
         "{} · {}",
@@ -156,24 +159,24 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         format_total_duration(data.total_duration_seconds),
     ))
         .font(SF_PRO)
-        .size(13)
-        .color(Color::from_rgb(0.7, 0.7, 0.75));
+        .size(typography::TEXT_13)
+        .color(theme().content.secondary);
 
     let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
     let play_button = button(
         container(
-            text(play_icon.as_str()).font(JETBRAINS_MONO).size(20).color(Color::BLACK),
+            text(play_icon.as_str()).font(JETBRAINS_MONO).size(typography::TEXT_20).color(theme().content.on_accent),
         )
             .width(Length::Fixed(PLAY_BUTTON_SIZE))
             .height(Length::Fixed(PLAY_BUTTON_SIZE))
             .align_x(Alignment::Center)
             .align_y(Alignment::Center),
     )
-        .padding(0)
+        .padding(spacing::SP_0)
         .style(|_theme: &Theme, status| {
             let bg = match status {
-                button::Status::Hovered => Color::from_rgb(0.85, 0.68, 1.0),
-                _ => Color::from_rgb(0.74, 0.58, 0.98),
+                button::Status::Hovered => theme().accent.hover,
+                _ => theme().accent.primary,
             };
             button::Style {
                 background: Some(bg.into()),
@@ -192,23 +195,23 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         play_button,
     ]
         .align_x(Alignment::Start)
-        .spacing(2);
+        .spacing(spacing::SP_2);
 
     let content = row![
         cover_element,
         info_column,
     ]
-        .spacing(24)
+        .spacing(spacing::SP_24)
         .align_y(Alignment::End)
-        .padding(Padding { top: 32.0, bottom: 28.0, left: 8.0, right: 8.0 });
+        .padding(Padding { top: spacing::SP_32, bottom: spacing::SP_28, left: spacing::SP_8, right: spacing::SP_8 });
 
     container(content)
         .width(Length::Fill)
         .style(|_theme: &Theme| container::Style {
             background: Some(
                 iced::gradient::Linear::new(std::f32::consts::PI * 1.5)
-                    .add_stop(0.0, Color::from_rgb(0.22, 0.16, 0.28))
-                    .add_stop(1.0, Color::from_rgb(0.09, 0.09, 0.10))
+                    .add_stop(0.0, theme().surface.gradient_start)
+                    .add_stop(1.0, theme().surface.gradient_end)
                     .into(),
             ),
             ..Default::default()

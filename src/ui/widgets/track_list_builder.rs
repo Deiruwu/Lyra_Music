@@ -21,6 +21,8 @@ use crate::ui::widgets::artist_links::{album_link, artist_links, artist_names_te
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
 use crate::utils::formatting::{format_added_at, format_duration};
+use crate::ui::assets::{spacing, typography};
+use crate::ui::assets::radii;
 
 const THUMBNAIL_COL_WIDTH: f32 = 56.0;
 const THUMBNAIL_SIZE: f32 = 44.0;
@@ -97,7 +99,7 @@ impl TrackColumn {
             TrackColumn::Bpm => DisplayValue::Text(track.bpm.map(|b| b.to_string()).unwrap_or_else(|| "-".to_string())),
             TrackColumn::Key => DisplayValue::ColoredText(
                 track.camelot_key.clone().unwrap_or_else(|| "-".to_string()),
-                Color::from_rgb(0.74, 0.58, 0.98),
+                theme().accent.primary,
             ),
             TrackColumn::AddedAt => DisplayValue::Text(format_added_at(track.added_at)),
         }
@@ -344,7 +346,7 @@ where
         cells.push(if self.index_sortable {
             self.sortable_header_cell(TrackColumn::Index, emit)
         } else {
-            container(text("#").font(JETBRAINS_MONO).size(11).color(Color::from_rgb(0.45, 0.45, 0.5)))
+            container(text("#").font(JETBRAINS_MONO).size(typography::TEXT_11).color(theme().content.faint))
                 .width(Length::Fixed(INDEX_COL_WIDTH))
                 .into()
         });
@@ -356,9 +358,9 @@ where
         }
 
         row(cells)
-            .spacing(10)
+            .spacing(spacing::SP_10)
             .align_y(Alignment::Center)
-            .padding(Padding { top: 4.0, bottom: 4.0, left: 10.0, right: 16.0 })
+            .padding(Padding { top: spacing::SP_4, bottom: spacing::SP_4, left: spacing::SP_10, right: spacing::SP_16 })
             .into()
     }
 
@@ -371,20 +373,20 @@ where
             ""
         };
         let color = if is_active {
-            Color::from_rgb(0.74, 0.58, 0.98)
+            theme().accent.primary
         } else {
-            Color::from_rgb(0.5, 0.5, 0.55)
+            theme().content.muted_alt
         };
 
         button(
             text(format!("{}{}", field.as_ref(), arrow))
                 .font(SF_PRO)
-                .size(10.5)
+                .size(typography::TEXT_10_5)
                 .style(move |_| text::Style { color: Some(color) }),
         )
             .style(button_style::minimal)
             .width(field.width())
-            .padding(0)
+            .padding(spacing::SP_0)
             .on_press(emit(TrackEvent::Sorted(sort_key)))
             .into()
     }
@@ -402,7 +404,7 @@ where
     ) -> Element<'a, Message> {
         match cell {
             DisplayValue::Index(i) => container(
-                text(i.to_string()).font(SF_PRO).size(12).color(Color::from_rgb(0.45, 0.45, 0.5)),
+                text(i.to_string()).font(SF_PRO).size(typography::TEXT_12).color(theme().content.faint),
             )
                 .width(width)
                 .into(),
@@ -410,27 +412,27 @@ where
                 .width(width)
                 .align_y(Alignment::Center)
                 .into(),
-            DisplayValue::Text(s) => single_line_text(s, SF_PRO, 13.5, Color::from_rgb(0.7, 0.7, 0.75), width),
+            DisplayValue::Text(s) => single_line_text(s, SF_PRO, 13.5, theme().content.secondary, width),
             DisplayValue::ColoredText(s, c) => single_line_text(s, SF_PRO, 13.5, c, width),
             DisplayValue::Artists(artists) => match emit {
                 Some(emit) => {
                     let emit = Rc::clone(emit);
-                    artist_links(&artists, SF_PRO, 13.5, Color::from_rgb(0.7, 0.7, 0.75), width, move |id| {
+                    artist_links(&artists, SF_PRO, 13.5, theme().content.secondary, width, move |id| {
                         emit(TrackEvent::ArtistClicked(id))
                     })
                 }
-                None => artist_names_text(&artists, SF_PRO, 13.5, Color::from_rgb(0.7, 0.7, 0.75), width),
+                None => artist_names_text(&artists, SF_PRO, 13.5, theme().content.secondary, width),
             },
             DisplayValue::AlbumLink(album) => match emit {
                 Some(emit) => {
                     let emit = Rc::clone(emit);
-                    album_link(album.as_ref(), SF_PRO, 13.5, Color::from_rgb(0.7, 0.7, 0.75), width, move |id| {
+                    album_link(album.as_ref(), SF_PRO, 13.5, theme().content.secondary, width, move |id| {
                         emit(TrackEvent::AlbumClicked(id))
                     })
                 }
                 None => {
                     let name = album.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "-".to_string());
-                    single_line_text(name, SF_PRO, 13.5, Color::from_rgb(0.7, 0.7, 0.75), width)
+                    single_line_text(name, SF_PRO, 13.5, theme().content.secondary, width)
                 }
             },
         }
@@ -451,11 +453,11 @@ where
             text(icon.as_str())
                 .font(JETBRAINS_MONO)
                 .shaping(Shaping::Advanced)
-                .size(13)
+                .size(typography::TEXT_13)
                 .color(theme().accent.primary)
                 .into()
         } else {
-            text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(11).color(theme().accent.primary).into()
+            text(Icon::equalizer_frame()).font(JETBRAINS_MONO).size(typography::TEXT_11).color(theme().accent.primary).into()
         };
 
         container(glyph)
@@ -491,9 +493,9 @@ where
         }
 
         let row_content = row(row_children)
-            .spacing(16)
+            .spacing(spacing::SP_16)
             .align_y(Alignment::Center)
-            .padding(Padding { top: 0.0, bottom: 0.0, left: 10.0, right: 16.0 });
+            .padding(Padding { top: spacing::SP_0, bottom: spacing::SP_0, left: spacing::SP_10, right: spacing::SP_16 });
 
         // display_index es 1-based (para mostrar "#1, #2..."); el índice
         // real dentro del vector visible es display_index - 1.
@@ -515,7 +517,7 @@ where
         let btn = button(centered_content)
             .width(Length::Fill)
             .height(Length::Fixed(self.row_height))
-            .padding(0)
+            .padding(spacing::SP_0)
             .style(button_style::transparent)
             .on_press(on_press);
 
@@ -575,18 +577,18 @@ where
         }
 
         let ghost_row = row(row_children)
-            .spacing(10)
+            .spacing(spacing::SP_10)
             .align_y(Alignment::Center)
-            .padding(Padding { top: 0.0, bottom: 0.0, left: 10.0, right: 16.0 });
+            .padding(Padding { top: spacing::SP_0, bottom: spacing::SP_0, left: spacing::SP_10, right: spacing::SP_16 });
 
         let ghost_content = container(ghost_row)
             .width(Length::Fill)
             .height(Length::Fixed(self.row_height))
             .align_y(Alignment::Center)
             .style(|_theme: &iced::Theme| container::Style {
-                background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
-                border: iced::border::rounded(6)
-                    .color(Color::from_rgba(1.0, 1.0, 1.0, 0.15))
+                background: Some(theme().overlay.hover_row.into()),
+                border: iced::border::rounded(radii::R_6)
+                    .color(theme().border.drag)
                     .width(1.0),
                 ..Default::default()
             });
@@ -598,7 +600,7 @@ where
             container(ghost_content)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .padding(Padding { top: y_pos, bottom: 0.0, left: 0.0, right: 0.0 })
+                .padding(Padding { top: y_pos, bottom: spacing::SP_0, left: spacing::SP_0, right: spacing::SP_0 })
                 .into(),
         )
     }
