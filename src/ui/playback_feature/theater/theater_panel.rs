@@ -13,6 +13,8 @@ use crate::ui::widgets::single_line_text::single_line_text_aligned;
 use super::lyrics::lyrics_panel::{LyricsMessage, LyricsOutMessage, LyricsPanel};
 
 use crate::ui::assets::fonts::SF_PRO;
+use crate::ui::assets::{radii, spacing};
+use crate::ui::theme::theme;
 const ARTWORK_MAX_SIZE: f32 = 544.0;
 
 #[derive(Debug, Clone)]
@@ -94,10 +96,10 @@ impl TheaterPanel {
                     .clip(true)
                     .style(move |_theme: &Theme| container::Style {
                         background: style_bg.map(Into::into),
-                        border: iced::border::rounded(16),
+                        border: iced::border::rounded(radii::R_16),
                         shadow: if style_bg.is_none() {
                             iced::Shadow {
-                                color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+                                color: theme().overlay.shadow,
                                 offset: iced::Vector::new(0.0, 8.0),
                                 blur_radius: 32.0,
                             }
@@ -126,21 +128,21 @@ impl TheaterPanel {
             };
 
             let header = column![
-                single_line_text_aligned(title.as_str(), SF_PRO, 20.0, Color::WHITE, Length::Fixed(side), Horizontal::Center),
+                single_line_text_aligned(title.as_str(), SF_PRO, 20.0, theme().content.primary, Length::Fixed(side), Horizontal::Center),
                 artist_names_text_aligned(
                     &artists,
                     SF_PRO,
                     14.0,
-                    Color::from_rgb(0.65, 0.65, 0.7),
+                    theme().content.secondary_alt2,
                     Length::Fixed(side),
                     Horizontal::Center,
                 ),
             ]
-                .spacing(4)
+                .spacing(spacing::SP_4)
                 .align_x(Alignment::Center);
 
             let artwork_column = column![artwork, header]
-                .spacing(18)
+                .spacing(spacing::SP_18)
                 .align_x(Alignment::Center);
 
 
@@ -168,7 +170,7 @@ impl TheaterPanel {
 
         let divider = container(space().width(Length::Fixed(1.0)).height(Length::Fill))
             .style(|_theme: &Theme| container::Style {
-                background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into()),
+                background: Some(theme().overlay.hover_row.into()),
                 ..Default::default()
             });
 

@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use futures::SinkExt;
 use iced::widget::image::Handle;
-use iced::{stream, Alignment, Color, Element, Length, Subscription, Task, Theme};
+use iced::{stream, Alignment, Element, Length, Subscription, Task, Theme};
 use iced::widget::{container, column, row};
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -20,6 +20,8 @@ use crate::ui::styles::button as button_style;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::ui::widgets::track_context_builder::{TrackContextAction, TrackContextMenuBuilder};
+use crate::ui::assets::{spacing, typography};
+use crate::ui::theme::theme;
 
 /// Identidad de "sobre qué track" está abierto el menú contextual de
 /// reproducción — el track actual (barra inferior) o una fila puntual de
@@ -500,16 +502,16 @@ impl PlaybackFeature {
             .align_y(Alignment::Center);
 
         let layout_final = column![seek_bar, play_controller]
-            .spacing(10)
+            .spacing(spacing::SP_10)
             .align_x(Alignment::Center);
 
         container(layout_final)
             .width(Length::Fill)
-            .padding(10)
+            .padding(spacing::SP_10)
             .align_x(Alignment::Center)
             .style(|_theme: &Theme| container::Style {
-                background: Some(Color::from_rgb(0.1, 0.1, 0.1).into()),
-                text_color: Some(Color::WHITE),
+                background: Some(theme().background.app.into()),
+                text_color: Some(theme().content.primary),
                 ..Default::default()
             })
             .into()
@@ -531,7 +533,7 @@ impl PlaybackFeature {
 
         let icon = if is_theater_mode { "" } else { "" };
 
-        button(text(icon).font(crate::ui::assets::fonts::JETBRAINS_MONO).size(18))
+        button(text(icon).font(crate::ui::assets::fonts::JETBRAINS_MONO).size(typography::TEXT_18))
             .style(button_style::minimal)
             .on_press(PlaybackFeatureMessage::ToggleTheaterMode)
             .into()

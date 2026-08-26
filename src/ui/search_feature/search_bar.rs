@@ -1,9 +1,11 @@
-use iced::{border, Alignment, Color, Element, Length, Padding, Task, Theme};
+use iced::{border, Alignment, Element, Length, Padding, Task, Theme};
 use iced::widget::{button, column, container, row, space, text, text_input};
 use crate::model::Track;
 use crate::ui::widgets::icon_toggle::IconToggle;
 use crate::ui::widgets::track_row::track_row;
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
+use crate::ui::assets::{radii, spacing, typography};
+use crate::ui::theme::theme;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchFilter {
@@ -96,7 +98,7 @@ impl SearchInput {
             text_input("Buscar canción, álbum, artista...", &self.input_value)
                 .on_input(SearchMessage::InputChanged)
                 .on_submit(SearchMessage::Submit)
-                .padding(10)
+                .padding(spacing::SP_10)
                 .width(Length::Fill),
 
             IconToggle::new(
@@ -113,15 +115,15 @@ impl SearchInput {
 
             button("Buscar")
                 .on_press(SearchMessage::Submit)
-                .padding(10)
+                .padding(spacing::SP_10)
         ]
-            .spacing(10)
+            .spacing(spacing::SP_10)
             .align_y(Alignment::Center);
 
         container(search_bar)
-            .padding(20)
+            .padding(spacing::SP_20)
             .style(|_theme: &Theme| container::Style {
-                background: Some(Color::from_rgb(0.1, 0.1, 0.1).into()),
+                background: Some(theme().background.app.into()),
                 ..Default::default()
             })
             .width(Length::Fill)
@@ -141,10 +143,10 @@ impl SearchInput {
             return space().into();
         }
 
-        let mut results_column = column![].spacing(10);
+        let mut results_column = column![].spacing(spacing::SP_10);
 
         if is_searching {
-            results_column = results_column.push(text("Buscando...").size(16));
+            results_column = results_column.push(text("Buscando...").size(typography::TEXT_16));
         } else {
             for track in results {
                 let thumbnail = thumbnails.peek_for_render(track);
@@ -161,11 +163,11 @@ impl SearchInput {
         column![
             space().height(70),
             container(results_column)
-                .padding(18)
+                .padding(spacing::SP_18)
                 .width(Length::Fill)
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(Color::from_rgb(0.15, 0.15, 0.15).into()),
-                    border: border::color(Color::from_rgb(0.3, 0.3, 0.3)).width(1.0).rounded(8),
+                    background: Some(theme().surface.field.into()),
+                    border: border::color(theme().content.disabled_alt2).width(1.0).rounded(radii::R_8),
                     ..Default::default()
                 }),
         ]

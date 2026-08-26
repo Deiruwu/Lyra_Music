@@ -2,7 +2,7 @@ use iced::border::rounded;
 use iced::widget::image::Handle;
 use iced::widget::text::Shaping;
 use iced::widget::{button, column, container, mouse_area, row, text};
-use iced::{Alignment, Color, Element, Length, Padding, Theme};
+use iced::{Alignment, Element, Length, Padding, Theme};
 
 use crate::model::{Track, TrackState};
 use crate::ui::assets::fonts::SF_PRO;

@@ -5,12 +5,15 @@ use std::time::{Duration, Instant};
 use iced::animation::{Animation, Easing};
 use iced::widget::{column, container, mouse_area, scrollable, text, Id as WidgetId};
 use iced::widget::scrollable::RelativeOffset;
-use iced::{Color, Element, Length, Padding, Task};
+use iced::{Element, Length, Padding, Task};
 use iced::widget::operation::snap_to;
 use crate::model::audio_tech::PlayableTrack;
 use super::lrc_parser::{parse_lrc, SyncedLyrics};
 
 use crate::ui::assets::fonts::SF_PRO;
+use crate::ui::assets::{spacing, typography};
+use crate::ui::styles::text as text_style;
+use crate::ui::theme::theme;
 
 const LINE_SHIFT_PX: f32 = 10.0;
 
@@ -183,18 +186,12 @@ impl LyricsPanel {
 
             LyricsStatus::Synced(lyrics) => {
                 let now = now();
-                let mut lines_col = column![].spacing(14).width(Length::Fill);
+                let mut lines_col = column![].spacing(spacing::SP_14).width(Length::Fill);
 
                 for (i, line) in lyrics.lines.iter().enumerate() {
                     let weight = self.weight_of(i, now);
 
-                    let size = 16.0 + (22.0 - 16.0) * weight;
-                    let gray = 0.5 - 0.05 * weight;
-                    let color = Color::from_rgb(
-                        gray + (1.0 - gray) * weight,
-                        gray + (1.0 - gray) * weight,
-                        (gray + 0.05) + (1.0 - (gray + 0.05)) * weight,
-                    );
+                    let (size, color) = text_style::lyric_line(weight);
                     let offset_y = LINE_SHIFT_PX * (1.0 - weight);
 
                     let line_text = text(line.text.clone())
@@ -242,8 +239,8 @@ fn now() -> Instant {
 fn status_message(msg: &str) -> Element<'_, LyricsMessage> {
     text(msg.to_string())
         .font(SF_PRO)
-        .size(15)
-        .color(Color::from_rgb(0.45, 0.45, 0.5))
+        .size(typography::TEXT_15)
+        .color(theme().content.faint)
         .into()
 }
 

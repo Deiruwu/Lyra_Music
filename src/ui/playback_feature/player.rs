@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use iced::{Alignment, Color, Element, Length, Renderer, Task, Theme};
+use iced::{Alignment, Element, Length, Renderer, Task, Theme};
 use iced::widget::image::Handle;
 use iced::widget::{button, column, container, mouse_area, rich_text, row, slider, space, text};
 use crate::audio::manager::manager::RepeatMode;
@@ -12,6 +12,8 @@ use crate::ui::styles::button as button_style;
 use crate::ui::widgets::artist_links::artist_links;
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail;
+use crate::ui::assets::{spacing, typography};
+use crate::ui::theme::theme;
 
 /// Ancho máximo del bloque título/artista/álbum del track actual — acota
 /// nombres largos (ver `current_track_content`) sin forzar que el bloque
@@ -103,15 +105,15 @@ impl Player {
             text(Icon::Play.as_ref()).font(JETBRAINS_MONO)
         };
 
-        let active_color = Color::from_rgb(0.62, 0.42, 0.92);
-        let inactive_color = Color::from_rgb(0.6, 0.6, 0.6);
+        let active_color = theme().accent.strong_hover;
+        let inactive_color = theme().content.tertiary_alt;
 
         let shuffle_button = {
             let color = if is_shuffled { active_color } else { inactive_color };
             button(
                 text(Icon::Shuffle.as_ref())
                     .font(JETBRAINS_MONO)
-                    .size(16)
+                    .size(typography::TEXT_16)
                     .style(move |_: &Theme| text::Style { color: Some(color) }),
             )
                 .style(button_style::minimal)
@@ -120,7 +122,7 @@ impl Player {
 
         let prev_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
-                button(text(Icon::SkipPrevious.as_ref()).font(JETBRAINS_MONO).size(18)).style(button_style::minimal);
+                button(text(Icon::SkipPrevious.as_ref()).font(JETBRAINS_MONO).size(typography::TEXT_18)).style(button_style::minimal);
             if has_history { b.on_press(PlayerMessage::UiPrev) } else { b }
         };
 
@@ -131,7 +133,7 @@ impl Player {
 
         let next_button = {
             let b: iced::widget::Button<'_, _, Theme, Renderer> =
-                button(text(Icon::SkipNext.as_ref()).font(JETBRAINS_MONO).size(18)).style(button_style::minimal);
+                button(text(Icon::SkipNext.as_ref()).font(JETBRAINS_MONO).size(typography::TEXT_18)).style(button_style::minimal);
             if has_track { b.on_press(PlayerMessage::UiNext) } else { b }
         };
 
@@ -144,7 +146,7 @@ impl Player {
             button(
                 text(icon)
                     .font(JETBRAINS_MONO)
-                    .size(16)
+                    .size(typography::TEXT_16)
                     .style(move |_: &Theme| text::Style { color: Some(color) }),
             )
                 .style(button_style::minimal)
@@ -152,7 +154,7 @@ impl Player {
         };
 
         row![shuffle_button, prev_button, play_button, next_button, repeat_button]
-            .spacing(15)
+            .spacing(spacing::SP_15)
             .align_y(Alignment::Center)
             .into()
     }
@@ -190,13 +192,13 @@ impl Player {
         thumbnail: Option<Handle>,
         trailing: Element<'a, PlayerMessage>,
     ) -> Element<'a, PlayerMessage> {
-        let title = single_line_text(&track.title, iced::Font::default(), 14.0, Color::WHITE, Length::Shrink);
+        let title = single_line_text(&track.title, iced::Font::default(), 14.0, theme().content.primary, Length::Shrink);
 
-        let subtitle_color = Color::from_rgb(0.6, 0.6, 0.6);
+        let subtitle_color = theme().content.tertiary_alt;
 
         let album_span = {
             let album_name = track.album.as_ref().map(|a| a.name.as_str()).unwrap_or("");
-            let mut span = iced::widget::span(album_name).size(11).color(subtitle_color);
+            let mut span = iced::widget::span(album_name).size(typography::TEXT_11).color(subtitle_color);
             if let Some(album) = &track.album {
                 span = span.link(TrackLink::Album(album.id.clone()));
             }
@@ -233,7 +235,7 @@ impl Player {
             .align_x(Alignment::Start);
 
         let content = row![track_thumbnail(thumbnail), info, trailing]
-            .spacing(12)
+            .spacing(spacing::SP_12)
             .align_y(Alignment::Center);
 
         mouse_area(content)
@@ -243,15 +245,15 @@ impl Player {
 
     fn like_button(track_id: String, is_liked: bool) -> Element<'static, PlayerMessage> {
         let (icon, color) = if is_liked {
-            (Icon::HeartFull.as_str(), Color::from_rgb(0.94, 0.23, 0.35))
+            (Icon::HeartFull.as_str(), theme().status.liked)
         } else {
-            (Icon::Heart.as_str(), Color::from_rgb(0.6, 0.6, 0.6))
+            (Icon::Heart.as_str(), theme().content.tertiary_alt)
         };
 
         button(
             text(icon)
                 .font(JETBRAINS_MONO)
-                .size(18)
+                .size(typography::TEXT_18)
                 .style(move |_: &Theme| text::Style { color: Some(color) }),
         )
             .style(button_style::minimal)
@@ -268,11 +270,11 @@ impl Player {
         let display_duration = duration.max(current_position);
 
         row![
-            text(format!("{}:{:02}", (current_position / 60.0) as u32, (current_position % 60.0) as u32)).size(12),
+            text(format!("{}:{:02}", (current_position / 60.0) as u32, (current_position % 60.0) as u32)).size(typography::TEXT_12),
             slider(0.0..=display_duration, current_position, PlayerMessage::UiSeek).step(1.0),
-            text(format!("{}:{:02}", (display_duration / 60.0) as u32, (display_duration % 60.0) as u32)).size(12),
+            text(format!("{}:{:02}", (display_duration / 60.0) as u32, (display_duration % 60.0) as u32)).size(typography::TEXT_12),
         ]
-            .spacing(10)
+            .spacing(spacing::SP_10)
             .align_y(Alignment::Center)
             .into()
     }

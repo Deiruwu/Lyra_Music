@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use iced::{Alignment, Color, Element, Length, Padding, Point, Size};
+use iced::{Alignment, Element, Length, Padding, Point, Size};
 use iced::widget::{button, column, container, mouse_area, pin, row, space, stack, text};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;

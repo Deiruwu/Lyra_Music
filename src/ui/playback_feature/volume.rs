@@ -2,6 +2,7 @@ use iced::{Element};
 use iced::widget::{row, slider, text};
 use iced::Task;
 use crate::ui::assets::fonts::JETBRAINS_MONO;
+use crate::ui::assets::spacing;
 
 #[derive(Debug, Clone)]
 pub enum VolumeMessage {
@@ -36,8 +37,8 @@ impl Volume {
             slider(0.0..=1.0, volume, VolumeMessage::UiSliderChanged)
                 .step(0.01)
         ]
-            .spacing(20)
-            .padding(20)
+            .spacing(spacing::SP_20)
+            .padding(spacing::SP_20)
             .into()
     }
 }

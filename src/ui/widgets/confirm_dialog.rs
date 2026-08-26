@@ -37,7 +37,7 @@
 //! MyMsg::ConfirmDialogCancel => self.confirm_dialog.cancel(),
 //! ```
 
-use iced::{Alignment, Color, Element, Length, Padding};
+use iced::{Alignment, Element, Length, Padding};
 use iced::widget::{button, column, container, mouse_area, row, text};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::styles::button as button_style;

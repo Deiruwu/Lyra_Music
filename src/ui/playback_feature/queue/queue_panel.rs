@@ -15,6 +15,8 @@ use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::widgets::track_row::{queue_track_row, DragRowParams};
 use super::animator::QueueAnimator;
+use crate::ui::assets::{radii, typography};
+use crate::ui::theme::theme;
 
 pub(crate) const ROW_HEIGHT: f32 = 66.0;
 pub(crate) const ROW_SPACING: f32 = 4.0;
@@ -483,7 +485,7 @@ impl QueuePanel {
 
     pub fn view_toggle_button(&self) -> Element<'_, QueueMessage> {
         let can_show_queue = !self.queue.is_empty();
-        let btn = button(text("󰲸").font(JETBRAINS_MONO).size(18))
+        let btn = button(text("󰲸").font(JETBRAINS_MONO).size(typography::TEXT_18))
             .style(button_style::minimal);
 
         if can_show_queue {
@@ -529,8 +531,8 @@ impl QueuePanel {
 /// en el render normal).
 fn queue_panel_style(_theme: &iced::Theme) -> container::Style {
     container::Style {
-        background: Some(iced::Color::from_rgb(0.12, 0.12, 0.12).into()),
-        border: iced::border::rounded(12),
+        background: Some(theme().surface.panel.into()),
+        border: iced::border::rounded(radii::R_12),
         ..Default::default()
     }
 }

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use iced::{Alignment, Color, Element, Length, Padding, Point, Size, Subscription, Task};
+use iced::{Alignment, Element, Length, Padding, Point, Size, Subscription, Task};
 use iced::alignment::{Horizontal, Vertical};
 use iced::Event::Mouse;
 use iced::mouse::Event::CursorMoved;
@@ -24,6 +24,8 @@ use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::ui::widgets::playlist_row::{playlist_row, PlaylistRowData};
+use crate::ui::assets::{spacing, typography};
+use crate::ui::theme::theme;
 
 const COLLAPSED_WIDTH: f32 = 60.0;
 const EXPANDED_WIDTH: f32 = 200.0;
@@ -337,7 +339,7 @@ impl SidebarFeatureV2 {
         let width = self.sidebar_width;
         let is_expanded_visual = width > (COLLAPSED_WIDTH + EXPANDED_WIDTH) / 2.0;
 
-        let mut sidebar_colum = column![].spacing(4).width(Length::Fill);
+        let mut sidebar_colum = column![].spacing(spacing::SP_4).width(Length::Fill);
 
         for view_data in PRIMARY_VIEWS {
             let is_active = self.coordinator.active_route == ActiveRoute::Nav(view_data.id);
@@ -352,20 +354,20 @@ impl SidebarFeatureV2 {
 
         let playlist_header_section: Element<'_, SidebarMessage> = if is_expanded_visual {
             let add_playlist_button = button(
-                text("+").font(SF_PRO).size(14).color(Color::from_rgb(0.5, 0.53, 0.6)))
-                .padding(Padding { top: 2.0, bottom: 2.0, left: 6.0, right: 6.0 })
+                text("+").font(SF_PRO).size(typography::TEXT_14).color(theme().content.muted))
+                .padding(Padding { top: spacing::SP_2, bottom: spacing::SP_2, left: spacing::SP_6, right: spacing::SP_6 })
                 .style(button_style::minimal)
                 .on_press(SidebarMessage::ShowCreatePlaylistInput);
 
             row![
-                text("PLAYLISTS").size(11).font(SF_PRO)
-                    .color(Color::from_rgb(0.4, 0.43, 0.5)),
+                text("PLAYLISTS").size(typography::TEXT_11).font(SF_PRO)
+                    .color(theme().content.muted_alt2),
                 space().width(Length::Fill),
                 add_playlist_button,
             ]
                 .align_y(Alignment::Center)
                 .width(Length::Fill)
-                .padding(Padding { top: 20.0, bottom: 0.0, left: 14.0, right: 10.0 })
+                .padding(Padding { top: spacing::SP_20, bottom: spacing::SP_0, left: spacing::SP_14, right: spacing::SP_10 })
                 .into()
         } else {
             space().height(20).into()
@@ -373,7 +375,7 @@ impl SidebarFeatureV2 {
 
         let separator_line = container(
             space().height(1).width(Length::Fill)
-        ).padding(Padding { top: 8.0, bottom: 12.0, left: 14.0, right: 14.0 });
+        ).padding(Padding { top: spacing::SP_8, bottom: spacing::SP_12, left: spacing::SP_14, right: spacing::SP_14 });
 
         let playlists_section: Element<'_, SidebarMessage> = if is_expanded_visual {
             self.render_expanded_playlists()
@@ -406,20 +408,20 @@ impl SidebarFeatureV2 {
         on_press_msg: SidebarMessage,
     ) -> Element<'_, SidebarMessage> {
         let text_color = if is_active {
-            Color::from_rgb(0.74, 0.58, 0.98)
+            theme().accent.primary
         } else {
-            Color::from_rgb(0.5, 0.53, 0.6)
+            theme().content.muted
         };
 
         let icon_elem = text(data.icon.as_str())
             .font(data.icon_font)
-            .size(16)
+            .size(typography::TEXT_16)
             .shaping(Shaping::Advanced)
             .color(text_color);
 
         let content: Element<'_, SidebarMessage> = if is_expanded_visual {
             let label_elem = text(data.label)
-                .size(13)
+                .size(typography::TEXT_13)
                 .font(SF_PRO)
                 .color(text_color);
 
@@ -435,7 +437,7 @@ impl SidebarFeatureV2 {
 
         button(content)
             .width(Length::Fill)
-            .padding(Padding { top: 9.0, bottom: 9.0, left: 12.0, right: 12.0 })
+            .padding(Padding { top: spacing::SP_9, bottom: spacing::SP_9, left: spacing::SP_12, right: spacing::SP_12 })
             .style(button_style::transparent)
             .on_press(on_press_msg)
             .into()
@@ -503,18 +505,18 @@ impl SidebarFeatureV2 {
     /// por playlist), adaptado a los tipos de v2 (SidebarMessage,
     /// ActiveRoute::Playlist en vez de ActiveSelection::PlaylistDetail).
     fn render_expanded_playlists(&self) -> Element<'_, SidebarMessage> {
-        let mut section = column![].spacing(2).width(Length::Fill);
+        let mut section = column![].spacing(spacing::SP_2).width(Length::Fill);
 
         if let Some(current_value) = &self.new_playlist_input {
             let input = text_input("Nombre de la playlist", current_value)
-                .size(12)
-                .padding(Padding { top: 6.0, bottom: 6.0, left: 8.0, right: 8.0 })
+                .size(typography::TEXT_12)
+                .padding(Padding { top: spacing::SP_6, bottom: spacing::SP_6, left: spacing::SP_8, right: spacing::SP_8 })
                 .on_input(SidebarMessage::NewPlaylistNameChanged)
                 .on_submit(SidebarMessage::SubmitNewPlaylist);
 
             let input_row = container(input)
                 .width(Length::Fill)
-                .padding(Padding { top: 2.0, bottom: 6.0, left: 12.0, right: 12.0 });
+                .padding(Padding { top: spacing::SP_2, bottom: spacing::SP_6, left: spacing::SP_12, right: spacing::SP_12 });
 
             section = section.push(input_row);
         }
@@ -550,7 +552,7 @@ impl SidebarFeatureV2 {
     }
 
     fn render_collapsed_playlists(&self) -> Element<'_, SidebarMessage> {
-        let mut section = column![].spacing(6).width(Length::Fill).align_x(Horizontal::Center);
+        let mut section = column![].spacing(spacing::SP_6).width(Length::Fill).align_x(Horizontal::Center);
 
         for (playlist_id, playlist_name, _cover) in self.coordinator.playlists_metadata() {
             let id_for_select = playlist_id.clone();
@@ -582,10 +584,10 @@ impl SidebarFeatureV2 {
 
     pub fn view_toggle(&self) -> Element<'_, SidebarMessage> {
         let icon_char = if self.is_expanded { Icon::Return } else { Icon::BurgerMenu };
-        let btn = button(text(icon_char.as_str()).font(JETBRAINS_MONO).size(18).shaping(Shaping::Advanced))
+        let btn = button(text(icon_char.as_str()).font(JETBRAINS_MONO).size(typography::TEXT_18).shaping(Shaping::Advanced))
             .style(button_style::minimal)
             .on_press(SidebarMessage::ToggleExpanded)
-            .padding(8);
+            .padding(spacing::SP_8);
 
         container(btn)
             .width(Length::Fixed(60.0))
