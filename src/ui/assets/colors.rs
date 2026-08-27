@@ -7,11 +7,15 @@ pub const NEUTRAL_18: Color = Color::from_rgb(0.18, 0.18, 0.18);
 pub const NEUTRAL_24: Color = Color::from_rgb(0.24, 0.24, 0.24);
 pub const NEUTRAL_30: Color = Color::from_rgb(0.30, 0.30, 0.30);
 
-// Grises cálidos — escalera de texto (r > g > b).
-pub const WARM_91: Color = Color::from_rgb(0.957, 0.925, 0.863);
-pub const WARM_73: Color = Color::from_rgb(0.77, 0.73, 0.69);
+// Neutros puros — escalera de texto (r == g == b).
+pub const NEUTRAL_92: Color = Color::from_rgb(0.92, 0.92, 0.92);
+pub const NEUTRAL_76: Color = Color::from_rgb(0.76, 0.76, 0.76);
+pub const NEUTRAL_58: Color = Color::from_rgb(0.58, 0.58, 0.58);
+pub const NEUTRAL_42: Color = Color::from_rgb(0.42, 0.42, 0.42);
+
+// Único tono cálido que se conserva: exclusivo del estado "desactivado" de
+// botones y campos interactivos — no participa de la escalera de texto.
 pub const WARM_51: Color = Color::from_rgb(0.573, 0.514, 0.455);
-pub const WARM_40: Color = Color::from_rgb(0.43, 0.40, 0.36);
 
 // Violetas de acento.
 pub const VIOLET_72: Color = Color::from_rgb(0.72, 0.63, 0.91);

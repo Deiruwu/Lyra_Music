@@ -31,10 +31,11 @@ fn surface_ladder_is_monotonic() {
 #[test]
 fn content_tokens_match_palette() {
     let t = theme();
-    assert_eq!(t.content.primary, Color::from_rgb(0.957, 0.925, 0.863));
-    assert_eq!(t.content.secondary, Color::from_rgb(0.77, 0.73, 0.69));
-    assert_eq!(t.content.muted, Color::from_rgb(0.573, 0.514, 0.455));
-    assert_eq!(t.content.faint, Color::from_rgb(0.43, 0.40, 0.36));
+    assert_eq!(t.content.primary, Color::from_rgb(0.92, 0.92, 0.92));
+    assert_eq!(t.content.secondary, Color::from_rgb(0.76, 0.76, 0.76));
+    assert_eq!(t.content.muted, Color::from_rgb(0.58, 0.58, 0.58));
+    assert_eq!(t.content.faint, Color::from_rgb(0.42, 0.42, 0.42));
+    assert_eq!(t.content.disabled, Color::from_rgb(0.573, 0.514, 0.455));
     assert_eq!(t.content.on_accent, Color::BLACK);
     assert_eq!(t.content.on_banner, Color::from_rgba(1.0, 1.0, 1.0, 0.75));
     assert_eq!(t.content.on_control_disabled, Color::from_rgba(1.0, 1.0, 1.0, 0.3));

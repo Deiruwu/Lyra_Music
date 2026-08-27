@@ -10,7 +10,7 @@ pub fn field(_theme: &Theme, status: text_input::Status) -> text_input::Style {
 
     let (background, border_color, value) = match status {
         text_input::Status::Disabled => {
-            (t.overlay.resting, t.border.subtle, t.content.muted)
+            (t.overlay.resting, t.border.subtle, t.content.disabled)
         }
         text_input::Status::Focused { .. } => (t.surface.sunken, t.accent.primary, t.content.primary),
         text_input::Status::Hovered => (t.surface.sunken, t.border.field, t.content.primary),
