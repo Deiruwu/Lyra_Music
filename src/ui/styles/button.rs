@@ -10,8 +10,8 @@ pub fn transparent(_theme: &Theme, status: button::Status) -> button::Style {
     let t = theme();
 
     let (background, text_color) = match status {
-        button::Status::Disabled => (None, t.content.disabled),
-        button::Status::Hovered => (Some(t.overlay.hover_subtle.into()), t.content.primary),
+        button::Status::Disabled => (None, t.content.muted),
+        button::Status::Hovered => (Some(t.overlay.hover.into()), t.content.primary),
         _ => (None, t.content.primary),
     };
 
@@ -26,7 +26,7 @@ pub fn sidebar_item(_theme: &Theme, status: button::Status) -> button::Style {
     let t = theme();
 
     let (background, text_color) = match status {
-        button::Status::Disabled => (None, t.content.disabled),
+        button::Status::Disabled => (None, t.content.muted),
         button::Status::Hovered => (Some(t.overlay.hover_accent.into()), t.content.primary),
         _ => (None, t.content.primary),
     };
@@ -47,9 +47,9 @@ pub fn minimal(_theme: &Theme, status: button::Status) -> button::Style {
     let t = theme();
 
     let text_color = match status {
-        button::Status::Disabled => t.content.disabled,
+        button::Status::Disabled => t.content.muted,
         button::Status::Pressed => t.accent.primary,
-        button::Status::Active | button::Status::Hovered => t.content.active,
+        button::Status::Active | button::Status::Hovered => t.content.primary,
     };
 
     button::Style {
@@ -65,7 +65,7 @@ pub fn context_menu_item(_theme: &Theme, status: button::Status) -> button::Styl
     let t = theme();
 
     let background = match status {
-        button::Status::Hovered => Some(t.overlay.hover_item.into()),
+        button::Status::Hovered => Some(t.overlay.hover.into()),
         _ => None,
     };
 
@@ -83,7 +83,7 @@ pub fn card_hover(radius: f32) -> impl Fn(&Theme, button::Status) -> button::Sty
         let t = theme();
 
         let background = match status {
-            button::Status::Hovered => Some(t.overlay.hover_row.into()),
+            button::Status::Hovered => Some(t.overlay.hover.into()),
             _ => None,
         };
 
@@ -103,7 +103,7 @@ pub fn carousel_arrow(enabled: bool, size: f32) -> impl Fn(&Theme, button::Statu
         let t = theme();
 
         let background = if !enabled {
-            t.overlay.control_disabled
+            t.overlay.resting
         } else {
             match status {
                 button::Status::Hovered => t.overlay.control_hover,

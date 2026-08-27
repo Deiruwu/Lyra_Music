@@ -483,7 +483,7 @@ impl App {
             .height(Length::Fill)
             .padding(spacing::SP_20)
             .style(|_theme| container::Style {
-                background: Some(Background::Color(theme().background.surface)),
+                background: Some(Background::Color(theme().surface.panel)),
                 border: Border {
                     radius: border::Radius::from(radii::R_18),
                     ..Default::default()
@@ -537,7 +537,7 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_theme| container::Style {
-                background: Some(Background::Color(theme().background.app)),
+                background: Some(Background::Color(theme().surface.base)),
                 ..Default::default()
             });
 
@@ -627,7 +627,7 @@ static ATELIER_THEME: LazyLock<Theme> = LazyLock::new(|| {
     Theme::custom(
         "Atelier",
         Palette {
-            background: t.background.app,
+            background: t.surface.base,
             text: t.content.primary,
             primary: t.accent.primary,
             success: t.status.cached,

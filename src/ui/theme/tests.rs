@@ -1,66 +1,63 @@
 //! Fija la paleta vigente: cada token vale exactamente el color que el tema
-//! le asigna hoy. Es la red que detecta un remapeo torcido entre los ~170
-//! puntos de color repartidos por `src/ui/`.
+//! le asigna hoy. Es la red que detecta un remapeo torcido entre los puntos
+//! de color repartidos por `src/ui/`.
 
 use super::theme;
 use iced::Color;
 
-#[test]
-fn background_tokens_match_palette() {
-    let t = theme();
-    assert_eq!(t.background.app, Color::from_rgb(0.10, 0.10, 0.10));
-    assert_eq!(t.background.surface, Color::from_rgb(0.15, 0.15, 0.15));
-}
-
+/// Escalones de elevación, del más hundido al más prominente.
 #[test]
 fn surface_tokens_match_palette() {
     let t = theme();
-    assert_eq!(t.surface.elevated, Color::from_rgb(0.11, 0.11, 0.11));
-    assert_eq!(t.surface.panel, Color::from_rgb(0.12, 0.12, 0.12));
-    assert_eq!(t.surface.raised, Color::from_rgb(0.14, 0.14, 0.14));
-    assert_eq!(t.surface.field, Color::from_rgb(0.15, 0.15, 0.15));
-    assert_eq!(t.surface.control, Color::from_rgb(0.20, 0.20, 0.20));
-    assert_eq!(t.surface.placeholder, Color::from_rgb(0.18, 0.18, 0.18));
+    assert_eq!(t.surface.base, Color::from_rgb(0.10, 0.10, 0.10));
+    assert_eq!(t.surface.panel, Color::from_rgb(0.14, 0.14, 0.14));
+    assert_eq!(t.surface.sunken, Color::from_rgb(0.18, 0.18, 0.18));
+    assert_eq!(t.surface.control, Color::from_rgb(0.24, 0.24, 0.24));
     assert_eq!(t.surface.gradient_start, Color::from_rgb(0.22, 0.16, 0.28));
-    assert_eq!(t.surface.gradient_end, Color::from_rgb(0.09, 0.09, 0.09));
+}
+
+/// La escala de elevación debe subir de forma monótona y con saltos visibles.
+#[test]
+fn surface_ladder_is_monotonic() {
+    let t = theme();
+    let ladder = [t.surface.base, t.surface.panel, t.surface.sunken, t.surface.control];
+
+    for pair in ladder.windows(2) {
+        let step = pair[1].r - pair[0].r;
+        assert!(step >= 0.04, "salto de elevación imperceptible: {step}");
+    }
 }
 
 #[test]
 fn content_tokens_match_palette() {
     let t = theme();
-    let bone = Color::from_rgb(0.957, 0.925, 0.863);
-    let soft = Color::from_rgb(0.77, 0.73, 0.69);
-    let warm = Color::from_rgb(0.573, 0.514, 0.455);
-    let faint = Color::from_rgb(0.43, 0.40, 0.36);
-
-    assert_eq!(t.content.primary, bone);
-    assert_eq!(t.content.primary_alt, bone);
-    assert_eq!(t.content.active, bone);
-    assert_eq!(t.content.secondary, soft);
-    assert_eq!(t.content.secondary_alt, soft);
-    assert_eq!(t.content.secondary_alt2, soft);
-    assert_eq!(t.content.tertiary, warm);
-    assert_eq!(t.content.tertiary_alt, warm);
-    assert_eq!(t.content.tertiary_alt2, warm);
-    assert_eq!(t.content.muted, warm);
-    assert_eq!(t.content.muted_alt, warm);
-    assert_eq!(t.content.muted_alt2, warm);
-    assert_eq!(t.content.faint, faint);
-    assert_eq!(t.content.faint_alt, faint);
-    assert_eq!(t.content.disabled, warm);
-    assert_eq!(t.content.disabled_alt, warm);
-    assert_eq!(t.content.disabled_alt2, warm);
+    assert_eq!(t.content.primary, Color::from_rgb(0.957, 0.925, 0.863));
+    assert_eq!(t.content.secondary, Color::from_rgb(0.77, 0.73, 0.69));
+    assert_eq!(t.content.muted, Color::from_rgb(0.573, 0.514, 0.455));
+    assert_eq!(t.content.faint, Color::from_rgb(0.43, 0.40, 0.36));
     assert_eq!(t.content.on_accent, Color::BLACK);
     assert_eq!(t.content.on_banner, Color::from_rgba(1.0, 1.0, 1.0, 0.75));
     assert_eq!(t.content.on_control_disabled, Color::from_rgba(1.0, 1.0, 1.0, 0.3));
+}
+
+/// La escalera de texto baja de forma monótona: cada escalón se distingue del
+/// anterior o deja de ser un escalón.
+#[test]
+fn content_ladder_is_monotonic() {
+    let t = theme();
+    let ladder = [t.content.primary, t.content.secondary, t.content.muted, t.content.faint];
+
+    for pair in ladder.windows(2) {
+        let step = pair[0].r - pair[1].r;
+        assert!(step >= 0.10, "salto de texto imperceptible: {step}");
+    }
 }
 
 #[test]
 fn border_tokens_match_palette() {
     let t = theme();
     assert_eq!(t.border.subtle, Color::from_rgba(1.0, 1.0, 1.0, 0.12));
-    assert_eq!(t.border.field, Color::from_rgb(0.3, 0.3, 0.3));
-    assert_eq!(t.border.drag, Color::from_rgba(1.0, 1.0, 1.0, 0.15));
+    assert_eq!(t.border.field, Color::from_rgb(0.30, 0.30, 0.30));
 }
 
 #[test]
@@ -70,30 +67,35 @@ fn accent_tokens_match_palette() {
     assert_eq!(t.accent.hover, Color::from_rgb(0.72, 0.63, 0.91));
     assert_eq!(t.accent.strong, Color::from_rgb(0.49, 0.37, 0.72));
     assert_eq!(t.accent.strong_hover, Color::from_rgb(0.55, 0.43, 0.78));
-    assert_eq!(t.accent.control_active, Color::from_rgb(0.62, 0.50, 0.84));
 }
 
 #[test]
 fn overlay_tokens_match_palette() {
     let t = theme();
-    assert_eq!(t.overlay.hover_subtle, Color::from_rgba(1.0, 1.0, 1.0, 0.03));
-    assert_eq!(t.overlay.hover_row, Color::from_rgba(1.0, 1.0, 1.0, 0.06));
-    assert_eq!(t.overlay.hover_item, Color::from_rgba(1.0, 1.0, 1.0, 0.10));
-    assert_eq!(t.overlay.selected, Color::from_rgba(1.0, 1.0, 1.0, 0.08));
-    assert_eq!(t.overlay.card_idle, Color::from_rgba(1.0, 1.0, 1.0, 0.025));
-    assert_eq!(t.overlay.card_hover, Color::from_rgba(1.0, 1.0, 1.0, 0.05));
-    assert_eq!(t.overlay.card_border_idle, Color::from_rgba(1.0, 1.0, 1.0, 0.10));
-    assert_eq!(t.overlay.card_border_hover, Color::from_rgba(1.0, 1.0, 1.0, 0.16));
-    assert_eq!(t.overlay.control_idle, Color::from_rgba(1.0, 1.0, 1.0, 0.1));
-    assert_eq!(t.overlay.control_hover, Color::from_rgba(1.0, 1.0, 1.0, 0.18));
-    assert_eq!(t.overlay.control_disabled, Color::from_rgba(1.0, 1.0, 1.0, 0.04));
-    assert_eq!(t.overlay.toggle_idle, Color::from_rgba(1.0, 1.0, 1.0, 0.08));
-    assert_eq!(t.overlay.toggle_hover, Color::from_rgba(1.0, 1.0, 1.0, 0.14));
+    assert_eq!(t.overlay.hover, Color::from_rgba(1.0, 1.0, 1.0, 0.06));
+    assert_eq!(t.overlay.hover_accent, Color::from_rgba(0.62, 0.50, 0.84, 0.14));
+    assert_eq!(t.overlay.selected, Color::from_rgba(0.62, 0.50, 0.84, 0.20));
+    assert_eq!(t.overlay.resting, Color::from_rgba(1.0, 1.0, 1.0, 0.03));
+    assert_eq!(t.overlay.control_idle, Color::from_rgba(1.0, 1.0, 1.0, 0.12));
+    assert_eq!(t.overlay.control_hover, Color::from_rgba(1.0, 1.0, 1.0, 0.16));
     assert_eq!(t.overlay.toggle_on_idle, Color::from_rgba(1.0, 1.0, 1.0, 0.22));
     assert_eq!(t.overlay.toggle_on_hover, Color::from_rgba(1.0, 1.0, 1.0, 0.28));
-    assert_eq!(t.overlay.scrim_cover, Color::from_rgba(0.0, 0.0, 0.0, 0.4));
-    assert_eq!(t.overlay.scrim_strong, Color { r: 0.0, g: 0.0, b: 0.0, a: 0.55 });
-    assert_eq!(t.overlay.scrim_play, Color::from_rgba(0.0, 0.0, 0.0, 0.6));
+    assert_eq!(t.overlay.scrim, Color::from_rgba(0.0, 0.0, 0.0, 0.55));
+}
+
+/// Selección y hover no deben competir en el mismo canal: el hover es una
+/// veladura blanca efímera y la selección un tinte de acento persistente.
+#[test]
+fn selection_is_separated_from_hover_by_hue() {
+    let t = theme();
+    let hover = t.overlay.hover;
+    let selected = t.overlay.selected;
+
+    assert_eq!(hover.r, hover.b, "el hover debe ser neutro");
+    assert!(
+        selected.b - selected.r > 0.15,
+        "la selección debe llevar tinte de acento, no ser neutra"
+    );
 }
 
 #[test]

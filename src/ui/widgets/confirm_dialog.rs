@@ -126,7 +126,7 @@ impl<Item: Clone> ConfirmDialog<Item> {
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
                 .style(|_| container::Style {
-                    background: Some(theme().overlay.scrim_strong.into()),
+                    background: Some(theme().overlay.scrim.into()),
                     ..Default::default()
                 }),
         )

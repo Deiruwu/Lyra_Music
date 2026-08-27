@@ -510,7 +510,7 @@ impl PlaybackFeature {
             .padding(spacing::SP_10)
             .align_x(Alignment::Center)
             .style(|_theme: &Theme| container::Style {
-                background: Some(theme().background.app.into()),
+                background: Some(theme().surface.base.into()),
                 text_color: Some(theme().content.primary),
                 ..Default::default()
             })

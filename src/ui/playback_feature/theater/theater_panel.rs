@@ -130,7 +130,7 @@ impl TheaterPanel {
                     &artists,
                     SF_PRO,
                     14.0,
-                    theme().content.secondary_alt2,
+                    theme().content.secondary,
                     Length::Fixed(side),
                     Horizontal::Center,
                 ),
@@ -167,7 +167,7 @@ impl TheaterPanel {
 
         let divider = container(space().width(Length::Fixed(1.0)).height(Length::Fill))
             .style(|_theme: &Theme| container::Style {
-                background: Some(theme().overlay.hover_row.into()),
+                background: Some(theme().overlay.hover.into()),
                 ..Default::default()
             });
 

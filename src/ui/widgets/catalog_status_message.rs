@@ -46,7 +46,7 @@ impl StatusTone {
         match self {
             StatusTone::Neutral => None,
             StatusTone::Error => Some(theme().status.error),
-            StatusTone::Muted => Some(theme().content.tertiary),
+            StatusTone::Muted => Some(theme().content.muted),
         }
     }
 }

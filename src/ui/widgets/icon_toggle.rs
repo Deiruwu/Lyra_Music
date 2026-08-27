@@ -55,12 +55,12 @@ where
         let background_icons = row![
             space().width(spacing::SP_2),
             text(self.icon_active).font(JETBRAINS_MONO).size(typography::TEXT_14).style(|_theme| text::Style {
-                color: Option::from(theme().content.tertiary_alt),
+                color: Option::from(theme().content.muted),
                 ..Default::default()
             }),
             space().width(Length::Fill),
             text(self.icon_inactive).font(JETBRAINS_MONO).size(typography::TEXT_14).style(|_theme| text::Style {
-                color: Option::from(theme().content.tertiary_alt),
+                color: Option::from(theme().content.muted),
                 ..Default::default()
             }),
             space().width(spacing::SP_8),

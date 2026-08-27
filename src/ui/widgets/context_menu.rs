@@ -229,7 +229,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
                         .align_x(Alignment::Center);
 
                     let label_cell = text(label.clone()).font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary);
-                    let chevron = text("›").font(SF_PRO).size(typography::TEXT_14).color(theme().content.tertiary);
+                    let chevron = text("›").font(SF_PRO).size(typography::TEXT_14).color(theme().content.muted);
 
                     let row_content = row![
                         icon_cell,

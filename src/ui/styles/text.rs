@@ -12,7 +12,7 @@ use crate::ui::theme::theme;
 pub fn lyric_line(weight: f32) -> (f32, Color) {
     let size = typography::TEXT_16 + (typography::TEXT_22 - typography::TEXT_16) * weight;
 
-    let gray = theme().content.muted_alt.r - 0.05 * weight;
+    let gray = theme().content.muted.r - 0.05 * weight;
     let color = Color::from_rgb(
         gray + (1.0 - gray) * weight,
         gray + (1.0 - gray) * weight,

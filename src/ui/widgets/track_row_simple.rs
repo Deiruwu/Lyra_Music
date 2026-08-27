@@ -24,7 +24,7 @@ fn leading_index_cell<'a, Message: 'a>(
     size: Length,
 ) -> Element<'a, Message> {
     if !is_playing_row {
-        return container(text(position.to_string()).font(SF_PRO).size(typography::TEXT_13).color(theme().content.tertiary))
+        return container(text(position.to_string()).font(SF_PRO).size(typography::TEXT_13).color(theme().content.muted))
             .width(size)
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
@@ -144,7 +144,7 @@ fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(Strin
         .padding(spacing::SP_0)
         .style(|_theme: &Theme, status| {
             let background = match status {
-                button::Status::Hovered => Some(theme().overlay.hover_row.into()),
+                button::Status::Hovered => Some(theme().overlay.hover.into()),
                 _ => None,
             };
             button::Style { background, text_color: theme().content.primary, ..Default::default() }
@@ -200,7 +200,7 @@ pub fn track_row_numbered<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a
         .padding(spacing::SP_0)
         .style(|_theme: &Theme, status| {
             let background = match status {
-                button::Status::Hovered => Some(theme().overlay.hover_row.into()),
+                button::Status::Hovered => Some(theme().overlay.hover.into()),
                 _ => None,
             };
             button::Style { background, text_color: theme().content.primary, ..Default::default() }
@@ -221,7 +221,7 @@ pub(crate) fn cache_indicator<'a, Message: 'a>(cached: bool) -> Element<'a, Mess
     let color = if cached {
         theme().status.cached
     } else {
-        theme().content.faint_alt
+        theme().content.faint
     };
 
     container(text(""))

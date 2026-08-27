@@ -46,9 +46,9 @@ pub fn track_info<'a, Message: Clone + 'a>(track: &'a Track, width: Length) -> E
     let album_name = track.album.as_ref().map_or("".to_string(), |album| album.name.clone());
 
     let (title_color, artist_color) = if is_downloaded {
-        (theme().content.primary, theme().content.tertiary_alt)
+        (theme().content.primary, theme().content.muted)
     } else {
-        (theme().content.disabled_alt, theme().content.disabled_alt2)
+        (theme().content.muted, theme().content.muted)
     };
 
     column![
@@ -133,7 +133,7 @@ where
             .height(Length::Fixed(55.0))
             .padding(spacing::SP_0)
             .style(|_: &Theme, _| button::Style {
-                background: Some(theme().overlay.scrim_play.into()),
+                background: Some(theme().overlay.scrim.into()),
                 ..Default::default()
             });
 
@@ -154,7 +154,7 @@ where
     let icon_color = if is_dragging {
         theme().content.primary
     } else {
-        theme().content.faint_alt
+        theme().content.faint
     };
 
     let handle = container(
@@ -198,9 +198,9 @@ where
 
     let is_downloaded = track.file_path.as_ref().map_or(false, |p| !p.is_empty());
     let (title_color, artist_color) = if is_downloaded {
-        (theme().content.primary, theme().content.tertiary_alt)
+        (theme().content.primary, theme().content.muted)
     } else {
-        (theme().content.disabled_alt, theme().content.disabled_alt2)
+        (theme().content.muted, theme().content.muted)
     };
 
     let info = column![
@@ -247,9 +247,9 @@ where
         .style(move |_theme: &Theme| {
             if drag.is_dragging {
                 container::Style {
-                    background: Some(theme().overlay.hover_row.into()),
+                    background: Some(theme().overlay.hover.into()),
                     border: iced::border::rounded(radii::R_6)
-                        .color(theme().border.drag)
+                        .color(theme().border.subtle)
                         .width(1.0),
                     ..Default::default()
                 }

@@ -105,7 +105,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
             .height(Length::Fixed(COVER_SIZE))
             .style(|_theme: &Theme, status| {
                 let bg = match status {
-                    button::Status::Hovered => theme().overlay.scrim_strong,
+                    button::Status::Hovered => theme().overlay.scrim,
                     _ => Color::TRANSPARENT,
                 };
                 button::Style {
@@ -143,7 +143,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         Some(k) => text(k)
             .font(SF_PRO)
             .size(typography::TEXT_12)
-            .color(theme().content.secondary_alt)
+            .color(theme().content.secondary)
             .into(),
         None => space().height(0).into(),
     };
@@ -211,7 +211,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
             background: Some(
                 iced::gradient::Linear::new(std::f32::consts::PI * 1.5)
                     .add_stop(0.0, theme().surface.gradient_start)
-                    .add_stop(1.0, theme().surface.gradient_end)
+                    .add_stop(1.0, theme().surface.base)
                     .into(),
             ),
             ..Default::default()

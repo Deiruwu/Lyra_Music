@@ -9,7 +9,7 @@ pub fn context_menu(_theme: &Theme) -> container::Style {
     let t = theme();
 
     container::Style {
-        background: Some(t.surface.elevated.into()),
+        background: Some(t.surface.panel.into()),
         border: Border {
             radius: radii::R_8.into(),
             color: t.border.subtle,

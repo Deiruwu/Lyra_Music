@@ -127,7 +127,7 @@ impl SearchInput {
         container(search_bar)
             .padding(spacing::SP_20)
             .style(|_theme: &Theme| container::Style {
-                background: Some(theme().background.app.into()),
+                background: Some(theme().surface.base.into()),
                 ..Default::default()
             })
             .width(Length::Fill)
@@ -170,7 +170,7 @@ impl SearchInput {
                 .padding(spacing::SP_18)
                 .width(Length::Fill)
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(theme().surface.field.into()),
+                    background: Some(theme().surface.sunken.into()),
                     border: border::color(theme().border.field).width(1.0).rounded(radii::R_8),
                     ..Default::default()
                 }),

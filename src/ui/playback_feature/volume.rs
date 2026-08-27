@@ -35,7 +35,7 @@ impl Volume {
         let volume_icon = if volume < 0.2 { "󰕿" } else if volume > 0.6 { "󰕾" } else { "󰖀" };
 
         row![
-            text(volume_icon).font(JETBRAINS_MONO).color(theme().content.active),
+            text(volume_icon).font(JETBRAINS_MONO).color(theme().content.primary),
             slider(0.0..=1.0, volume, VolumeMessage::UiSliderChanged)
                 .step(0.01)
                 .style(slider_style::track)

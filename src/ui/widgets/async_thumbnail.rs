@@ -33,7 +33,7 @@ where
             .align_x(iced::alignment::Horizontal::Center)
             .align_y(iced::alignment::Vertical::Center)
             .style(move |_theme: &iced::Theme| container::Style {
-                background: Some(theme().surface.placeholder.into()),
+                background: Some(theme().surface.sunken.into()),
                 border: iced::border::rounded(radius),
                 ..Default::default()
             })

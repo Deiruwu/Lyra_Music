@@ -253,7 +253,7 @@ impl HomeView {
             track.album.as_ref(),
             SF_PRO,
             12.0,
-            theme().content.tertiary_alt2,
+            theme().content.muted,
             Length::Fill,
             HomeViewMessage::TopTrackAlbumClicked,
         );
@@ -268,11 +268,11 @@ impl HomeView {
             .style(|_theme: &Theme, status| {
                 let hovered = status == button::Status::Hovered;
                 button::Style {
-                    background: Some(if hovered { theme().overlay.card_hover } else { theme().overlay.card_idle }.into()),
+                    background: Some(if hovered { theme().overlay.hover } else { theme().overlay.resting }.into()),
                     text_color: theme().content.primary,
                     border: Border {
                         radius: BANNER_CARD_RADIUS.into(),
-                        color: if hovered { theme().overlay.card_border_hover } else { theme().overlay.card_border_idle },
+                        color: if hovered { theme().overlay.control_hover } else { theme().overlay.control_idle },
                         width: 1.0,
                     },
                     ..Default::default()
@@ -295,7 +295,7 @@ impl HomeView {
                 .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .height(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(theme().surface.placeholder.into()),
+                    background: Some(theme().surface.sunken.into()),
                     border: rounded(CARD_THUMBNAIL_SIZE / 2.0),
                     ..Default::default()
                 })
@@ -338,7 +338,7 @@ impl HomeView {
                 .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .height(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(theme().surface.placeholder.into()),
+                    background: Some(theme().surface.sunken.into()),
                     border: rounded(ALBUM_CARD_RADIUS),
                     ..Default::default()
                 })
@@ -355,7 +355,7 @@ impl HomeView {
         let subtitle = text(format!("{} reproducciones", album.play_count))
             .font(SF_PRO)
             .size(typography::TEXT_12)
-            .color(theme().content.tertiary)
+            .color(theme().content.muted)
             .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
             .height(Length::Fixed(CARD_SUBTITLE_LINE_HEIGHT));
 
@@ -555,7 +555,7 @@ fn section_title<'a, Message: 'a>(title: &'a str) -> Element<'a, Message> {
 }
 
 fn status_message(message: &str) -> Element<'_, HomeViewMessage> {
-    container(text(message.to_string()).font(SF_PRO).size(typography::TEXT_14).color(theme().content.tertiary))
+    container(text(message.to_string()).font(SF_PRO).size(typography::TEXT_14).color(theme().content.muted))
         .width(Length::Fill)
         .height(Length::Fixed(200.0))
         .align_x(Alignment::Center)

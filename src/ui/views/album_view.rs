@@ -147,7 +147,7 @@ impl AlbumView {
                 .width(Length::Fixed(COVER_SIZE))
                 .height(Length::Fixed(COVER_SIZE))
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(theme().surface.placeholder.into()),
+                    background: Some(theme().surface.sunken.into()),
                     border: rounded(COVER_RADIUS),
                     ..Default::default()
                 })
@@ -175,7 +175,7 @@ impl AlbumView {
         ))
         .font(SF_PRO)
         .size(typography::TEXT_13)
-        .color(theme().content.tertiary);
+        .color(theme().content.muted);
 
         let play_label = if header_is_playing { "Pausar" } else { "Reproducir" };
         let play_message = if this_album_is_current { AlbumMessage::TogglePlayback } else { AlbumMessage::PlayAlbumPressed };
@@ -220,7 +220,7 @@ impl AlbumView {
                 background: Some(
                     iced::gradient::Linear::new(std::f32::consts::PI * 1.5)
                         .add_stop(0.0, theme().surface.gradient_start)
-                        .add_stop(1.0, theme().surface.gradient_end)
+                        .add_stop(1.0, theme().surface.base)
                         .into(),
                 ),
                 ..Default::default()
@@ -246,7 +246,7 @@ impl AlbumView {
             artists,
             SF_PRO,
             14.0,
-            theme().content.primary_alt,
+            theme().content.primary,
             Length::Shrink,
             AlbumMessage::ArtistPressed,
         );
@@ -332,7 +332,7 @@ fn album_artists(tracks: &[Track]) -> Vec<&Artist> {
 }
 
 fn status_message(message: &str) -> Element<'_, AlbumMessage> {
-    container(text(message.to_string()).font(SF_PRO).size(typography::TEXT_14).color(theme().content.tertiary))
+    container(text(message.to_string()).font(SF_PRO).size(typography::TEXT_14).color(theme().content.muted))
         .width(Length::Fill)
         .height(Length::Fixed(200.0))
         .align_x(Alignment::Center)

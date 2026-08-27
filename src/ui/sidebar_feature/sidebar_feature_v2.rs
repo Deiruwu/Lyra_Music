@@ -362,7 +362,7 @@ impl SidebarFeatureV2 {
 
             row![
                 text("PLAYLISTS").size(typography::TEXT_11).font(SF_PRO)
-                    .color(theme().content.muted_alt2),
+                    .color(theme().content.muted),
                 space().width(Length::Fill),
                 add_playlist_button,
             ]

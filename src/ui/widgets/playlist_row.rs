@@ -86,7 +86,7 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
                 .padding(spacing::SP_0)
                 .style(|_theme: &Theme, status| {
                     let bg = match status {
-                        button::Status::Hovered => theme().overlay.scrim_cover,
+                        button::Status::Hovered => theme().overlay.scrim,
                         _ => Color::TRANSPARENT,
                     };
                     button::Style {

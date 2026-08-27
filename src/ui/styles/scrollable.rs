@@ -22,7 +22,7 @@ pub fn discreet(iced_theme: &Theme, status: scrollable::Status) -> scrollable::S
     let scroller = if hovered { t.overlay.control_hover } else { t.overlay.control_idle };
 
     let rail = scrollable::Rail {
-        background: Some(Background::Color(t.overlay.hover_subtle)),
+        background: Some(Background::Color(t.overlay.resting)),
         border: rounded(radii::R_5),
         scroller: scrollable::Scroller {
             background: Background::Color(scroller),

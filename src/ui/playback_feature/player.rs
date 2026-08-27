@@ -105,8 +105,8 @@ impl Player {
             icons::icon(Icon::Play, typography::TEXT_16)
         };
 
-        let active_color = theme().accent.control_active;
-        let inactive_color = theme().content.tertiary_alt;
+        let active_color = theme().accent.primary;
+        let inactive_color = theme().content.muted;
 
         let shuffle_button = {
             let color = if is_shuffled { active_color } else { inactive_color };
@@ -190,7 +190,7 @@ impl Player {
     ) -> Element<'a, PlayerMessage> {
         let title = single_line_text(&track.title, iced::Font::default(), typography::TEXT_14, theme().content.primary, Length::Shrink);
 
-        let subtitle_color = theme().content.tertiary_alt;
+        let subtitle_color = theme().content.muted;
 
         let album_span = {
             let album_name = track.album.as_ref().map(|a| a.name.as_str()).unwrap_or("");
@@ -243,7 +243,7 @@ impl Player {
         let (icon_variant, color) = if is_liked {
             (Icon::HeartFull, theme().status.liked)
         } else {
-            (Icon::Heart, theme().content.tertiary_alt)
+            (Icon::Heart, theme().content.muted)
         };
 
         button(

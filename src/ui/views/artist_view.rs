@@ -344,7 +344,7 @@ impl ArtistView {
                 .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .height(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(theme().surface.placeholder.into()),
+                    background: Some(theme().surface.sunken.into()),
                     border: rounded(CARD_RADIUS),
                     ..Default::default()
                 })
@@ -366,7 +366,7 @@ impl ArtistView {
         ))
         .font(SF_PRO)
         .size(typography::TEXT_12)
-        .color(theme().content.tertiary)
+        .color(theme().content.muted)
         .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
         .height(Length::Fixed(CARD_SUBTITLE_LINE_HEIGHT));
 
@@ -466,7 +466,7 @@ fn follow_button(is_followed: bool) -> Element<'static, ArtistMessage> {
     let (idle, hovered) = if is_followed {
         (theme().overlay.toggle_on_idle, theme().overlay.toggle_on_hover)
     } else {
-        (theme().overlay.toggle_idle, theme().overlay.toggle_hover)
+        (theme().overlay.control_idle, theme().overlay.control_hover)
     };
 
     button(text(label).font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary))
@@ -522,14 +522,14 @@ fn banner_placeholder<'a, Message: 'a>(height: f32) -> Element<'a, Message> {
         .width(Length::Fill)
         .height(Length::Fixed(height))
         .style(|_theme: &Theme| container::Style {
-            background: Some(theme().surface.raised.into()),
+            background: Some(theme().surface.sunken.into()),
             ..Default::default()
         })
         .into()
 }
 
 fn status_message(message: &str) -> Element<'_, ArtistMessage> {
-    container(text(message.to_string()).font(SF_PRO).size(typography::TEXT_14).color(theme().content.tertiary))
+    container(text(message.to_string()).font(SF_PRO).size(typography::TEXT_14).color(theme().content.muted))
         .width(Length::Fill)
         .height(Length::Fixed(200.0))
         .align_x(Alignment::Center)

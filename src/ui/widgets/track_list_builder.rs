@@ -386,7 +386,7 @@ where
         let color = if is_active {
             theme().accent.primary
         } else {
-            theme().content.muted_alt
+            theme().content.muted
         };
 
         button(
@@ -594,9 +594,9 @@ where
             .height(Length::Fixed(self.row_height))
             .align_y(Alignment::Center)
             .style(|_theme: &iced::Theme| container::Style {
-                background: Some(theme().overlay.hover_row.into()),
+                background: Some(theme().overlay.hover.into()),
                 border: iced::border::rounded(radii::R_6)
-                    .color(theme().border.drag)
+                    .color(theme().border.subtle)
                     .width(1.0),
                 ..Default::default()
             });
