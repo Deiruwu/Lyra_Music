@@ -244,7 +244,7 @@ impl HomeView {
             &track.artists,
             SF_PRO,
             12.0,
-            theme().content.secondary,
+            theme().content.muted,
             Length::Fill,
             HomeViewMessage::TopTrackArtistClicked,
         );

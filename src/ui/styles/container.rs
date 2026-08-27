@@ -24,8 +24,7 @@ pub fn queue_panel(_theme: &Theme) -> container::Style {
     let t = theme();
 
     container::Style {
-        background: Some(t.surface.panel.into()),
-        border: iced::border::rounded(radii::R_12),
+        background: Some(t.surface.base.into()),
         ..Default::default()
     }
 }

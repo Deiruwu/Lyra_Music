@@ -130,7 +130,7 @@ impl TheaterPanel {
                     &artists,
                     SF_PRO,
                     14.0,
-                    theme().content.secondary,
+                    theme().content.muted,
                     Length::Fixed(side),
                     Horizontal::Center,
                 ),

@@ -143,7 +143,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         Some(k) => text(k)
             .font(SF_PRO)
             .size(typography::TEXT_12)
-            .color(theme().content.secondary)
+            .color(theme().content.muted)
             .into(),
         None => space().height(0).into(),
     };
@@ -160,7 +160,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
     ))
         .font(SF_PRO)
         .size(typography::TEXT_13)
-        .color(theme().content.secondary);
+        .color(theme().content.muted);
 
     let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
     let play_button = button(

@@ -167,7 +167,7 @@ impl AlbumView {
         ))
         .font(SF_PRO)
         .size(typography::TEXT_13)
-        .color(theme().content.secondary);
+        .color(theme().content.muted);
 
         let release_date = text(format!(
             "Fecha de salida: {}",
@@ -246,7 +246,7 @@ impl AlbumView {
             artists,
             SF_PRO,
             14.0,
-            theme().content.primary,
+            theme().content.muted,
             Length::Shrink,
             AlbumMessage::ArtistPressed,
         );
@@ -254,7 +254,7 @@ impl AlbumView {
         let type_label = text(format!(" · {}", album.album_type.label()))
             .font(SF_PRO)
             .size(typography::TEXT_14)
-            .color(theme().content.secondary);
+            .color(theme().content.muted);
 
         row![artist_line, type_label].align_y(Alignment::Center).into()
     }
