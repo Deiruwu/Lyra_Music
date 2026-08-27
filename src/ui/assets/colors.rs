@@ -1,21 +1,18 @@
 use iced::Color;
 
-// Neutros puros — escala de elevación (r == g == b).
-pub const NEUTRAL_10: Color = Color::from_rgb(0.10, 0.10, 0.10);
-pub const NEUTRAL_14: Color = Color::from_rgb(0.14, 0.14, 0.14);
-pub const NEUTRAL_18: Color = Color::from_rgb(0.18, 0.18, 0.18);
-pub const NEUTRAL_24: Color = Color::from_rgb(0.24, 0.24, 0.24);
-pub const NEUTRAL_30: Color = Color::from_rgb(0.30, 0.30, 0.30);
+// Acerados: neutros con un tinte frío consistente (b por encima de r≈g en
+// +0.03) — escala de elevación.
+pub const STEEL_10: Color = Color::from_rgb(0.10, 0.10, 0.13);
+pub const STEEL_14: Color = Color::from_rgb(0.14, 0.14, 0.17);
+pub const STEEL_18: Color = Color::from_rgb(0.18, 0.18, 0.21);
+pub const STEEL_24: Color = Color::from_rgb(0.24, 0.24, 0.27);
+pub const STEEL_30: Color = Color::from_rgb(0.30, 0.30, 0.33);
 
-// Neutros puros — escalera de texto (r == g == b).
-pub const NEUTRAL_92: Color = Color::from_rgb(0.92, 0.92, 0.92);
-pub const NEUTRAL_76: Color = Color::from_rgb(0.76, 0.76, 0.76);
-pub const NEUTRAL_58: Color = Color::from_rgb(0.58, 0.58, 0.58);
-pub const NEUTRAL_42: Color = Color::from_rgb(0.42, 0.42, 0.42);
-
-// Único tono cálido que se conserva: exclusivo del estado "desactivado" de
-// botones y campos interactivos — no participa de la escalera de texto.
-pub const WARM_51: Color = Color::from_rgb(0.573, 0.514, 0.455);
+// Acerados — escalera de texto (mismo tinte, misma disciplina que arriba).
+pub const STEEL_90: Color = Color::from_rgb(0.90, 0.91, 0.94);
+pub const STEEL_74: Color = Color::from_rgb(0.74, 0.75, 0.78);
+pub const STEEL_56: Color = Color::from_rgb(0.56, 0.57, 0.60);
+pub const STEEL_40: Color = Color::from_rgb(0.40, 0.41, 0.44);
 
 // Violetas de acento.
 pub const VIOLET_72: Color = Color::from_rgb(0.72, 0.63, 0.91);

@@ -25,9 +25,6 @@ pub struct Content {
     pub secondary: Color,
     pub muted: Color,
     pub faint: Color,
-    /// Estado desactivado de controles interactivos (botones, campos) — no
-    /// forma parte de la escalera de énfasis, es un tono aparte a propósito.
-    pub disabled: Color,
     pub on_accent: Color,
     pub on_banner: Color,
     pub on_control_disabled: Color,

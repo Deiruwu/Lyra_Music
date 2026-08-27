@@ -5,25 +5,24 @@ use super::semantic::*;
 
 pub const ATELIER: Semantic = Semantic {
     surface: Surface {
-        base: NEUTRAL_10,
-        panel: NEUTRAL_14,
-        sunken: NEUTRAL_18,
-        control: NEUTRAL_24,
+        base: STEEL_10,
+        panel: STEEL_14,
+        sunken: STEEL_18,
+        control: STEEL_24,
         gradient_start: VIOLET_22,
     },
     content: Content {
-        primary: NEUTRAL_92,
-        secondary: NEUTRAL_76,
-        muted: NEUTRAL_58,
-        faint: NEUTRAL_42,
-        disabled: WARM_51,
+        primary: STEEL_90,
+        secondary: STEEL_74,
+        muted: STEEL_56,
+        faint: STEEL_40,
         on_accent: BLACK,
         on_banner: WHITE_A75,
         on_control_disabled: WHITE_A30,
     },
     border: Border {
         subtle: WHITE_A12,
-        field: NEUTRAL_30,
+        field: STEEL_30,
     },
     accent: Accent {
         primary: VIOLET_62,

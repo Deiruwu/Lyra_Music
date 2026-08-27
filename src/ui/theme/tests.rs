@@ -9,10 +9,10 @@ use iced::Color;
 #[test]
 fn surface_tokens_match_palette() {
     let t = theme();
-    assert_eq!(t.surface.base, Color::from_rgb(0.10, 0.10, 0.10));
-    assert_eq!(t.surface.panel, Color::from_rgb(0.14, 0.14, 0.14));
-    assert_eq!(t.surface.sunken, Color::from_rgb(0.18, 0.18, 0.18));
-    assert_eq!(t.surface.control, Color::from_rgb(0.24, 0.24, 0.24));
+    assert_eq!(t.surface.base, Color::from_rgb(0.10, 0.10, 0.13));
+    assert_eq!(t.surface.panel, Color::from_rgb(0.14, 0.14, 0.17));
+    assert_eq!(t.surface.sunken, Color::from_rgb(0.18, 0.18, 0.21));
+    assert_eq!(t.surface.control, Color::from_rgb(0.24, 0.24, 0.27));
     assert_eq!(t.surface.gradient_start, Color::from_rgb(0.22, 0.16, 0.28));
 }
 
@@ -31,11 +31,10 @@ fn surface_ladder_is_monotonic() {
 #[test]
 fn content_tokens_match_palette() {
     let t = theme();
-    assert_eq!(t.content.primary, Color::from_rgb(0.92, 0.92, 0.92));
-    assert_eq!(t.content.secondary, Color::from_rgb(0.76, 0.76, 0.76));
-    assert_eq!(t.content.muted, Color::from_rgb(0.58, 0.58, 0.58));
-    assert_eq!(t.content.faint, Color::from_rgb(0.42, 0.42, 0.42));
-    assert_eq!(t.content.disabled, Color::from_rgb(0.573, 0.514, 0.455));
+    assert_eq!(t.content.primary, Color::from_rgb(0.90, 0.91, 0.94));
+    assert_eq!(t.content.secondary, Color::from_rgb(0.74, 0.75, 0.78));
+    assert_eq!(t.content.muted, Color::from_rgb(0.56, 0.57, 0.60));
+    assert_eq!(t.content.faint, Color::from_rgb(0.40, 0.41, 0.44));
     assert_eq!(t.content.on_accent, Color::BLACK);
     assert_eq!(t.content.on_banner, Color::from_rgba(1.0, 1.0, 1.0, 0.75));
     assert_eq!(t.content.on_control_disabled, Color::from_rgba(1.0, 1.0, 1.0, 0.3));
@@ -58,7 +57,7 @@ fn content_ladder_is_monotonic() {
 fn border_tokens_match_palette() {
     let t = theme();
     assert_eq!(t.border.subtle, Color::from_rgba(1.0, 1.0, 1.0, 0.12));
-    assert_eq!(t.border.field, Color::from_rgb(0.30, 0.30, 0.30));
+    assert_eq!(t.border.field, Color::from_rgb(0.30, 0.30, 0.33));
 }
 
 #[test]

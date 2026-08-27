@@ -10,7 +10,7 @@ pub fn transparent(_theme: &Theme, status: button::Status) -> button::Style {
     let t = theme();
 
     let (background, text_color) = match status {
-        button::Status::Disabled => (None, t.content.disabled),
+        button::Status::Disabled => (None, t.content.muted),
         button::Status::Hovered => (Some(t.overlay.hover.into()), t.content.primary),
         _ => (None, t.content.primary),
     };
@@ -26,7 +26,7 @@ pub fn sidebar_item(_theme: &Theme, status: button::Status) -> button::Style {
     let t = theme();
 
     let (background, text_color) = match status {
-        button::Status::Disabled => (None, t.content.disabled),
+        button::Status::Disabled => (None, t.content.muted),
         button::Status::Hovered => (Some(t.overlay.hover_accent.into()), t.content.primary),
         _ => (None, t.content.primary),
     };
@@ -47,7 +47,7 @@ pub fn minimal(_theme: &Theme, status: button::Status) -> button::Style {
     let t = theme();
 
     let text_color = match status {
-        button::Status::Disabled => t.content.disabled,
+        button::Status::Disabled => t.content.muted,
         button::Status::Pressed => t.accent.primary,
         button::Status::Active | button::Status::Hovered => t.content.primary,
     };
