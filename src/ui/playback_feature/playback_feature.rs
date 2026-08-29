@@ -500,24 +500,25 @@ impl PlaybackFeature {
 
         let right_view = container(right_view).max_width(250).width(Length::Fill);
 
+        // El seek bar va SOLO debajo de los controles de play (no de todo
+        // el bloque de la derecha) — angosto, del ancho de esta columna.
+        let play_column = column![play_center, seek_bar]
+            .spacing(spacing::SP_6)
+            .align_x(Alignment::Center);
+
         let play_controller = row![
             container(current_track).width(Length::FillPortion(2)),
-            container(play_center)
+            container(play_column)
                 .width(Length::FillPortion(3))
                 .align_x(Alignment::Center),
             container(right_view)
                 .width(Length::FillPortion(2))
                 .align_x(Alignment::End),
-
         ]
             .width(Length::Fill)
             .align_y(Alignment::Center);
 
-        let layout_final = column![seek_bar, play_controller]
-            .spacing(spacing::SP_10)
-            .align_x(Alignment::Center);
-
-        container(layout_final)
+        container(play_controller)
             .width(Length::Fill)
             .padding(spacing::SP_10)
             .align_x(Alignment::Center)

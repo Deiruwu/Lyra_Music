@@ -34,6 +34,7 @@ pub enum PlayerMessage {
     UiNext,
     UiPrev,
     UiSeek(f32),
+    UiSeekReleased,
     UiToggleLike(String),
     UiToggleShuffle,
     UiCycleRepeat,
@@ -57,11 +58,16 @@ pub enum PlayerOutMessage {
 
 pub struct Player {
     pub current_track: Option<Arc<PlayableTrack>>,
+    /// Valor en curso mientras se arrastra el seek bar — la vista usa
+    /// este valor en vez de `current_position` para no pelear con la
+    /// posición real (que solo avanza cada 40ms via Tick). Se limpia
+    /// y dispara el seek real recién al soltar.
+    seek_preview: Option<f32>,
 }
 
 impl Default for Player {
     fn default() -> Self {
-        Self { current_track: None }
+        Self { current_track: None, seek_preview: None }
     }
 }
 
@@ -82,7 +88,14 @@ impl Player {
             PlayerMessage::UiTogglePlayback => (Task::none(), PlayerOutMessage::RequestTogglePlayback),
             PlayerMessage::UiNext           => (Task::none(), PlayerOutMessage::RequestNext),
             PlayerMessage::UiPrev           => (Task::none(), PlayerOutMessage::RequestPrev),
-            PlayerMessage::UiSeek(pos)      => (Task::none(), PlayerOutMessage::RequestSeek(pos)),
+            PlayerMessage::UiSeek(pos) => {
+                self.seek_preview = Some(pos);
+                (Task::none(), PlayerOutMessage::Idle)
+            }
+            PlayerMessage::UiSeekReleased => match self.seek_preview.take() {
+                Some(pos) => (Task::none(), PlayerOutMessage::RequestSeek(pos)),
+                None      => (Task::none(), PlayerOutMessage::Idle),
+            },
             PlayerMessage::UiToggleLike(track_id) => (Task::none(), PlayerOutMessage::RequestToggleLike(track_id)),
             PlayerMessage::UiToggleShuffle   => (Task::none(), PlayerOutMessage::RequestToggleShuffle),
             PlayerMessage::UiCycleRepeat     => (Task::none(), PlayerOutMessage::RequestCycleRepeat),
@@ -262,15 +275,17 @@ impl Player {
             .unwrap_or(0) as f32;
 
         let display_duration = duration.max(current_position);
+        let display_position = self.seek_preview.unwrap_or(current_position);
 
         row![
-            text(format!("{}:{:02}", (current_position / 60.0) as u32, (current_position % 60.0) as u32)).size(typography::TEXT_12),
-            slider(0.0..=display_duration, current_position, PlayerMessage::UiSeek)
+            text(format!("{}:{:02}", (display_position / 60.0) as u32, (display_position % 60.0) as u32)).size(typography::TEXT_10_5),
+            slider(0.0..=display_duration, display_position, PlayerMessage::UiSeek)
                 .step(1.0)
+                .on_release(PlayerMessage::UiSeekReleased)
                 .style(slider_style::track),
-            text(format!("{}:{:02}", (display_duration / 60.0) as u32, (display_duration % 60.0) as u32)).size(typography::TEXT_12),
+            text(format!("{}:{:02}", (display_duration / 60.0) as u32, (display_duration % 60.0) as u32)).size(typography::TEXT_10_5),
         ]
-            .spacing(spacing::SP_10)
+            .spacing(spacing::SP_6)
             .align_y(Alignment::Center)
             .into()
     }
