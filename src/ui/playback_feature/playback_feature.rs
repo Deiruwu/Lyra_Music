@@ -359,7 +359,7 @@ impl PlaybackFeature {
             }
 
             PlaybackFeatureMessage::Volume(msg) => {
-                let (task, out_msg) = self.volume.update(msg);
+                let (task, out_msg) = self.volume.update(msg, self.manager.get_volume());
                 match out_msg {
                     VolumeOutMessage::RequestVolumeChange(vol) => {
                         self.manager.set_volume(vol);

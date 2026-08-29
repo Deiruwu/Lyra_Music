@@ -95,13 +95,16 @@ pub enum Icon {
     RightArrow,
 
     // Volume
-    #[strum(serialize = "...")]
+    #[strum(serialize = "")]
+    VolumeMuted,
+
+    #[strum(serialize = "")]
     VolumeOff,
 
-    #[strum(serialize = "...")]
+    #[strum(serialize = "")]
     VolumeDown,
 
-    #[strum(serialize = "...")]
+    #[strum(serialize = "")]
     VolumeUp,
 
     #[strum(serialize = "")]
