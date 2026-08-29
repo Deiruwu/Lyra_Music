@@ -429,6 +429,20 @@ impl ArtistView {
         artist.songs.iter().take(TOP_SONGS_COUNT).find(|t| t.id == id)
     }
 
+    /// Reemplaza en el lugar el track cuyo id matchea, en el top de
+    /// canciones (mismo `Track` recién descargado/analizado en otra parte
+    /// de la app, vía `LibraryBrowserFeature::patch_track`) — sin esto, esta
+    /// vista sigue mostrando/reproduciendo el stub congelado que trajo el
+    /// fetch inicial del artista, aunque `CatalogStore` ya tenga el dato
+    /// fresco.
+    pub(crate) fn patch_track(&mut self, track: &Track) {
+        if let ArtistViewData::Loaded(artist) = &mut self.data {
+            if let Some(existing) = artist.songs.iter_mut().find(|t| t.id == track.id) {
+                *existing = track.clone();
+            }
+        }
+    }
+
     /// URLs de thumbnails cuadrados a mantener vivos: top 5 canciones.
     fn thumbnail_targets(&self) -> Vec<(String, String)> {
         let ArtistViewData::Loaded(artist) = &self.data else { return Vec::new() };

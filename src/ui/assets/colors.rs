@@ -27,7 +27,7 @@ pub const VIOLET_A20: Color = Color::from_rgba(0.62, 0.50, 0.84, 0.20);
 
 // Colores de estado.
 pub const ROSE_64: Color = Color::from_rgb(0.91, 0.39, 0.62);
-pub const TEAL_57: Color = Color::from_rgb(0.50, 0.60, 0.60);
+pub const MOSS_54: Color = Color::from_rgb(0.42, 0.66, 0.46);
 pub const CLAY_57: Color = Color::from_rgb(0.73, 0.49, 0.49);
 
 // Velos blancos, por opacidad.

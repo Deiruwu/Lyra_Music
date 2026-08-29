@@ -50,7 +50,7 @@ pub const ATELIER: Semantic = Semantic {
     },
     status: Status {
         liked: ROSE_64,
-        cached: TEAL_57,
+        cached: MOSS_54,
         error: CLAY_57,
     },
 };

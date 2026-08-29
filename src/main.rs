@@ -10,7 +10,7 @@ mod settings;
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::sync::atomic::Ordering;
 use iced::theme::Palette;
-use iced::{border, window, Background, Border, Element, Length, Padding, Theme};
+use iced::{border, window, Alignment, Background, Border, Element, Length, Padding, Theme};
 use iced::widget::{column, container, row, space, stack};
 
 use crate::audio::discord::DiscordPresence;
@@ -32,6 +32,7 @@ use crate::ui::assets::radii;
 use crate::ui::library_browser_feature::library_browser_feature::{
     LibraryBrowserFeature, LibraryBrowserMessage, LibraryBrowserOutMessage,
 };
+use crate::ui::download_feature::{DownloadFeature, DownloadFeatureMessage, DownloadFeatureOutMessage};
 use crate::ui::playback_feature::player::TrackLink;
 use crate::ui::playback_feature::playback_feature::{PlaybackFeature, PlaybackFeatureMessage, PlaybackOutMessage};
 use crate::ui::search_feature::search_feature::{SearchFeature, SearchFeatureMessage, SearchFeatureOutMessage};
@@ -61,6 +62,7 @@ pub enum AppMessage {
     NavigateBack,
     EscapePressed,
     AutosaveTick,
+    DownloadFeature(DownloadFeatureMessage),
 }
 
 struct App {
@@ -68,6 +70,7 @@ struct App {
     manager: Arc<TrackManager>,
     search_feature: SearchFeature,
     playback_feature: PlaybackFeature,
+    download_feature: DownloadFeature,
     sidebar_feature: SidebarFeature,
     library_browser: LibraryBrowserFeature,
     view_thumbnails: ThumbnailCache,
@@ -108,6 +111,7 @@ impl App {
         // Copia (no Arc, MicroserviceClient ya es Clone) para LibraryBrowserFeature.
         let library_browser_client = client.as_ref().clone();
         let library_browser_manager = Arc::clone(&manager);
+        let download_feature = DownloadFeature::new(Arc::clone(&client));
 
         let radio = RadioWorker::new(Arc::clone(&manager), client).spawn();
         radio.set_enabled(false);
@@ -162,6 +166,7 @@ impl App {
             _engine: engine,
             search_feature: SearchFeature::new(),
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
+            download_feature,
             sidebar_feature,
             library_browser: LibraryBrowserFeature::new(library_browser_client, library_browser_manager, Arc::clone(&followed_artist_manager)),
             view_thumbnails: ThumbnailCache::new(100, 50),
@@ -291,6 +296,13 @@ impl App {
                         iced::Task::none()
                     }
                     PlaybackOutMessage::TrackNowPlaying(track) => {
+                        self.library_browser.patch_track(&track);
+                        iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
+                            CoordinatorMessage::Catalog(CatalogStoreMessage::TrackDownloadedAndCached(track))
+                        )))
+                    }
+                    PlaybackOutMessage::TrackDownloaded(track) => {
+                        self.library_browser.patch_track(&track);
                         iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
                             CoordinatorMessage::Catalog(CatalogStoreMessage::TrackDownloadedAndCached(track))
                         )))
@@ -346,6 +358,7 @@ impl App {
                 match out_msg {
                     SearchFeatureOutMessage::TrackReadyToPlay(playable) => {
                         let track_metadata = playable.track.clone();
+                        self.library_browser.patch_track(&track_metadata);
 
                         let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
                         let (t, _out) = self.playback_feature.update(
@@ -368,6 +381,22 @@ impl App {
                     feature_task.map(AppMessage::PlaybackFeature),
                     catalog_task,
                 ])
+            }
+
+            AppMessage::DownloadFeature(msg) => {
+                let (task, out) = self.download_feature.update(msg, &mut self.view_thumbnails);
+
+                let catalog_task = match out {
+                    DownloadFeatureOutMessage::TrackReady(track) => {
+                        self.library_browser.patch_track(&track);
+                        iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
+                            CoordinatorMessage::Catalog(CatalogStoreMessage::TrackDownloadedAndCached(track))
+                        )))
+                    }
+                    DownloadFeatureOutMessage::Idle => iced::Task::none(),
+                };
+
+                iced::Task::batch(vec![task.map(AppMessage::DownloadFeature), catalog_task])
             }
 
             AppMessage::LibraryBrowser(msg) => self.update_library_browser(msg),
@@ -511,12 +540,29 @@ impl App {
                 left: spacing::SP_0,
             });
 
+        let catalog_store = &self.sidebar_feature.coordinator.catalog_store;
+
+        // Píldoras de descarga: viven en `layout_stack` (no en
+        // `absolute_root_layers`) porque alinearlas `align_y(End)` dentro de
+        // esta región las deja pegadas justo arriba de `playback_view` sin
+        // necesitar conocer su altura real (la barra no tiene altura fija).
+        let pill_overlay = container(
+            self.download_feature
+                .view(&self.view_thumbnails)
+                .map(AppMessage::DownloadFeature),
+        )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::End)
+            .padding(Padding { bottom: spacing::SP_20, ..Default::default() });
+
         // 1. EXTRAEMOS los overlays de aquí. Este stack ahora es netamente estructural
         // para el cuerpo de la aplicación y ya no mezcla popups.
-        let layout_stack = stack![content_layer];
+        let layout_stack = stack![content_layer, pill_overlay];
 
         let is_current_liked = self.playback_feature.current_track_id()
-            .and_then(|id| self.sidebar_feature.coordinator.catalog_store.track_by_id(id))
+            .and_then(|id| catalog_store.track_by_id(id))
             .map(|t| t.liked)
             .unwrap_or(false);
 
@@ -570,6 +616,7 @@ impl App {
     pub fn subscription(&self) -> iced::Subscription<AppMessage> {
         let search_sub   = self.search_feature.subscription().map(AppMessage::SearchFeature);
         let playback_sub = self.playback_feature.subscription(self.is_theater_mode).map(AppMessage::PlaybackFeature);
+        let download_sub = self.download_feature.subscription().map(AppMessage::DownloadFeature);
         let sidebar_sub  = self.sidebar_feature.subscription().map(AppMessage::SidebarFeature);
 
         let close_sub = window::events()
@@ -606,6 +653,7 @@ impl App {
         iced::Subscription::batch(vec![
             search_sub,
             playback_sub,
+            download_sub,
             sidebar_sub,
             close_sub,
             nav_back_sub,

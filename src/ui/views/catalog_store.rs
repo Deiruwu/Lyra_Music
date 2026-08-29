@@ -749,12 +749,17 @@ impl CatalogStore {
             }
 
             CatalogStoreMessage::TrackDownloadedAndCached(track) => {
-                if !self.index_by_id.contains_key(&track.id) {
-                    let next_idx = self.all_tracks.len();
-                    self.index_by_id.insert(track.id.clone(), next_idx);
-                    self.all_tracks.push(track);
-                    self.bump_version();
+                match self.index_by_id.get(&track.id) {
+                    // Reemplaza el stub precargado (sin bpm/camelot_key/file_path)
+                    // por el track ya completo.
+                    Some(&idx) => self.all_tracks[idx] = track,
+                    None => {
+                        let next_idx = self.all_tracks.len();
+                        self.index_by_id.insert(track.id.clone(), next_idx);
+                        self.all_tracks.push(track);
+                    }
                 }
+                self.bump_version();
                 Task::none()
             }
 

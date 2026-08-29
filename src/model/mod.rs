@@ -11,6 +11,7 @@ pub mod artist_dto;
 pub mod artist_profile_dto;
 pub mod play_history;
 pub mod followed_artist;
+pub mod download_event;
 
 pub use track::Track;
 pub use album::Album;
@@ -23,3 +24,4 @@ pub use artist_dto::ArtistDto;
 pub use artist_profile_dto::ArtistProfileDto;
 pub use play_history::{TrackPlayCount, ArtistPlayCount};
 pub use followed_artist::FollowedArtist;
+pub use download_event::DownloadEvent;

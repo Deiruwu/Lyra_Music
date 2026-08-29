@@ -39,6 +39,10 @@ pub enum PlaybackFeatureMessage {
     Queue(QueueMessage),
     Theater(TheaterMessage),
     QueueChanged,
+    /// Un track de la cola (pre-descarga proactiva o de emergencia, ver
+    /// `DownloadWorker`) terminó de descargarse — trae el `Track` fresco,
+    /// no el stub con el que arrancó la descarga.
+    TrackDownloaded(Track),
     QueueThumbnailLoaded { key: String, bytes: Vec<u8> },
     SmallThumbnailLoaded { track_id: String, bytes: Vec<u8> },
     LargeThumbnailLoaded { track_id: String, bytes: Vec<u8> },
@@ -58,6 +62,10 @@ pub enum PlaybackOutMessage {
     RequestAddToPlaylist { playlist_id: String, track_id: String },
     RequestDeleteFromCatalog(String),
     TrackNowPlaying(Track),
+    /// Igual que `TrackNowPlaying`, pero para un track que la cola
+    /// descargó en segundo plano (pre-descarga/emergencia) sin que
+    /// necesariamente haya empezado a sonar todavía.
+    TrackDownloaded(Track),
     Idle,
 }
 
@@ -189,6 +197,10 @@ impl PlaybackFeature {
                 let tracks = self.manager.get_queue_snapshot();
                 self.queue.queue_update(tracks);
                 (Task::none(), PlaybackOutMessage::Idle)
+            }
+
+            PlaybackFeatureMessage::TrackDownloaded(track) => {
+                (Task::none(), PlaybackOutMessage::TrackDownloaded(track))
             }
 
             PlaybackFeatureMessage::QueueThumbnailLoaded { key, bytes } => {
@@ -550,11 +562,12 @@ fn queue_events() -> impl futures::Stream<Item = PlaybackFeatureMessage> {
         loop {
             match rx.recv().await {
                 Ok(QueueEvent::QueueChanged) => { let _ = output.send(PlaybackFeatureMessage::QueueChanged).await; }
-                // ── FEAT FUTURO: descarga visible en cola ──────────────────────
-                // Cuando se reintroduzca el spinner de descarga en la cola,
-                // aquí se vuelven a mapear:
+                Ok(QueueEvent::DownloadFinished(track)) => {
+                    let _ = output.send(PlaybackFeatureMessage::TrackDownloaded((*track).clone())).await;
+                }
+                // ── FEAT FUTURO: spinner de descarga visible en cola ───────────
+                // Cuando se reintroduzca, mapear acá:
                 //   Ok(QueueEvent::DownloadStarted(track)) => { let _ = output.send(PlaybackFeatureMessage::DownloadingStarted(track.id.clone())).await; }
-                //   Ok(QueueEvent::DownloadFinished(track)) => { let _ = output.send(PlaybackFeatureMessage::DownloadingFinished(track.id.clone())).await; }
                 Ok(_) => {}
                 Err(_) => continue,
             }

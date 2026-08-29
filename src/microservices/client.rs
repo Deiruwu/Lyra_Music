@@ -1,4 +1,4 @@
-use crate::model::{AlbumDto, ArtistDto, ArtistProfileDto, Track};
+use crate::model::{AlbumDto, ArtistDto, ArtistProfileDto, DownloadEvent, Track};
 use musichub_client::{MicroserviceClient as HubClient, Request};
 pub use musichub_client::MicroserviceError;
 
@@ -19,6 +19,10 @@ impl MicroserviceClient {
 
     pub async fn download(&self, query: &str) -> Result<Track, MicroserviceError> {
         self.inner.download(query).await
+    }
+
+    pub async fn subscribe_downloads(&self) -> Result<tokio::sync::mpsc::UnboundedReceiver<DownloadEvent>, MicroserviceError> {
+        self.inner.subscribe_downloads().await
     }
 
     pub async fn resolve(&self, query: &str) -> Result<Track, MicroserviceError> {

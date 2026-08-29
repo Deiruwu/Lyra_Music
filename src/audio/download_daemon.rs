@@ -131,7 +131,14 @@ impl DownloadWorker {
                 let must_resume = is_emergency
                     || self.manager.state.status.load(Ordering::Relaxed) == 4;
 
-                self.manager.replace_queue_front(downloaded, must_resume);
+                self.manager.replace_queue_front(downloaded.clone(), must_resume);
+
+                // `downloaded` (no el `track` pre-descarga con el que
+                // arrancó esta función) es lo que hay que propagar: trae
+                // bpm/camelot_key/file_path frescos. Álbum/Artista y
+                // `CatalogStore` lo usan para no seguir mostrando/
+                // reproduciendo el stub congelado (ver `main.rs`).
+                let _ = self.manager.queue_tx.send(QueueEvent::DownloadFinished(Arc::new(downloaded)));
             }
 
             Err(e) => {
@@ -149,9 +156,6 @@ impl DownloadWorker {
                 }
             }
         }
-
-        // Notificar a la UI que terminó (éxito o fallo).
-        let _ = self.manager.queue_tx.send(QueueEvent::DownloadFinished(track_arc));
 
         *self.active_id.lock().await = None;
     }

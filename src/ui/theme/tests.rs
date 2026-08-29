@@ -110,6 +110,6 @@ fn elevation_matches_palette() {
 fn status_tokens_match_palette() {
     let t = theme();
     assert_eq!(t.status.liked, Color::from_rgb(0.91, 0.39, 0.62));
-    assert_eq!(t.status.cached, Color::from_rgb(0.50, 0.60, 0.60));
+    assert_eq!(t.status.cached, Color::from_rgb(0.42, 0.66, 0.46));
     assert_eq!(t.status.error, Color::from_rgb(0.73, 0.49, 0.49));
 }

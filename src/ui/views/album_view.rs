@@ -304,6 +304,19 @@ impl AlbumView {
         self.tracks().iter().find(|t| t.id == id)
     }
 
+    /// Reemplaza en el lugar el track cuyo id matchea (mismo `Track` que
+    /// acaba de terminar de descargarse/analizarse en otra parte de la app,
+    /// vía `LibraryBrowserFeature::patch_track`) — sin esto, esta vista
+    /// sigue mostrando/reproduciendo el stub congelado que trajo el fetch
+    /// inicial del álbum, aunque `CatalogStore` ya tenga el dato fresco.
+    pub(crate) fn patch_track(&mut self, track: &Track) {
+        if let AlbumViewData::Loaded(album) = &mut self.data {
+            if let Some(existing) = album.tracks.iter_mut().find(|t| t.id == track.id) {
+                *existing = track.clone();
+            }
+        }
+    }
+
     fn thumbnail_targets(&self) -> Vec<(String, String, Treatment)> {
         let AlbumViewData::Loaded(album) = &self.data else { return Vec::new() };
 

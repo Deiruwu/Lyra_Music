@@ -5,6 +5,7 @@ pub mod widgets;
 pub mod library_browser_feature;
 pub mod playback_feature;
 pub mod search_feature;
+pub mod download_feature;
 pub mod sidebar_feature;
 pub mod views;
 pub mod assets;

@@ -118,6 +118,19 @@ impl LibraryBrowserFeature {
         }
     }
 
+    /// Reemplaza en el lugar, en la ruta activa (si la hay y contiene ese
+    /// track), el `Track` recién descargado/analizado — para que Álbum/
+    /// Artista dejen de mostrar/reproducir el stub congelado que trajo el
+    /// fetch inicial de la vista. Se llama desde `App` en el mismo punto
+    /// donde ya se empuja el track a `CatalogStore` (ver `main.rs`).
+    pub fn patch_track(&mut self, track: &Track) {
+        match &mut self.active {
+            Some(LibraryBrowserRoute::Artist(view)) => view.patch_track(track),
+            Some(LibraryBrowserRoute::Album(view)) => view.patch_track(track),
+            None => {}
+        }
+    }
+
     pub fn update(
         &mut self,
         message: LibraryBrowserMessage,
