@@ -35,6 +35,7 @@ use crate::ui::library_browser_feature::library_browser_feature::{
 use crate::ui::download_feature::{DownloadFeature, DownloadFeatureMessage, DownloadFeatureOutMessage};
 use crate::ui::playback_feature::player::TrackLink;
 use crate::ui::playback_feature::playback_feature::{PlaybackFeature, PlaybackFeatureMessage, PlaybackOutMessage};
+use crate::ui::search_feature::search_bar::SearchMessage;
 use crate::ui::search_feature::search_feature::{SearchFeature, SearchFeatureMessage, SearchFeatureOutMessage};
 use crate::ui::sidebar_feature::sidebar_feature_v2::{
     SidebarFeatureV2 as SidebarFeature, SidebarMessage as SidebarFeatureMessage, SidebarOutMessage
@@ -410,6 +411,10 @@ impl App {
             }
 
             AppMessage::EscapePressed => {
+                if self.search_feature.input.is_open {
+                    return iced::Task::done(AppMessage::SearchFeature(SearchFeatureMessage::Ui(SearchMessage::Close)));
+                }
+
                 if self.is_theater_mode {
                     self.is_theater_mode = false;
                 } else if self.library_browser.is_active() {
@@ -567,12 +572,15 @@ impl App {
             .unwrap_or(false);
 
         let playback_view  = self.playback_feature.view(self.is_theater_mode, is_current_liked).map(AppMessage::PlaybackFeature);
-        let search_view    = self.search_feature.view().map(AppMessage::SearchFeature);
-        let search_overlay = self.search_feature.view_dropdown(&self.view_thumbnails).map(AppMessage::SearchFeature);
+        let search_toggle  = self.search_feature.view_toggle().map(AppMessage::SearchFeature);
+        let search_overlay = self.search_feature.view_overlay(&self.view_thumbnails);
 
         let top_bar = row![
             self.sidebar_feature.view_toggle().map(AppMessage::SidebarFeature),
-            container(search_view).width(Length::Fill),
+            space().width(Length::Fill),
+            container(search_toggle)
+                .align_x(Alignment::End)
+                .padding(Padding { top: spacing::SP_10, right: spacing::SP_15, ..Default::default() }),
         ]
             .align_y(iced::alignment::Vertical::Center)
             .width(Length::Fill);
@@ -590,10 +598,11 @@ impl App {
         // 2. CONSTRUIMOS EL STACK RAÍZ ABSOLUTO.
         // El origen (0,0) de este stack coincide milimétricamente con el (0,0) de la ventana nativa
         // y del evento global iced::mouse::Event::CursorMoved.
-        let mut absolute_root_layers: Vec<Element<'_, AppMessage>> = vec![
-            app_root.into(),
-            search_overlay,
-        ];
+        let mut absolute_root_layers: Vec<Element<'_, AppMessage>> = vec![app_root.into()];
+
+        if let Some(search_overlay) = search_overlay {
+            absolute_root_layers.push(search_overlay.map(AppMessage::SearchFeature));
+        }
 
         // 3. INYECTAMOS LOS OVERLAYS DEL SIDEBAR (Menús y Diálogos) EN LA CÚSPIDE.
         absolute_root_layers.extend(

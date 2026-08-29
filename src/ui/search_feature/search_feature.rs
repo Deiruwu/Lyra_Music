@@ -214,15 +214,17 @@ impl SearchFeature {
         }
     }
 
-    pub fn view(&self) -> Element<'_, SearchFeatureMessage> {
-        self.input.view().map(SearchFeatureMessage::Ui)
+    pub fn view_toggle(&self) -> Element<'_, SearchFeatureMessage> {
+        self.input.view_toggle().map(SearchFeatureMessage::Ui)
     }
 
-    pub fn view_dropdown<'a>(&'a self, thumbnails: &'a ThumbnailCache) -> Element<'a, SearchFeatureMessage> {
-        self.input.view_dropdown(
+    /// Isla flotante de búsqueda como capa de overlay — `None` mientras
+    /// está cerrada, para que `main.rs` no monte la capa de dismiss.
+    pub fn view_overlay<'a>(&'a self, thumbnails: &'a ThumbnailCache) -> Option<Element<'a, SearchFeatureMessage>> {
+        self.input.view_overlay(
             self.is_searching,
             &self.results,
             thumbnails,
-        ).map(SearchFeatureMessage::Ui)
+        ).map(|el| el.map(SearchFeatureMessage::Ui))
     }
 }

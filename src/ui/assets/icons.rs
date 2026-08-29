@@ -113,6 +113,9 @@ pub enum Icon {
     #[strum(serialize = "")]
     BurgerMenu,
 
+    #[strum(serialize = "")]
+    Search,
+
     // Covers
     #[strum(serialize = "")]
     Camera,

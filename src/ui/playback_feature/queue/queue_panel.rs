@@ -23,7 +23,7 @@ pub(crate) const ROW_HEIGHT: f32 = 66.0;
 pub(crate) const ROW_SPACING: f32 = 4.0;
 pub(crate) const ROW_STRIDE: f32 = ROW_HEIGHT + ROW_SPACING;
 
-pub(crate) const QUEUE_COLLAPSED_WIDTH: f32 = 0.0;
+pub(crate) const QUEUE_COLLAPSED_WIDTH: f32 = 20.0;
 pub(crate) const QUEUE_EXPANDED_WIDTH: f32 = 450.0;
 const ANIMATION_SPEED: f32 = 12.0;
 const SNAP_EPSILON: f32 = 0.5;
@@ -350,8 +350,8 @@ impl QueuePanel {
     }
 
     pub fn view<'a>(&'a self, thumbnails: &'a AsyncThumbnail) -> Element<'a, QueueMessage> {
-        if self.queue_width == 0.0 {
-            return space().into();
+        if self.queue_width == 20.0 {
+            return space().width(20).into();
         }
 
         let total_items = self.queue.len();
