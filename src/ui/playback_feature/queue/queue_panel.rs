@@ -14,7 +14,7 @@ use crate::ui::styles::button as button_style;
 use crate::ui::styles::container as container_style;
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::virtual_list::ScrollTracker;
-use crate::ui::widgets::track_row::{queue_track_row, DragRowParams};
+use crate::ui::widgets::track_row::queue_track_row;
 use super::animator::QueueAnimator;
 use crate::ui::assets::typography;
 use crate::ui::styles::scrollable as scrollable_style;
@@ -24,9 +24,10 @@ pub(crate) const ROW_SPACING: f32 = 4.0;
 pub(crate) const ROW_STRIDE: f32 = ROW_HEIGHT + ROW_SPACING;
 
 pub(crate) const QUEUE_COLLAPSED_WIDTH: f32 = 20.0;
-pub(crate) const QUEUE_EXPANDED_WIDTH: f32 = 450.0;
+pub(crate) const QUEUE_EXPANDED_WIDTH: f32 = 340.0;
 const ANIMATION_SPEED: f32 = 12.0;
 const SNAP_EPSILON: f32 = 0.5;
+const DRAG_THRESHOLD_PX: f32 = 5.0;
 
 /// Id único del `scrollable` de la cola. Necesario para que las
 /// operations de auto-scroll (`operation::scroll_by`) encuentren al
@@ -76,7 +77,7 @@ pub enum QueueMessage {
     RightClicked(usize),
 
     // ── Drag & drop ──────────────────────────────────────────────────────
-    DragStarted(usize),
+    GlobalPressed,
     DragOver(usize),
     DragReleased,
     CursorMoved(f32),
@@ -104,6 +105,17 @@ struct DragState {
     cursor_y: f32,
 }
 
+/// Arranca en el mouse press global (ver `PlaybackFeature::subscription`)
+/// pero todavía no es un drag real: hasta que el cursor no se mueva más
+/// de `DRAG_THRESHOLD_PX`, es indistinguible de un click normal (play,
+/// borrar, links, right-click siguen andando igual). Mismo patrón que
+/// `PendingDrag` en `playlist_view.rs`.
+struct PendingDrag {
+    source_index: usize,
+    grab_offset: f32,
+    start_y: f32,
+}
+
 pub struct QueuePanel {
     pub show: bool,
     pub queue_width: f32,
@@ -112,6 +124,8 @@ pub struct QueuePanel {
     hovered_row: Option<usize>,
     hovered_delete: Option<usize>,
     drag: Option<DragState>,
+    pending_drag: Option<PendingDrag>,
+    last_cursor_y: f32,
     animator: QueueAnimator,
     scroll: ScrollTracker,
 }
@@ -126,6 +140,8 @@ impl Default for QueuePanel {
             hovered_row: None,
             hovered_delete: None,
             drag: None,
+            pending_drag: None,
+            last_cursor_y: 0.0,
             animator: QueueAnimator::default(),
             scroll: ScrollTracker::default(),
         }
@@ -269,21 +285,41 @@ impl QueuePanel {
                 )
             }
 
-            QueueMessage::DragStarted(index) => {
-                if index < self.queue.len() {
-                    let grabbed_top = index as f32 * ROW_STRIDE;
-                    self.drag = Some(DragState {
-                        source_index: index,
-                        current_index: index,
-                        grab_offset: 0.0,
-                        cursor_y: grabbed_top,
-                    });
+            // Arma el pending drag a partir de la fila actualmente hovereada
+            // (mantenida al día por CursorMoved). Un click normal sobre
+            // play/borrar/links/right-click nunca supera el threshold en
+            // CursorMoved, así que nunca llega a promoverse a `self.drag`.
+            QueueMessage::GlobalPressed => {
+                if self.drag.is_none() && self.pending_drag.is_none() {
+                    if let Some(index) = self.hovered_row {
+                        if index < self.queue.len() {
+                            let row_top = index as f32 * ROW_STRIDE;
+                            self.pending_drag = Some(PendingDrag {
+                                source_index: index,
+                                grab_offset: self.last_cursor_y - row_top,
+                                start_y: self.last_cursor_y,
+                            });
+                        }
+                    }
                 }
                 (Task::none(), QueueOutMessage::Idle)
             }
 
             QueueMessage::CursorMoved(cursor_y) => {
+                self.last_cursor_y = cursor_y;
                 let now = Instant::now();
+
+                if let Some(pending) = &self.pending_drag {
+                    if (cursor_y - pending.start_y).abs() > DRAG_THRESHOLD_PX {
+                        self.drag = Some(DragState {
+                            source_index: pending.source_index,
+                            current_index: pending.source_index,
+                            grab_offset: pending.grab_offset,
+                            cursor_y,
+                        });
+                        self.pending_drag = None;
+                    }
+                }
 
                 let Some(drag) = self.drag.as_mut() else {
                     let hovered_index = if self.queue.is_empty() {
@@ -298,10 +334,6 @@ impl QueuePanel {
                     return (Task::none(), QueueOutMessage::Idle);
                 };
 
-                if drag.grab_offset == 0.0 && drag.cursor_y == drag.current_index as f32 * ROW_STRIDE {
-                    let row_top = drag.current_index as f32 * ROW_STRIDE;
-                    drag.grab_offset = cursor_y - row_top;
-                }
                 drag.cursor_y = cursor_y;
 
                 let hovered_index = ((cursor_y / ROW_STRIDE).floor() as isize)
@@ -317,6 +349,8 @@ impl QueuePanel {
             }
 
             QueueMessage::DragReleased => {
+                self.pending_drag = None;
+
                 let Some(drag) = self.drag.take() else {
                     return (Task::none(), QueueOutMessage::Idle);
                 };
@@ -390,12 +424,6 @@ impl QueuePanel {
                 .as_ref()
                 .is_some_and(|d| d.current_index == index);
 
-            let drag_params = DragRowParams {
-                is_dragging: row_is_dragged,
-                on_drag_start: QueueMessage::DragStarted(index),
-                on_drag_release: QueueMessage::DragReleased,
-            };
-
             let row = queue_track_row(
                 track.as_ref(),
                 thumbnail,
@@ -405,7 +433,7 @@ impl QueuePanel {
                 self.hovered_delete == Some(index),
                 QueueMessage::DeleteHovered(index),
                 QueueMessage::DeleteUnhovered,
-                drag_params,
+                row_is_dragged,
                 |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
                 |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
                 QueueMessage::RightClicked(index),
@@ -432,12 +460,6 @@ impl QueuePanel {
                 let thumbnail = thumbnails.get(&thumb_key(track.as_ref())).cloned();
                 let ghost_y = (drag.cursor_y - drag.grab_offset).max(0.0);
 
-                let drag_params = DragRowParams {
-                    is_dragging: true,
-                    on_drag_start: QueueMessage::DragStarted(drag.current_index),
-                    on_drag_release: QueueMessage::DragReleased,
-                };
-
                 let ghost_row = queue_track_row(
                     track.as_ref(),
                     thumbnail,
@@ -447,7 +469,7 @@ impl QueuePanel {
                     false,
                     QueueMessage::DeleteHovered(drag.current_index),
                     QueueMessage::DeleteUnhovered,
-                    drag_params,
+                    true,
                     |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
                     |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
                     QueueMessage::RightClicked(drag.current_index),
@@ -499,6 +521,7 @@ impl QueuePanel {
 
     pub fn queue_update(&mut self, queue: Vec<QueueSlot>) {
         self.drag = None;
+        self.pending_drag = None;
         self.queue = queue;
         if self.queue.is_empty() {
             self.show = false;

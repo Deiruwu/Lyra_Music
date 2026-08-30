@@ -108,7 +108,14 @@ impl PlaybackFeature {
         let tick_sub = iced::time::every(Duration::from_millis(40))
             .map(|_| PlaybackFeatureMessage::Tick);
 
-        let global_release = iced::event::listen_with(|event, _status, _id| match event {
+        // La cola arranca su drag desde cualquier punto de la fila (sin
+        // handle dedicado, ver QueueMessage::GlobalPressed): necesita el
+        // press global además del release, mismo patrón que
+        // sidebar_feature_v2 usa para PlaylistMessage::GlobalMousePress/Release.
+        let global_mouse = iced::event::listen_with(|event, _status, _id| match event {
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
+                Some(PlaybackFeatureMessage::Queue(QueueMessage::GlobalPressed))
+            }
             iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                 Some(PlaybackFeatureMessage::Queue(QueueMessage::DragReleased))
             }
@@ -133,7 +140,7 @@ impl PlaybackFeature {
             Subscription::run(queue_events),
             Subscription::run(backend_events).map(PlaybackFeatureMessage::Player),
             tick_sub,
-            global_release,
+            global_mouse,
             context_menu_sub,
         ];
 

@@ -1,5 +1,5 @@
-use iced::{Alignment, ContentFit, Element, Font, Length, Theme};
-use iced::widget::{button, column, container, image, mouse_area, row, space, stack, text};
+use iced::{Alignment, Element, Font, Length, Theme};
+use iced::widget::{button, column, container, mouse_area, row, stack};
 use iced::widget::image::{Handle};
 use crate::model::Track;
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
@@ -8,7 +8,6 @@ use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::styles::button as button_style;
 use crate::ui::theme::theme;
-use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::ui::assets::icons::{self, Icon};
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -102,20 +101,8 @@ where
     Message: Clone + 'a,
 {
     let base: Element<'a, Message> = match thumbnail {
-        Some(handle) => image(handle)
-            .width(Length::Fixed(55.0))
-            .height(Length::Fixed(55.0))
-            .content_fit(ContentFit::Cover)
-            .into(),
-        None => container(space().width(Length::Fixed(55.0)).height(Length::Fixed(55.0)))
-            .width(Length::Fixed(50.0))
-            .height(Length::Fixed(50.0))
-            .style(|_theme: &Theme| container::Style {
-                background: Some(theme().surface.control.into()),
-                border: iced::border::rounded(radii::R_5),
-                ..Default::default()
-            })
-            .into(),
+        Some(handle) => async_thumbnail(ThumbnailState::Loaded(handle), 55.0, 0.0),
+        None => async_thumbnail(ThumbnailState::Loading, 55.0, 0.0),
     };
 
     if hovered {
@@ -143,38 +130,6 @@ where
     }
 }
 
-fn drag_handle<'a, Message>(
-    on_drag_start: Message,
-    on_drag_release: Message,
-    is_dragging: bool,
-) -> Element<'a, Message>
-where
-    Message: Clone + 'a,
-{
-    let icon_color = if is_dragging {
-        theme().content.primary
-    } else {
-        theme().content.faint
-    };
-
-    let handle = container(
-        text("")
-            .font(JETBRAINS_MONO)
-            .size(typography::TEXT_16)
-            .color(icon_color)
-    )
-        .width(Length::Fixed(28.0))
-        .height(Length::Fixed(44.0))
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center);
-
-    mouse_area(handle)
-        .on_press(on_drag_start)
-        .on_release(on_drag_release)
-        .interaction(iced::mouse::Interaction::Grab)
-        .into()
-}
-
 pub fn queue_track_row<'a, Message, F, G>(
     track: &'a Track,
     thumbnail: Option<Handle>,
@@ -184,7 +139,7 @@ pub fn queue_track_row<'a, Message, F, G>(
     delete_hovered: bool,
     on_delete_hover: Message,
     on_delete_leave: Message,
-    drag: DragRowParams<Message>,
+    is_dragging: bool,
     on_artist_click: F,
     on_album_click: G,
     on_right_click: Message,
@@ -227,13 +182,11 @@ where
         .on_enter(on_delete_hover)
         .on_exit(on_delete_leave);
 
-    let handle = drag_handle(drag.on_drag_start, drag.on_drag_release, drag.is_dragging);
-
     let row_content = mouse_area(
-        row![handle, thumb, info]
-            .spacing(spacing::SP_15)
+        row![thumb, info]
+            .spacing(spacing::SP_10)
             .align_y(Alignment::Center)
-            .padding([spacing::SP_8, spacing::SP_12])
+            .padding([spacing::SP_8, spacing::SP_10])
             .width(Length::Fill)
     )
         .on_right_press(on_right_click);
@@ -245,7 +198,7 @@ where
     container(content)
         .width(Length::Fill)
         .style(move |_theme: &Theme| {
-            if drag.is_dragging {
+            if is_dragging {
                 container::Style {
                     background: Some(theme().overlay.hover.into()),
                     border: iced::border::rounded(radii::R_6)
@@ -258,10 +211,4 @@ where
             }
         })
         .into()
-}
-
-pub struct DragRowParams<Message> {
-    pub is_dragging: bool,
-    pub on_drag_start: Message,
-    pub on_drag_release: Message,
 }
