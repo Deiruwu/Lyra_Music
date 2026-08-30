@@ -9,6 +9,9 @@ pub enum ManagerError {
     #[error("Índice de cola inválido: intentó acceder al elemento {index}, pero la cola solo tiene longitud {len}")]
     InvalidQueueIndex { index: usize, len: usize },
 
+    #[error("Índice de historial inválido: intentó retroceder {index} canciones, pero el historial solo tiene longitud {len}")]
+    InvalidHistoryIndex { index: usize, len: usize },
+
     #[error("Índice fuera de rango")]
     IndexOutOfRange,
 

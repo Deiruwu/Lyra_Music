@@ -129,7 +129,54 @@ impl TrackManager {
                 let current_track = current.track.clone();
                 ps.queue_push(QueueSlot::new(Arc::new(current_track)), true);
             }
-            ps.advance_to(Arc::clone(&playable));
+            // NO advance_to: ya re-encolamos el saliente a mano arriba,
+            // así que no debe archivarse también en el historial (ver
+            // docstring de `set_current_track`) — de lo contrario queda
+            // duplicado en cola+historial y "anterior" repetido se traba
+            // alternando entre las mismas dos canciones.
+            ps.set_current_track(Arc::clone(&playable));
+        }
+
+        let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&playable)));
+        self.broadcast_queue_update();
+        self.play_track(playable);
+
+        Ok(())
+    }
+
+    /// Salta directo a la canción que está `n` posiciones atrás de la
+    /// actual en el historial (`n == 1` = la más reciente). Todo lo que
+    /// quedó entre medio —incluida la canción que sonaba antes de llamar
+    /// a esto— pasa al frente de la cola, en su orden original, para
+    /// poder seguir avanzando desde ahí como si nada.
+    pub fn skip_to_history_index(&self, n: usize) -> Result<(), ManagerError> {
+        let (target, removed) = {
+            let mut ps = self.playback.lock().unwrap();
+            if n == 0 || n > ps.history.len() {
+                return Err(ManagerError::InvalidHistoryIndex { index: n, len: ps.history.len() });
+            }
+            let removed: Vec<Track> = (0..n - 1).map(|_| ps.history.pop_back().unwrap()).collect();
+            let target = ps.history.pop_back().unwrap();
+            (target, removed)
+        };
+
+        let playable = probe_track(&target, "MANAGER:skip_to_history_index")?;
+
+        {
+            let mut ps = self.playback.lock().unwrap();
+            // Orden: el current saliente primero, después lo removido del
+            // historial (más reciente primero) — cada `push_front`
+            // empuja al anterior hacia atrás, así que el resultado final
+            // en la cola queda en orden cronológico correcto (el más
+            // viejo de los removidos al frente, el current al final de
+            // este grupo).
+            if let Some(current) = ps.current_track.take() {
+                ps.queue_push(QueueSlot::new(Arc::new(current.track.clone())), true);
+            }
+            for track in removed {
+                ps.queue_push(QueueSlot::new(Arc::new(track)), true);
+            }
+            ps.set_current_track(Arc::clone(&playable));
         }
 
         let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&playable)));

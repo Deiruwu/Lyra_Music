@@ -201,9 +201,12 @@ impl PlaybackFeature {
             }
 
             PlaybackFeatureMessage::QueueChanged => {
-                let tracks = self.manager.get_queue_snapshot();
-                self.queue.queue_update(tracks);
-                (Task::none(), PlaybackOutMessage::Idle)
+                let task = self.queue.sync_playback(
+                    self.manager.get_current_track().map(|p| p.track.clone()),
+                    self.manager.get_history_snapshot(),
+                    self.manager.get_queue_snapshot(),
+                );
+                (task.map(PlaybackFeatureMessage::Queue), PlaybackOutMessage::Idle)
             }
 
             PlaybackFeatureMessage::TrackDownloaded(track) => {
@@ -263,6 +266,11 @@ impl PlaybackFeature {
                             self.track_context_menu_items = items;
                         }
                     }
+                    QueueOutMessage::RequestJumpBack(steps) => {
+                        if let Err(e) = self.manager.skip_to_history_index(steps) {
+                            eprintln!("Error: {}", e);
+                        }
+                    }
                     QueueOutMessage::Idle                  => {}
                 }
 
@@ -281,11 +289,27 @@ impl PlaybackFeature {
                 let mut extra_tasks = vec![];
                 let mut feature_out = PlaybackOutMessage::Idle;
 
+                if let PlayerMessage::BackendEvent(TrackEvent::Stopped) = msg {
+                    let task = self.queue.sync_playback(
+                        None,
+                        self.manager.get_history_snapshot(),
+                        self.manager.get_queue_snapshot(),
+                    );
+                    extra_tasks.push(task.map(PlaybackFeatureMessage::Queue));
+                }
+
                 if let PlayerMessage::BackendEvent(TrackEvent::TrackChanged(ref playable)) = msg {
                     feature_out = PlaybackOutMessage::TrackNowPlaying(playable.track.clone());
                     self.current_track_id = Some(playable.track.id.clone());
                     self.current_small_thumbnail = None; // reset inmediato al cambiar de track
                     self.current_large_thumbnail = None; // reset inmediato al cambiar de track
+
+                    let queue_task = self.queue.sync_playback(
+                        Some(playable.track.clone()),
+                        self.manager.get_history_snapshot(),
+                        self.manager.get_queue_snapshot(),
+                    );
+                    extra_tasks.push(queue_task.map(PlaybackFeatureMessage::Queue));
 
                     // Miniatura "chica" del track actual (patrón teatro pero
                     // small): se descarga directo y se guarda como tupla

@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use std::time::Instant;
-use iced::{Element, Length, Padding, Task};
+use iced::{Element, Length, Padding, Task, Theme};
 use iced::widget::scrollable::Viewport;
-use iced::widget::operation::scroll_by;
-use iced::widget::scrollable::AbsoluteOffset;
-use iced::widget::{button, container, scrollable, space, stack, text, Id};
+use iced::widget::operation::{scroll_by, snap_to};
+use iced::widget::scrollable::{AbsoluteOffset, RelativeOffset};
+use iced::widget::{button, container, row, rule, scrollable, space, stack, text, Id};
 use uuid::Uuid;
 use crate::ui::assets::fonts::JETBRAINS_MONO;
 use crate::audio::manager::manager::QueueSlot;
@@ -14,10 +14,11 @@ use crate::ui::styles::button as button_style;
 use crate::ui::styles::container as container_style;
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::virtual_list::ScrollTracker;
-use crate::ui::widgets::track_row::queue_track_row;
+use crate::ui::widgets::track_row::{queue_static_row, queue_track_row, QueueRowVariant};
 use super::animator::QueueAnimator;
-use crate::ui::assets::typography;
+use crate::ui::assets::{radii, typography};
 use crate::ui::styles::scrollable as scrollable_style;
+use crate::ui::theme::theme;
 
 pub(crate) const ROW_HEIGHT: f32 = 66.0;
 pub(crate) const ROW_SPACING: f32 = 4.0;
@@ -41,6 +42,11 @@ const BUFFER_ROWS: usize = 15;
 const AUTOSCROLL_ZONE_PX: f32 = 50.0;
 /// Velocidad máxima de auto-scroll por tick, en píxeles.
 const AUTOSCROLL_MAX_SPEED_PX: f32 = 18.0;
+/// Cuántas canciones ya reproducidas mostrar arriba del track actual.
+/// El motor cachea hasta 100 (`PlaybackState::HISTORY_CAP`), pero acá
+/// solo mostramos las últimas para no volver la lista fusionada
+/// interminable hacia arriba.
+const HISTORY_VISIBLE_CAP: usize = 20;
 
 // ── FEAT FUTURO: canción en descarga visible en la cola ──────────────────
 // Hoy la cola presume que todo track ya está descargado. Para mostrar una
@@ -75,6 +81,9 @@ pub enum QueueMessage {
     UiMoveClicked(usize, usize),
     OpenTrackLink(TrackLink),
     RightClicked(usize),
+    /// Click en una fila de historial: saltar `n` canciones atrás
+    /// (1-based, ver `QueueOutMessage::RequestJumpBack`).
+    UiJumpToHistory(usize),
 
     // ── Drag & drop ──────────────────────────────────────────────────────
     GlobalPressed,
@@ -96,6 +105,7 @@ pub enum QueueOutMessage {
     RequestMove(usize, usize),
     RequestOpenTrackLink(TrackLink),
     RequestContextMenu(Uuid),
+    RequestJumpBack(usize),
 }
 
 struct DragState {
@@ -121,6 +131,11 @@ pub struct QueuePanel {
     pub queue_width: f32,
     pub target_width: f32,
     queue: Vec<QueueSlot>,
+    /// Últimas `HISTORY_VISIBLE_CAP` canciones ya reproducidas (oldest→newest),
+    /// recortadas del snapshot de `TrackManager::get_history_snapshot()`.
+    history: Vec<Track>,
+    /// Track sonando ahora mismo (`TrackManager::get_current_track()`), si hay.
+    current_track: Option<Track>,
     hovered_row: Option<usize>,
     hovered_delete: Option<usize>,
     drag: Option<DragState>,
@@ -137,6 +152,8 @@ impl Default for QueuePanel {
             queue_width: QUEUE_COLLAPSED_WIDTH,
             target_width: QUEUE_COLLAPSED_WIDTH,
             queue: Vec::new(),
+            history: Vec::new(),
+            current_track: None,
             hovered_row: None,
             hovered_delete: None,
             drag: None,
@@ -162,19 +179,46 @@ impl QueuePanel {
         self.drag.is_some()
     }
 
-    /// Universo `(key, url)` de la ventana visible de la cola (+buffer),
-    /// listo para `AsyncThumbnail::sync`. Espejo de
+    /// Cuántas filas hay antes del inicio de la cola en la lista
+    /// fusionada: todo el historial visible + (1 si hay track actual).
+    fn queue_start_offset(&self) -> usize {
+        self.history.len() + self.current_track.is_some() as usize
+    }
+
+    /// Total de filas de la lista fusionada (historial + actual + cola),
+    /// la unidad sobre la que virtualiza/scrollea `view()`.
+    fn merged_total(&self) -> usize {
+        self.queue_start_offset() + self.queue.len()
+    }
+
+    /// Track en la fila `merged_index` de la lista fusionada, sea de
+    /// historial, el actual, o de la cola. `None` si el índice cae fuera
+    /// de rango.
+    fn track_at(&self, merged_index: usize) -> Option<&Track> {
+        if merged_index < self.history.len() {
+            return self.history.get(merged_index);
+        }
+        if merged_index == self.history.len() {
+            return self.current_track.as_ref();
+        }
+        self.queue
+            .get(merged_index - self.queue_start_offset())
+            .map(|s| s.track.as_ref())
+    }
+
+    /// Universo `(key, url)` de la ventana visible de la lista fusionada
+    /// (+buffer), listo para `AsyncThumbnail::sync`. Espejo de
     /// `track_list_builder::visible_thumbnail_targets` (Explorer/Playlists),
     /// pero sobre la cola con su propio `ROW_STRIDE`.
     pub fn visible_thumbnail_targets(&self) -> Vec<(String, String)> {
-        let window = self.scroll.window(ROW_STRIDE, self.queue.len(), BUFFER_ROWS);
+        let window = self.scroll.window(ROW_STRIDE, self.merged_total(), BUFFER_ROWS);
         if window.is_empty() {
             return Vec::new();
         }
 
-        self.queue[window.start..window.end]
-            .iter()
-            .filter_map(|s| s.track.thumbnail_small.clone().map(|url| (thumb_key(&s.track), url)))
+        (window.start..window.end)
+            .filter_map(|i| self.track_at(i))
+            .filter_map(|t| t.thumbnail_small.clone().map(|url| (thumb_key(t), url)))
             .collect()
     }
 
@@ -211,9 +255,19 @@ impl QueuePanel {
     pub fn update(&mut self, msg: QueueMessage) -> (Task<QueueMessage>, QueueOutMessage) {
         match msg {
             QueueMessage::Toggle => {
+                let was_shown = self.show;
                 self.show = !self.show;
                 self.target_width = if self.show { QUEUE_EXPANDED_WIDTH } else { QUEUE_COLLAPSED_WIDTH };
-                (Task::none(), QueueOutMessage::Idle)
+
+                // Al abrir el panel (no en cada toggle), saltar al track
+                // actual — de ahí en más el seguimiento es condicional
+                // (ver `sync_playback`/`is_row_visible`).
+                let task = if self.show && !was_shown {
+                    self.scroll_to_current()
+                } else {
+                    Task::none()
+                };
+                (task, QueueOutMessage::Idle)
             }
             QueueMessage::Hovered(index) => {
                 self.hovered_row = Some(index);
@@ -235,6 +289,7 @@ impl QueuePanel {
             QueueMessage::UiRemoveClicked(index) => (Task::none(), QueueOutMessage::RequestRemove(index)),
             QueueMessage::UiMoveClicked(from, to) => (Task::none(), QueueOutMessage::RequestMove(from, to)),
             QueueMessage::OpenTrackLink(link) => (Task::none(), QueueOutMessage::RequestOpenTrackLink(link)),
+            QueueMessage::UiJumpToHistory(steps_back) => (Task::none(), QueueOutMessage::RequestJumpBack(steps_back)),
             QueueMessage::RightClicked(index) => {
                 match self.queue.get(index) {
                     Some(slot) => (Task::none(), QueueOutMessage::RequestContextMenu(slot.id)),
@@ -254,6 +309,8 @@ impl QueuePanel {
             // posición local al viewport, de ahí restar `offset_y`.
             QueueMessage::AutoScrollTick => {
                 let now = Instant::now();
+                let merged_total = self.merged_total();
+                let queue_start = self.queue_start_offset() as f32 * ROW_STRIDE;
 
                 let Some(drag) = self.drag.as_mut() else {
                     return (Task::none(), QueueOutMessage::Idle);
@@ -268,13 +325,13 @@ impl QueuePanel {
                     return (Task::none(), QueueOutMessage::Idle);
                 };
 
-                let max_offset = (self.queue.len() as f32 * ROW_STRIDE - self.scroll.viewport_height).max(0.0);
+                let max_offset = (merged_total as f32 * ROW_STRIDE - self.scroll.viewport_height).max(0.0);
                 self.scroll.offset_y = (self.scroll.offset_y + delta_y).clamp(0.0, max_offset);
 
 
                 drag.cursor_y += delta_y;
 
-                let hovered_index = ((drag.cursor_y / ROW_STRIDE).floor() as isize)
+                let hovered_index = (((drag.cursor_y - queue_start) / ROW_STRIDE).floor() as isize)
                     .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize;
 
                 self.move_dragged_item(hovered_index, now);
@@ -321,12 +378,18 @@ impl QueuePanel {
                     }
                 }
 
+                let queue_start = self.queue_start_offset() as f32 * ROW_STRIDE;
+
                 let Some(drag) = self.drag.as_mut() else {
-                    let hovered_index = if self.queue.is_empty() {
+                    // Si el cursor cae sobre historial/actual (antes del
+                    // inicio de la cola), no hay fila de cola hovereada —
+                    // eso ya alcanza para que GlobalPressed no pueda armar
+                    // un drag desde ahí.
+                    let hovered_index = if self.queue.is_empty() || cursor_y < queue_start {
                         None
                     } else {
                         Some(
-                            ((cursor_y / ROW_STRIDE).floor() as isize)
+                            (((cursor_y - queue_start) / ROW_STRIDE).floor() as isize)
                                 .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize,
                         )
                     };
@@ -336,7 +399,7 @@ impl QueuePanel {
 
                 drag.cursor_y = cursor_y;
 
-                let hovered_index = ((cursor_y / ROW_STRIDE).floor() as isize)
+                let hovered_index = (((cursor_y - queue_start) / ROW_STRIDE).floor() as isize)
                     .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize;
 
                 self.move_dragged_item(hovered_index, now);
@@ -388,7 +451,8 @@ impl QueuePanel {
             return space().width(20).into();
         }
 
-        let total_items = self.queue.len();
+        let queue_start = self.queue_start_offset();
+        let total_items = self.merged_total();
         let now = Instant::now();
         let is_dragging = self.drag.is_some();
 
@@ -396,7 +460,9 @@ impl QueuePanel {
         //    ya tiene la altura total fija (list_height), así que el
         //    scrollbar funciona sin espaciadores: la ventana solo FILTRA
         //    qué filas construimos, y el `y` absoluto del animator las
-        //    ancla en su posición real dentro del contenido.
+        //    ancla en su posición real dentro del contenido. Los índices
+        //    acá son de la lista FUSIONADA: [0, history.len()) = historial,
+        //    history.len() = actual (si hay), el resto = cola.
         let window = self.scroll.window(ROW_STRIDE, total_items, BUFFER_ROWS);
 
         let dynamic_padding = if self.queue_width > 32.0 { 16.0 } else { self.queue_width / 2.0 };
@@ -414,7 +480,68 @@ impl QueuePanel {
 
         // 2. Renderizamos SOLO las filas de la ventana.
         for index in window.start..window.end {
-            let slot = &self.queue[index];
+            if index < self.history.len() {
+                let track = &self.history[index];
+                let thumbnail = thumbnails.get(&thumb_key(track)).cloned();
+                let steps_back = self.history.len() - index;
+                let row = queue_static_row(
+                    index + 1,
+                    track,
+                    thumbnail,
+                    QueueRowVariant::History,
+                    |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
+                    |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
+                    Some(QueueMessage::UiJumpToHistory(steps_back)),
+                );
+                let y = index as f32 * ROW_STRIDE;
+                layers.push(container(row).width(Length::Fill).padding(Padding::new(0.0).top(y)).into());
+                continue;
+            }
+
+            if index == self.history.len() && self.current_track.is_some() {
+                let track = self.current_track.as_ref().unwrap();
+                let thumbnail = thumbnails.get(&thumb_key(track)).cloned();
+                let row = queue_static_row(
+                    index + 1,
+                    track,
+                    thumbnail,
+                    QueueRowVariant::Current,
+                    |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
+                    |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
+                    None,
+                );
+                let y = index as f32 * ROW_STRIDE;
+                layers.push(container(row).width(Length::Fill).padding(Padding::new(0.0).top(y)).into());
+
+                // Separador fino arriba del actual (solo si hay historial
+                // arriba de él) — la única distinción extra que lleva,
+                // sin fondo ni borde llamativos. Centrado y corto (~40%
+                // del ancho), no de punta a punta.
+                if !self.history.is_empty() {
+                    let divider = rule::horizontal(1.0).style(|_theme: &Theme| rule::Style {
+                        color: theme().border.subtle,
+                        radius: radii::R_NONE.into(),
+                        fill_mode: rule::FillMode::Full,
+                        snap: false,
+                    });
+                    let inset_divider = row![
+                        space().width(Length::FillPortion(3)),
+                        container(divider).width(Length::FillPortion(4)),
+                        space().width(Length::FillPortion(3)),
+                    ];
+                    let divider_y = y - ROW_SPACING / 2.0 - 0.5;
+                    layers.push(
+                        container(inset_divider)
+                            .width(Length::Fill)
+                            .padding(Padding::new(0.0).top(divider_y))
+                            .into(),
+                    );
+                }
+                continue;
+            }
+
+            let q_index = index - queue_start;
+            let slot = &self.queue[q_index];
             let track = &slot.track;
             let slot_id = Self::slot_id_of(slot);
             let thumbnail = thumbnails.get(&thumb_key(track.as_ref())).cloned();
@@ -422,28 +549,29 @@ impl QueuePanel {
             let row_is_dragged = self
                 .drag
                 .as_ref()
-                .is_some_and(|d| d.current_index == index);
+                .is_some_and(|d| d.current_index == q_index);
 
             let row = queue_track_row(
+                index + 1,
                 track.as_ref(),
                 thumbnail,
-                QueueMessage::UiPlayClicked(index),
-                QueueMessage::UiRemoveClicked(index),
-                !is_dragging && self.hovered_row == Some(index),
-                self.hovered_delete == Some(index),
-                QueueMessage::DeleteHovered(index),
+                QueueMessage::UiPlayClicked(q_index),
+                QueueMessage::UiRemoveClicked(q_index),
+                !is_dragging && self.hovered_row == Some(q_index),
+                self.hovered_delete == Some(q_index),
+                QueueMessage::DeleteHovered(q_index),
                 QueueMessage::DeleteUnhovered,
                 row_is_dragged,
                 |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
                 |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
-                QueueMessage::RightClicked(index),
+                QueueMessage::RightClicked(q_index),
             );
 
             if row_is_dragged {
                 continue;
             }
 
-            let y = self.animator.visual_y_of(&slot_id, now);
+            let y = queue_start as f32 * ROW_STRIDE + self.animator.visual_y_of(&slot_id, now);
 
             layers.push(
                 container(row)
@@ -461,6 +589,7 @@ impl QueuePanel {
                 let ghost_y = (drag.cursor_y - drag.grab_offset).max(0.0);
 
                 let ghost_row = queue_track_row(
+                    queue_start + drag.current_index + 1,
                     track.as_ref(),
                     thumbnail,
                     QueueMessage::UiPlayClicked(drag.current_index),
@@ -486,7 +615,10 @@ impl QueuePanel {
 
         // 4. Altura total "teórica" del contenido: mantiene el scrollbar
         //    fiel y deja el `y` absoluto del animator anclando cada fila.
-        let list_height = self.animator.calculate_dynamic_height(total_items, now);
+        //    El historial+actual tienen altura fija (no animan reorder);
+        //    solo la porción de cola usa la altura dinámica del animator.
+        let list_height = queue_start as f32 * ROW_STRIDE
+            + self.animator.calculate_dynamic_height(self.queue.len(), now);
         let content_stack = stack(layers).height(Length::Fixed(list_height));
 
         let interactive_area = iced::widget::mouse_area(content_stack)
@@ -508,7 +640,7 @@ impl QueuePanel {
     }
 
     pub fn view_toggle_button(&self) -> Element<'_, QueueMessage> {
-        let can_show_queue = !self.queue.is_empty();
+        let can_show_queue = self.merged_total() > 0;
         let btn = button(text("󰲸").font(JETBRAINS_MONO).size(typography::TEXT_18))
             .style(button_style::minimal);
 
@@ -519,16 +651,36 @@ impl QueuePanel {
         }.into()
     }
 
-    pub fn queue_update(&mut self, queue: Vec<QueueSlot>) {
+    /// Sincroniza historial, track actual y cola en un solo paso — los
+    /// tres cambian juntos en la práctica (ver `PlaybackState::advance_to`),
+    /// así que se llama tanto en `QueueChanged` como en `TrackChanged`/
+    /// `Stopped` (ver `PlaybackFeature`). Devuelve el `Task` de auto-scroll
+    /// hacia el track actual cuando éste cambió.
+    pub fn sync_playback(
+        &mut self,
+        current_track: Option<Track>,
+        history: Vec<Track>,
+        queue: Vec<QueueSlot>,
+    ) -> Task<QueueMessage> {
         self.drag = None;
         self.pending_drag = None;
+
+        let track_changed = self.current_track.as_ref().map(|t| &t.id) != current_track.as_ref().map(|t| &t.id);
+        // Posición (antes de sobreescribir) de la fila que ERA la actual —
+        // para decidir si seguir el avance o no (ver más abajo).
+        let was_visible_before = self.show && self.is_row_visible(self.history.len() as f32 * ROW_STRIDE);
+
+        let start = history.len().saturating_sub(HISTORY_VISIBLE_CAP);
+        self.history = history[start..].to_vec();
+        self.current_track = current_track;
         self.queue = queue;
-        if self.queue.is_empty() {
+
+        if self.history.is_empty() && self.current_track.is_none() && self.queue.is_empty() {
             self.show = false;
             self.target_width = QUEUE_COLLAPSED_WIDTH;
             self.animator.clear();
             self.scroll.reset();
-            return;
+            return Task::none();
         }
 
         let now = Instant::now();
@@ -547,8 +699,50 @@ impl QueuePanel {
         }
 
         // Reclampa el offset de scroll por si la lista se encogió.
-        let max_offset = (self.queue.len() as f32 * ROW_STRIDE - self.scroll.viewport_height).max(0.0);
+        let max_offset = (self.merged_total() as f32 * ROW_STRIDE - self.scroll.viewport_height).max(0.0);
         self.scroll.offset_y = self.scroll.offset_y.min(max_offset);
+
+        // Seguir el avance solo si el track que ERA actual estaba
+        // efectivamente visible (el usuario "iba siguiendo" la cola) — si
+        // se había scrolleado a otra parte (historial viejo, cola lejana),
+        // no lo interrumpimos. La primera vez que se abre el panel siempre
+        // salta al actual (ver `QueueMessage::Toggle`), sin pasar por acá.
+        if track_changed && was_visible_before {
+            self.scroll_to_current()
+        } else {
+            Task::none()
+        }
+    }
+
+    /// `true` si la fila que empieza en `row_px` (alto `ROW_STRIDE`) cae,
+    /// aunque sea parcialmente, dentro del viewport visible actual.
+    fn is_row_visible(&self, row_px: f32) -> bool {
+        if self.scroll.viewport_height <= 0.0 {
+            return false;
+        }
+        let viewport_bottom = self.scroll.offset_y + self.scroll.viewport_height;
+        row_px + ROW_STRIDE > self.scroll.offset_y && row_px < viewport_bottom
+    }
+
+    /// Auto-scrollea para dejar el track actual anclado arriba del panel
+    /// visible (con la cola mostrándose debajo), mismo mecanismo que usa
+    /// `lyrics_panel.rs` para centrar la línea actual.
+    fn scroll_to_current(&mut self) -> Task<QueueMessage> {
+        if self.current_track.is_none() {
+            return Task::none();
+        }
+
+        let target_px = self.history.len() as f32 * ROW_STRIDE;
+        let content_height = self.merged_total() as f32 * ROW_STRIDE;
+        let range = (content_height - self.scroll.viewport_height).max(1.0);
+
+        // Actualización optimista (mismo patrón que AutoScrollTick): no
+        // esperar el roundtrip de QueueMessage::Scrolled para que la
+        // ventana virtualizada de este mismo frame ya sea la correcta.
+        self.scroll.offset_y = target_px.min(range);
+
+        let y = (target_px / range).clamp(0.0, 1.0);
+        snap_to(Id::new(QUEUE_SCROLL_ID), RelativeOffset { x: 0.0, y })
     }
 }
 

@@ -123,14 +123,25 @@ impl PlaybackState {
     }
 
     /// Empuja la pista actual (si hay) al historial y la reemplaza por
-    /// `playable`. Es la única operación que debe usarse para "cambiar de
-    /// pista activa" — en el código original esto eran 3 líneas (push a
-    /// historial, set current, set auto_advance) repetidas idénticamente
-    /// en cada método; aquí es un solo concepto.
+    /// `playable`. Usar esto para "cambiar de pista activa" siempre que
+    /// la saliente deba archivarse (flujo normal hacia adelante).
+    ///
+    /// Si el caller YA decidió a dónde va la pista saliente (p.ej.
+    /// `skip_prev`/`skip_to_history_index`, que la re-encolan a mano al
+    /// frente de la cola), usar `set_current_track` en su lugar — de lo
+    /// contrario la pista queda archivada DOS veces (acá y en la cola),
+    /// lo que producía un ping-pong infinito entre las mismas dos
+    /// canciones al presionar "anterior" repetidamente.
     pub(super) fn advance_to(&mut self, playable: Arc<PlayableTrack>) {
         if let Some(current) = self.current_track.take() {
             push_to_history_inner(&mut self.history, current.track.clone());
         }
+        self.set_current_track(playable);
+    }
+
+    /// Fija la pista actual sin archivar la saliente en el historial —
+    /// ver `advance_to` para cuándo usar cada una.
+    pub(super) fn set_current_track(&mut self, playable: Arc<PlayableTrack>) {
         self.auto_advance = true;
         self.current_track = Some(playable);
     }

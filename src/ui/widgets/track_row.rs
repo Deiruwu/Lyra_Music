@@ -1,5 +1,5 @@
 use iced::{Alignment, Element, Font, Length, Theme};
-use iced::widget::{button, column, container, mouse_area, row, stack};
+use iced::widget::{button, column, container, mouse_area, row, stack, text};
 use iced::widget::image::{Handle};
 use crate::model::Track;
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
@@ -130,7 +130,21 @@ where
     }
 }
 
+/// Número de posición de la fila dentro de la lista fusionada
+/// (historial+actual+cola) — numeración total y continua, así que "la
+/// canción 5 atrás" es simplemente `posición_actual - 5`.
+fn position_cell<'a, Message: 'a>(position: usize) -> Element<'a, Message> {
+    container(
+        text(position.to_string()).font(Font::default()).size(typography::TEXT_13).color(theme().content.muted)
+    )
+        .width(Length::Fixed(20.0))
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .into()
+}
+
 pub fn queue_track_row<'a, Message, F, G>(
+    position: usize,
     track: &'a Track,
     thumbnail: Option<Handle>,
     on_play: Message,
@@ -183,7 +197,7 @@ where
         .on_exit(on_delete_leave);
 
     let row_content = mouse_area(
-        row![thumb, info]
+        row![position_cell(position), thumb, info]
             .spacing(spacing::SP_10)
             .align_y(Alignment::Center)
             .padding([spacing::SP_8, spacing::SP_10])
@@ -211,4 +225,66 @@ where
             }
         })
         .into()
+}
+
+/// Filas de solo lectura de la cola fusionada: historial (atenuado) y
+/// track actual (acentado). A diferencia de `queue_track_row`, no llevan
+/// borrar/drag/right-click — ver "Notas / fuera de alcance" en el plan
+/// de la fusión historial+cola.
+#[derive(Clone, Copy, PartialEq)]
+pub enum QueueRowVariant {
+    History,
+    Current,
+}
+
+pub fn queue_static_row<'a, Message, F, G>(
+    position: usize,
+    track: &'a Track,
+    thumbnail: Option<Handle>,
+    variant: QueueRowVariant,
+    on_artist_click: F,
+    on_album_click: G,
+    on_play: Option<Message>,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+    F: Fn(String) -> Message + 'a,
+    G: Fn(String) -> Message + 'a,
+{
+    let thumb = match thumbnail {
+        Some(handle) => async_thumbnail(ThumbnailState::Loaded(handle), 55.0, 0.0),
+        None => async_thumbnail(ThumbnailState::Loading, 55.0, 0.0),
+    };
+
+    let (title_color, artist_color) = match variant {
+        QueueRowVariant::History => (theme().content.faint, theme().content.faint),
+        QueueRowVariant::Current => (theme().accent.primary, theme().content.muted),
+    };
+
+    let info = column![
+        single_line_text(&track.title, Font::default(), typography::TEXT_14, title_color, Length::Fill),
+        artist_links(&track.artists, Font::default(), typography::TEXT_11, artist_color, Length::Fill, on_artist_click),
+        album_link(track.album.as_ref(), Font::default(), typography::TEXT_11, artist_color, Length::Fill, on_album_click),
+    ]
+        .align_x(Alignment::Start);
+
+    let content = row![position_cell(position), thumb, info]
+        .spacing(spacing::SP_10)
+        .align_y(Alignment::Center)
+        .padding([spacing::SP_8, spacing::SP_10])
+        .width(Length::Fill);
+
+    match on_play {
+        // Historial: toda la fila es clickeable para saltar a esa
+        // canción — los links anidados de artista/álbum siguen
+        // capturando su propio click primero (mismo patrón que
+        // `track_row()` más arriba y `render_row` en track_list_builder.rs).
+        Some(msg) => button(content)
+            .width(Length::Fill)
+            .padding(spacing::SP_0)
+            .on_press(msg)
+            .style(button_style::transparent)
+            .into(),
+        None => container(content).width(Length::Fill).into(),
+    }
 }
