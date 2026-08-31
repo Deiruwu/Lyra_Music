@@ -10,3 +10,4 @@ pub mod cover_manager;
 pub mod cover_picker;
 pub mod playlist_metadata;
 pub mod row_animator;
+pub mod color;

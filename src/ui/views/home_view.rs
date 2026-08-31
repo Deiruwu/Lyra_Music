@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{Duration, Utc};
 use futures::future::join_all;
+use iced::animation::{Animation, Easing};
 use iced::border::rounded;
 use iced::widget::{button, column, container, image, mouse_area, responsive, row, rule, scrollable, space, text};
-use iced::{Alignment, Border, ContentFit, Element, Length, Padding, Task, Theme};
+use iced::{Alignment, Border, ContentFit, Element, Length, Padding, Subscription, Task, Theme};
 
 use crate::ui::styles::button as button_style;
 use crate::db::play_history_manager::PlayHistoryManager;
@@ -14,6 +16,7 @@ use crate::model::Track;
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::{self, Icon};
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
+use crate::ui::utils::color::lerp_color;
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::artist_links::{album_link, artist_links};
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
@@ -93,6 +96,7 @@ pub enum HomeViewMessage {
     TopAlbumClicked(String),
     TopAlbumsPrevPage,
     TopAlbumsNextPage,
+    AnimationFrame(Instant),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +114,8 @@ pub struct HomeView {
     top_artists_page: usize,
     top_albums_page: usize,
     thumbnails: AsyncThumbnail,
+    is_loading: bool,
+    loading_pulse: Animation<bool>,
 }
 
 impl HomeView {
@@ -117,6 +123,13 @@ impl HomeView {
         client: Arc<MicroserviceClient>,
         play_history: Arc<PlayHistoryManager>,
     ) -> (Self, Task<HomeViewMessage>) {
+        let mut loading_pulse = Animation::new(false)
+            .easing(Easing::EaseInOut)
+            .duration(StdDuration::from_millis(900))
+            .repeat_forever()
+            .auto_reverse();
+        loading_pulse.go_mut(true, Instant::now());
+
         let view = Self {
             top_tracks: Vec::new(),
             top_artists: Vec::new(),
@@ -124,6 +137,8 @@ impl HomeView {
             top_artists_page: 0,
             top_albums_page: 0,
             thumbnails: AsyncThumbnail::new(),
+            is_loading: true,
+            loading_pulse,
         };
 
         let load_task = Task::perform(
@@ -141,6 +156,18 @@ impl HomeView {
         &self.top_tracks
     }
 
+    pub fn is_loading(&self) -> bool {
+        self.is_loading
+    }
+
+    pub fn subscription(&self) -> Subscription<HomeViewMessage> {
+        if self.is_loading {
+            iced::window::frames().map(HomeViewMessage::AnimationFrame)
+        } else {
+            Subscription::none()
+        }
+    }
+
     pub fn update(&mut self, message: HomeViewMessage) -> (Task<HomeViewMessage>, HomeViewOutMessage) {
         let mut out = HomeViewOutMessage::Idle;
 
@@ -149,8 +176,11 @@ impl HomeView {
                 self.top_tracks = tracks;
                 self.top_artists = artists;
                 self.top_albums = albums;
+                self.is_loading = false;
             }
-            HomeViewMessage::HomeDataLoaded(Err(_)) => {}
+            HomeViewMessage::HomeDataLoaded(Err(_)) => {
+                self.is_loading = false;
+            }
             HomeViewMessage::ThumbnailLoaded(key, bytes) => self.thumbnails.on_loaded(key, bytes),
             HomeViewMessage::TopTrackClicked(id) => out = HomeViewOutMessage::PlayTrack(id),
             HomeViewMessage::TopTrackRightClicked(_) => {}
@@ -162,6 +192,7 @@ impl HomeView {
             HomeViewMessage::TopAlbumClicked(id) => out = HomeViewOutMessage::OpenAlbum(id),
             HomeViewMessage::TopAlbumsPrevPage => self.top_albums_page = self.top_albums_page.saturating_sub(1),
             HomeViewMessage::TopAlbumsNextPage => self.top_albums_page += 1,
+            HomeViewMessage::AnimationFrame(_) => {}
         }
 
         let sync_task = self.thumbnails.sync(&self.thumbnail_targets(), HomeViewMessage::ThumbnailLoaded);
@@ -169,6 +200,10 @@ impl HomeView {
     }
 
     pub fn view(&self) -> Element<'_, HomeViewMessage> {
+        if self.is_loading {
+            return self.view_skeleton();
+        }
+
         if self.top_tracks.is_empty() && self.top_artists.is_empty() && self.top_albums.is_empty() {
             return status_message("Todavía no hay nada por acá — arrancá escuchando algo.");
         }
@@ -203,6 +238,36 @@ impl HomeView {
 
         scrollable(
             column(children)
+                .spacing(spacing::SP_28)
+                .padding(Padding { top: spacing::SP_24, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
+        )
+        .width(Length::Fill)
+        .style(scrollable_style::discreet)
+        .into()
+    }
+
+    /// Placeholder tipo YouTube mientras `load_home_data` está en vuelo: mismas 3
+    /// secciones y misma forma de card que el contenido real, pero como siluetas
+    /// pulsantes en vez de datos. Reemplaza al `status_message` de "vacío", que
+    /// ahora solo se ve una vez terminó la carga y realmente no hay nada.
+    fn view_skeleton(&self) -> Element<'_, HomeViewMessage> {
+        let t = self.loading_pulse.interpolate(0.0f32, 1.0f32, Instant::now());
+
+        let banner_rows: Vec<Element<'_, HomeViewMessage>> = (0..2)
+            .map(|_| {
+                row((0..RECENT_CARDS_PER_ROW).map(|_| view_skeleton_track_card(t)).collect::<Vec<_>>())
+                    .spacing(BANNER_CARD_SPACING)
+                    .into()
+            })
+            .collect();
+        let banner_section = column![section_title("Escuchar ahora"), column(banner_rows).spacing(BANNER_CARD_SPACING)]
+            .spacing(spacing::SP_12);
+
+        let artist_section = view_skeleton_carousel("Top artistas", view_skeleton_artist_card, t);
+        let album_section = view_skeleton_carousel("Top álbumes", view_skeleton_album_card, t);
+
+        scrollable(
+            column![banner_section, artist_section, album_section]
                 .spacing(spacing::SP_28)
                 .padding(Padding { top: spacing::SP_24, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
         )
@@ -540,6 +605,121 @@ fn carousel_arrow(icon: Icon, on_press: Option<HomeViewMessage>) -> Element<'sta
 fn cards_per_page(width: f32) -> usize {
     let unit = CARD_UNIT_WIDTH + CARD_SPACING;
     (((width + CARD_SPACING) / unit).floor() as usize).max(1)
+}
+
+/// Caja gris pulsante: generaliza el placeholder "cargando" ya usado para los
+/// thumbnails de artista/álbum (fondo `surface.sunken`), pero interpolando hacia
+/// `surface.control` según `t` en vez de quedar fijo.
+fn skeleton_box<'a, Message: 'a>(width: Length, height: Length, radius: f32, t: f32) -> Element<'a, Message> {
+    container(space())
+        .width(width)
+        .height(height)
+        .style(move |_theme: &Theme| container::Style {
+            background: Some(lerp_color(theme().surface.sunken, theme().surface.control, t).into()),
+            border: rounded(radius),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Silueta de `view_top_track_card`: mismo contenedor (padding, radio, borde,
+/// fondo "resting"), thumbnail circular + 3 barras en vez de título/artista/álbum.
+fn view_skeleton_track_card<'a>(t: f32) -> Element<'a, HomeViewMessage> {
+    let thumb = skeleton_box(
+        Length::Fixed(BANNER_THUMBNAIL_SIZE),
+        Length::Fixed(BANNER_THUMBNAIL_SIZE),
+        BANNER_THUMBNAIL_SIZE / 2.0,
+        t,
+    );
+
+    let line = |portion: u16, height: f32| -> Element<'a, HomeViewMessage> {
+        row![
+            skeleton_box(Length::FillPortion(portion), Length::Fixed(height), height / 2.0, t),
+            space().width(Length::FillPortion(10 - portion)),
+        ]
+        .into()
+    };
+
+    let info = column![line(7, 14.0), line(5, 12.0), line(4, 12.0)].spacing(spacing::SP_3).width(Length::Fill);
+    let content = row![thumb, info].spacing(spacing::SP_12).align_y(Alignment::Center);
+
+    container(content)
+        .width(Length::FillPortion(1))
+        .padding(spacing::SP_10)
+        .style(move |_theme: &Theme| container::Style {
+            background: Some(theme().overlay.resting.into()),
+            border: Border { radius: BANNER_CARD_RADIUS.into(), color: theme().overlay.control_idle, width: 1.0 },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Silueta de `view_top_artist_card`: círculo + barra de nombre centrada.
+fn view_skeleton_artist_card<'a>(t: f32) -> Element<'a, HomeViewMessage> {
+    let thumbnail = skeleton_box(
+        Length::Fixed(CARD_THUMBNAIL_SIZE),
+        Length::Fixed(CARD_THUMBNAIL_SIZE),
+        CARD_THUMBNAIL_SIZE / 2.0,
+        t,
+    );
+
+    let name = container(skeleton_box(Length::Fixed(CARD_THUMBNAIL_SIZE * 0.55), Length::Fixed(13.0), 6.5, t))
+        .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
+        .height(Length::Fixed(CARD_NAME_LINE_HEIGHT))
+        .align_x(Alignment::Center);
+
+    let content = column![thumbnail, name].spacing(spacing::SP_8).align_x(Alignment::Center);
+
+    container(content)
+        .padding(Padding {
+            top: CARD_HOVER_PADDING,
+            right: CARD_HOVER_PADDING,
+            bottom: CARD_HOVER_PADDING_BOTTOM,
+            left: CARD_HOVER_PADDING,
+        })
+        .into()
+}
+
+/// Silueta de `view_top_album_card`: cuadrado + barra de nombre + barra de subtítulo.
+fn view_skeleton_album_card<'a>(t: f32) -> Element<'a, HomeViewMessage> {
+    let thumbnail = skeleton_box(Length::Fixed(CARD_THUMBNAIL_SIZE), Length::Fixed(CARD_THUMBNAIL_SIZE), ALBUM_CARD_RADIUS, t);
+
+    let name = skeleton_box(Length::Fixed(CARD_THUMBNAIL_SIZE * 0.75), Length::Fixed(13.0), 6.5, t);
+    let subtitle = skeleton_box(Length::Fixed(CARD_THUMBNAIL_SIZE * 0.5), Length::Fixed(12.0), 6.0, t);
+
+    let text_block = column![
+        container(name).height(Length::Fixed(CARD_NAME_LINE_HEIGHT)),
+        container(subtitle).height(Length::Fixed(CARD_SUBTITLE_LINE_HEIGHT)),
+    ]
+    .spacing(spacing::SP_4)
+    .width(Length::Fixed(CARD_THUMBNAIL_SIZE));
+
+    let content = column![thumbnail, text_block].spacing(spacing::SP_8);
+
+    container(content)
+        .padding(Padding {
+            top: CARD_HOVER_PADDING,
+            right: CARD_HOVER_PADDING,
+            bottom: CARD_HOVER_PADDING_BOTTOM,
+            left: CARD_HOVER_PADDING,
+        })
+        .into()
+}
+
+/// Header (solo título, sin flechas/divisor — todavía no se sabe la paginación) +
+/// fila de cards silueta, tantas como entren en el ancho disponible
+/// (misma cuenta que la primera página real, vía `cards_per_page`).
+fn view_skeleton_carousel<'a>(
+    title: &'static str,
+    card_fn: impl Fn(f32) -> Element<'a, HomeViewMessage> + 'a,
+    t: f32,
+) -> Element<'a, HomeViewMessage> {
+    responsive(move |size| {
+        let per_page = cards_per_page(size.width);
+        let cards: Vec<Element<'a, HomeViewMessage>> = (0..per_page).map(|_| card_fn(t)).collect();
+        column![section_title(title), row(cards).spacing(CARD_SPACING)].spacing(spacing::SP_12).into()
+    })
+    .into()
 }
 
 fn top_artist_key(artist_id: &str) -> String {

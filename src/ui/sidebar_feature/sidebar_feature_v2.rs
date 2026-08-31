@@ -191,6 +191,13 @@ impl SidebarFeatureV2 {
             );
         }
 
+        if self.coordinator.home_view.is_loading() {
+            subs.push(
+                self.coordinator.home_view.subscription()
+                    .map(|inner| SidebarMessage::Content(CoordinatorMessage::Home(inner))),
+            );
+        }
+
         Subscription::batch(subs)
     }
 
