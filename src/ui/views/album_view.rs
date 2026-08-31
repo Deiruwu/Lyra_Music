@@ -8,18 +8,20 @@ use iced::{Alignment, ContentFit, Element, Length, Padding, Task, Theme};
 use crate::microservices::client::MicroserviceClient;
 use crate::model::{AlbumDto, Artist, Track};
 use crate::ui::assets::fonts::SF_PRO;
+use crate::ui::assets::icons::{self, Icon};
 use crate::ui::utils::gallery_thumbnail::{GalleryThumbnail, Treatment};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::utils::playlist_metadata::{format_total_duration, format_track_count, track_stats};
 use crate::ui::widgets::artist_links::artist_links;
 use crate::ui::widgets::track_row_simple::track_row_numbered;
-use crate::ui::assets::{radii, spacing, typography};
+use crate::ui::assets::{spacing, typography};
 use crate::ui::theme::theme;
 use crate::ui::styles::scrollable as scrollable_style;
 
 const COVER_SIZE: f32 = 220.0;
 const COVER_RADIUS: f32 = 12.0;
 const GALLERY_MAX_SIDE: u32 = 500;
+const PLAY_BUTTON_SIZE: f32 = 52.0;
 
 enum AlbumViewData {
     Loading,
@@ -177,21 +179,27 @@ impl AlbumView {
         .size(typography::TEXT_13)
         .color(theme().content.muted);
 
-        let play_label = if header_is_playing { "Pausar" } else { "Reproducir" };
+        let play_icon = if header_is_playing { Icon::Pause } else { Icon::Play };
         let play_message = if this_album_is_current { AlbumMessage::TogglePlayback } else { AlbumMessage::PlayAlbumPressed };
 
-        let play_button = button(text(play_label).font(SF_PRO).size(typography::TEXT_14).color(theme().content.primary))
-            .padding(Padding { top: spacing::SP_8, right: spacing::SP_20, bottom: spacing::SP_8, left: spacing::SP_20 })
+        let play_button = button(
+            container(
+                icons::icon(play_icon, typography::TEXT_20).color(theme().content.on_accent),
+            )
+                .width(Length::Fixed(PLAY_BUTTON_SIZE))
+                .height(Length::Fixed(PLAY_BUTTON_SIZE))
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
+        )
+            .padding(spacing::SP_0)
             .style(|_theme: &Theme, status| {
-                let base = theme().accent.strong;
-                let background = match status {
-                    button::Status::Hovered => theme().accent.strong_hover,
-                    _ => base,
+                let bg = match status {
+                    button::Status::Hovered => theme().accent.hover,
+                    _ => theme().accent.primary,
                 };
                 button::Style {
-                    background: Some(background.into()),
-                    text_color: theme().content.primary,
-                    border: rounded(radii::R_20),
+                    background: Some(bg.into()),
+                    border: rounded(PLAY_BUTTON_SIZE / 2.0),
                     ..Default::default()
                 }
             })

@@ -261,8 +261,13 @@ where
         QueueRowVariant::Current => (theme().accent.primary, theme().content.muted),
     };
 
+    let title_font = match variant {
+        QueueRowVariant::History => Font::default(),
+        QueueRowVariant::Current => Font { weight: iced::font::Weight::Bold, ..Font::default() },
+    };
+
     let info = column![
-        single_line_text(&track.title, Font::default(), typography::TEXT_14, title_color, Length::Fill),
+        single_line_text(&track.title, title_font, typography::TEXT_14, title_color, Length::Fill),
         artist_links(&track.artists, Font::default(), typography::TEXT_11, artist_color, Length::Fill, on_artist_click),
         album_link(track.album.as_ref(), Font::default(), typography::TEXT_11, artist_color, Length::Fill, on_album_click),
     ]

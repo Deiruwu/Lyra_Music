@@ -724,24 +724,27 @@ impl QueuePanel {
         row_px + ROW_STRIDE > self.scroll.offset_y && row_px < viewport_bottom
     }
 
-    /// Auto-scrollea para dejar el track actual anclado arriba del panel
-    /// visible (con la cola mostrándose debajo), mismo mecanismo que usa
+    /// Auto-scrollea para dejar el track actual centrado en el panel
+    /// visible (ni pegado arriba ni abajo), mismo mecanismo que usa
     /// `lyrics_panel.rs` para centrar la línea actual.
     fn scroll_to_current(&mut self) -> Task<QueueMessage> {
         if self.current_track.is_none() {
             return Task::none();
         }
 
-        let target_px = self.history.len() as f32 * ROW_STRIDE;
+        let row_top = self.history.len() as f32 * ROW_STRIDE;
+        let row_center = row_top + ROW_HEIGHT / 2.0;
         let content_height = self.merged_total() as f32 * ROW_STRIDE;
         let range = (content_height - self.scroll.viewport_height).max(1.0);
+
+        let target_offset = (row_center - self.scroll.viewport_height / 2.0).clamp(0.0, range);
 
         // Actualización optimista (mismo patrón que AutoScrollTick): no
         // esperar el roundtrip de QueueMessage::Scrolled para que la
         // ventana virtualizada de este mismo frame ya sea la correcta.
-        self.scroll.offset_y = target_px.min(range);
+        self.scroll.offset_y = target_offset;
 
-        let y = (target_px / range).clamp(0.0, 1.0);
+        let y = (target_offset / range).clamp(0.0, 1.0);
         snap_to(Id::new(QUEUE_SCROLL_ID), RelativeOffset { x: 0.0, y })
     }
 }
