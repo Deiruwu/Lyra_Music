@@ -7,9 +7,21 @@ use crate::db::play_history_manager::PlayHistoryManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;
 
-/// Umbral mínimo de escucha antes de contar una reproducción en el
-/// historial persistido — evita ensuciarlo con skips rápidos.
-const THRESHOLD: Duration = Duration::from_secs(8);
+/// Fracción de la duración de la canción que debe transcurrir antes de
+/// contarla como reproducción en el historial persistido — evita
+/// ensuciarlo con skips rápidos.
+const PLAY_THRESHOLD_RATIO: f64 = 0.7;
+
+/// Umbral de respaldo cuando `duration_seconds` no es confiable (0 o negativo).
+const PLAY_THRESHOLD_FALLBACK: Duration = Duration::from_secs(50);
+
+fn play_threshold(track: &Track) -> Duration {
+    if track.duration_seconds <= 0 {
+        PLAY_THRESHOLD_FALLBACK
+    } else {
+        Duration::from_secs_f64(track.duration_seconds as f64 * PLAY_THRESHOLD_RATIO)
+    }
+}
 
 pub struct PlayHistoryRecorder;
 
@@ -26,7 +38,7 @@ impl PlayHistoryRecorder {
                     let mut pending: Option<(Track, tokio::time::Instant)> = None;
 
                     loop {
-                        let deadline = pending.as_ref().map(|(_, since)| *since + THRESHOLD);
+                        let deadline = pending.as_ref().map(|(track, since)| *since + play_threshold(track));
 
                         tokio::select! {
                             Ok(event) = event_rx.recv() => match event {

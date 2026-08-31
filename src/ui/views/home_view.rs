@@ -19,7 +19,7 @@ use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::color::lerp_color;
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::artist_links::{album_link, artist_links};
-use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
+use crate::ui::widgets::async_thumbnail::ThumbnailState;
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::truncate;
 use crate::ui::assets::{radii, spacing, typography};
@@ -56,16 +56,24 @@ const ALBUM_CARD_RADIUS: f32 = 8.0;
 const ARROW_SIZE: f32 = 34.0;
 
 // Fichas de "Escuchar ahora" (versión grande del widget de canción actual del reproductor).
-const BANNER_THUMBNAIL_SIZE: f32 = 64.0;
 const RECENT_CARDS_PER_ROW: usize = 4;
 const BANNER_CARD_SPACING: f32 = 12.0;
 const BANNER_CARD_RADIUS: f32 = 10.0;
+// Alto fijo de la ficha (título + "artista · álbum" + reproducciones + padding
+// vertical), para que el thumbnail pueda quedar a sangre contra el borde sin
+// depender de `Length::Fill` (que colapsa a 0 dentro de un botón de alto
+// `Shrink`). El thumbnail usa este mismo valor como ancho para quedar 1:1 — si
+// no, con `ContentFit::Cover` se ve como una tira recortada en vez de la
+// carátula completa.
+const BANNER_CARD_CONTENT_HEIGHT: f32 = 76.0;
+const BANNER_THUMBNAIL_SIZE: f32 = BANNER_CARD_CONTENT_HEIGHT;
 
 #[derive(Debug, Clone)]
 pub struct TopArtistCard {
     artist_id: String,
     name: String,
     photo_url: Option<String>,
+    play_count: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -80,11 +88,12 @@ struct HomeLoadResult {
     top_tracks: Vec<Track>,
     top_artists: Vec<TopArtistCard>,
     top_albums: Vec<TopAlbumCard>,
+    top_track_play_counts: HashMap<String, i64>,
 }
 
 #[derive(Debug, Clone)]
 pub enum HomeViewMessage {
-    HomeDataLoaded(Result<(Vec<Track>, Vec<TopArtistCard>, Vec<TopAlbumCard>), String>),
+    HomeDataLoaded(Result<(Vec<Track>, Vec<TopArtistCard>, Vec<TopAlbumCard>, HashMap<String, i64>), String>),
     ThumbnailLoaded(String, Vec<u8>),
     TopTrackClicked(String),
     TopTrackRightClicked(String),
@@ -111,6 +120,7 @@ pub struct HomeView {
     top_tracks: Vec<Track>,
     top_artists: Vec<TopArtistCard>,
     top_albums: Vec<TopAlbumCard>,
+    top_track_play_counts: HashMap<String, i64>,
     top_artists_page: usize,
     top_albums_page: usize,
     thumbnails: AsyncThumbnail,
@@ -134,6 +144,7 @@ impl HomeView {
             top_tracks: Vec::new(),
             top_artists: Vec::new(),
             top_albums: Vec::new(),
+            top_track_play_counts: HashMap::new(),
             top_artists_page: 0,
             top_albums_page: 0,
             thumbnails: AsyncThumbnail::new(),
@@ -144,7 +155,7 @@ impl HomeView {
         let load_task = Task::perform(
             async move {
                 let result = load_home_data(client, play_history).await?;
-                Ok((result.top_tracks, result.top_artists, result.top_albums))
+                Ok((result.top_tracks, result.top_artists, result.top_albums, result.top_track_play_counts))
             },
             HomeViewMessage::HomeDataLoaded,
         );
@@ -172,10 +183,11 @@ impl HomeView {
         let mut out = HomeViewOutMessage::Idle;
 
         match message {
-            HomeViewMessage::HomeDataLoaded(Ok((tracks, artists, albums))) => {
+            HomeViewMessage::HomeDataLoaded(Ok((tracks, artists, albums, track_play_counts))) => {
                 self.top_tracks = tracks;
                 self.top_artists = artists;
                 self.top_albums = albums;
+                self.top_track_play_counts = track_play_counts;
                 self.is_loading = false;
             }
             HomeViewMessage::HomeDataLoaded(Err(_)) => {
@@ -294,14 +306,35 @@ impl HomeView {
             .into()
     }
 
-    /// Ficha individual: thumbnail grande a la izquierda, título/artista/álbum apilados a la
-    /// derecha, con borde claro. Clic izquierdo reproduce, clic derecho abre el menú contextual.
+    /// Ficha individual: thumbnail a sangre contra el borde izquierdo/superior/inferior
+    /// de la ficha (mismo radio que la ficha del lado izquierdo, para que se vea fundido
+    /// con el borde en vez de flotar adentro con margen), título/artista/álbum/reproducciones
+    /// apilados a la derecha. Clic izquierdo reproduce, clic derecho abre el menú contextual.
     fn view_top_track_card<'a>(&'a self, track: &'a Track) -> Element<'a, HomeViewMessage> {
         let thumbnail_state = match self.thumbnails.get(&thumb_key(track)).cloned() {
             Some(handle) => ThumbnailState::Loaded(handle),
             None => ThumbnailState::Loading,
         };
-        let thumb = async_thumbnail(thumbnail_state, BANNER_THUMBNAIL_SIZE, BANNER_THUMBNAIL_SIZE / 2.0);
+
+        let thumb: Element<'a, HomeViewMessage> = match thumbnail_state {
+            ThumbnailState::Loaded(handle) => image(handle)
+                .width(Length::Fixed(BANNER_THUMBNAIL_SIZE))
+                .height(Length::Fixed(BANNER_CARD_CONTENT_HEIGHT))
+                .content_fit(ContentFit::Cover)
+                .border_radius(BANNER_CARD_RADIUS)
+                .into(),
+            ThumbnailState::Loading => container(icons::icon(Icon::ImagePlaceholder, BANNER_THUMBNAIL_SIZE * 0.4))
+                .width(Length::Fixed(BANNER_THUMBNAIL_SIZE))
+                .height(Length::Fixed(BANNER_CARD_CONTENT_HEIGHT))
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .style(|_theme: &Theme| container::Style {
+                    background: Some(theme().surface.sunken.into()),
+                    border: rounded(BANNER_CARD_RADIUS),
+                    ..Default::default()
+                })
+                .into(),
+        };
 
         let title = single_line_text(track.title.as_str(), SF_PRO, typography::TEXT_14, theme().content.primary, Length::Fill);
 
@@ -310,26 +343,38 @@ impl HomeView {
             SF_PRO,
             12.0,
             theme().content.muted,
-            Length::Fill,
+            Length::Shrink,
             HomeViewMessage::TopTrackArtistClicked,
         );
+
+        let separator = text(" · ").font(SF_PRO).size(12.0).color(theme().content.muted);
 
         let album = album_link(
             track.album.as_ref(),
             SF_PRO,
             12.0,
             theme().content.muted,
-            Length::Fill,
+            Length::Shrink,
             HomeViewMessage::TopTrackAlbumClicked,
         );
 
-        let info = column![title, artist, album].spacing(spacing::SP_3).width(Length::Fill);
+        let artist_album = row![artist, separator, album].align_y(Alignment::Center);
+
+        let play_count = self.top_track_play_counts.get(&track.id).copied().unwrap_or(0);
+        let plays = text(format!("{play_count} reproducciones"))
+            .font(SF_PRO)
+            .size(typography::TEXT_12)
+            .color(theme().content.muted);
+
+        let info = column![title, artist_album, plays].spacing(spacing::SP_3).width(Length::Fill);
+        let info = container(info).padding(Padding { top: spacing::SP_10, right: spacing::SP_0, bottom: spacing::SP_10, left: spacing::SP_0 });
 
         let content = row![thumb, info].spacing(spacing::SP_12).align_y(Alignment::Center);
 
         let card = button(content)
             .width(Length::FillPortion(1))
-            .padding(spacing::SP_10)
+            .height(Length::Fixed(BANNER_CARD_CONTENT_HEIGHT))
+            .padding(Padding { top: spacing::SP_0, right: spacing::SP_10, bottom: spacing::SP_0, left: spacing::SP_0 })
             .style(|_theme: &Theme, status| {
                 let hovered = status == button::Status::Hovered;
                 button::Style {
@@ -377,7 +422,16 @@ impl HomeView {
             .height(Length::Fixed(CARD_NAME_LINE_HEIGHT))
             .align_x(Alignment::Center);
 
-        let content = column![thumbnail, name].spacing(spacing::SP_8).align_x(Alignment::Center);
+        let subtitle = text(format!("{} reproducciones", artist.play_count))
+            .font(SF_PRO)
+            .size(typography::TEXT_12)
+            .color(theme().content.muted)
+            .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
+            .height(Length::Fixed(CARD_SUBTITLE_LINE_HEIGHT))
+            .align_x(Alignment::Center);
+
+        let text_block = column![name, subtitle].spacing(spacing::SP_4).align_x(Alignment::Center);
+        let content = column![thumbnail, text_block].spacing(spacing::SP_8).align_x(Alignment::Center);
 
         button(content)
             .padding(Padding {
@@ -511,13 +565,14 @@ async fn load_home_data(
     // Algunos ids no tienen perfil de artista musical en YT Music y
     // artist_profile falla — esos se saltean (None) en vez de mostrarse sin
     // foto, así el siguiente candidato en el ranking ocupa su lugar.
-    let resolved_candidates = join_all(ranked_artists.into_iter().map(|(artist_id, name, _count)| {
+    let resolved_candidates = join_all(ranked_artists.into_iter().map(|(artist_id, name, count)| {
         let client = Arc::clone(&client);
         async move {
             client.artist_profile(&artist_id).await.ok().map(|profile| TopArtistCard {
                 artist_id,
                 name,
                 photo_url: profile.thumbnail_large.or(profile.thumbnail_small),
+                play_count: count,
             })
         }
     }))
@@ -527,7 +582,7 @@ async fn load_home_data(
 
     let top_tracks = tracks.into_iter().take(RECENT_CARDS_SHOWN).collect();
 
-    Ok(HomeLoadResult { top_tracks, top_artists, top_albums })
+    Ok(HomeLoadResult { top_tracks, top_artists, top_albums, top_track_play_counts: play_counts })
 }
 
 /// Header (título + separador + flechas) + fila de tarjetas de un carrusel paginado.
@@ -623,14 +678,9 @@ fn skeleton_box<'a, Message: 'a>(width: Length, height: Length, radius: f32, t: 
 }
 
 /// Silueta de `view_top_track_card`: mismo contenedor (padding, radio, borde,
-/// fondo "resting"), thumbnail circular + 3 barras en vez de título/artista/álbum.
+/// fondo "resting"), thumbnail cuadrado + 2 barras en vez de título/artista·álbum/reproducciones.
 fn view_skeleton_track_card<'a>(t: f32) -> Element<'a, HomeViewMessage> {
-    let thumb = skeleton_box(
-        Length::Fixed(BANNER_THUMBNAIL_SIZE),
-        Length::Fixed(BANNER_THUMBNAIL_SIZE),
-        BANNER_THUMBNAIL_SIZE / 2.0,
-        t,
-    );
+    let thumb = skeleton_box(Length::Fixed(BANNER_THUMBNAIL_SIZE), Length::Fixed(BANNER_CARD_CONTENT_HEIGHT), BANNER_CARD_RADIUS, t);
 
     let line = |portion: u16, height: f32| -> Element<'a, HomeViewMessage> {
         row![
@@ -641,11 +691,13 @@ fn view_skeleton_track_card<'a>(t: f32) -> Element<'a, HomeViewMessage> {
     };
 
     let info = column![line(7, 14.0), line(5, 12.0), line(4, 12.0)].spacing(spacing::SP_3).width(Length::Fill);
+    let info = container(info).padding(Padding { top: spacing::SP_10, right: spacing::SP_0, bottom: spacing::SP_10, left: spacing::SP_0 });
     let content = row![thumb, info].spacing(spacing::SP_12).align_y(Alignment::Center);
 
     container(content)
         .width(Length::FillPortion(1))
-        .padding(spacing::SP_10)
+        .height(Length::Fixed(BANNER_CARD_CONTENT_HEIGHT))
+        .padding(Padding { top: spacing::SP_0, right: spacing::SP_10, bottom: spacing::SP_0, left: spacing::SP_0 })
         .style(move |_theme: &Theme| container::Style {
             background: Some(theme().overlay.resting.into()),
             border: Border { radius: BANNER_CARD_RADIUS.into(), color: theme().overlay.control_idle, width: 1.0 },
@@ -668,7 +720,13 @@ fn view_skeleton_artist_card<'a>(t: f32) -> Element<'a, HomeViewMessage> {
         .height(Length::Fixed(CARD_NAME_LINE_HEIGHT))
         .align_x(Alignment::Center);
 
-    let content = column![thumbnail, name].spacing(spacing::SP_8).align_x(Alignment::Center);
+    let subtitle = container(skeleton_box(Length::Fixed(CARD_THUMBNAIL_SIZE * 0.4), Length::Fixed(12.0), 6.0, t))
+        .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
+        .height(Length::Fixed(CARD_SUBTITLE_LINE_HEIGHT))
+        .align_x(Alignment::Center);
+
+    let text_block = column![name, subtitle].spacing(spacing::SP_4).align_x(Alignment::Center);
+    let content = column![thumbnail, text_block].spacing(spacing::SP_8).align_x(Alignment::Center);
 
     container(content)
         .padding(Padding {
