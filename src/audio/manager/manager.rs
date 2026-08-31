@@ -162,7 +162,17 @@ impl PlaybackState {
         if let Some(current) = self.current_track.take() {
             push_to_history_inner(&mut self.history, current.track.clone());
         }
-    }}
+    }
+
+    pub(super) fn reset_with_context(&mut self, before: Vec<Track>, remaining: Vec<QueueSlot>) {
+        self.current_track = None;
+        self.history.clear();
+        for track in before {
+            push_to_history_inner(&mut self.history, track);
+        }
+        self.refill_queue(remaining);
+    }
+}
 
 fn push_to_history_inner(h: &mut VecDeque<Track>, track: Track) {
     if h.len() >= HISTORY_CAP {
@@ -459,4 +469,84 @@ impl TrackManager {
         self.origin.lock().unwrap().clone()
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(id: &str) -> Track {
+        Track {
+            id: id.to_string(),
+            title: id.to_string(),
+            duration_seconds: 0,
+            thumbnail_small: None,
+            thumbnail_large: None,
+            bpm: None,
+            camelot_key: None,
+            file_path: Some(format!("{id}.mp3")),
+            added_at: None,
+            state: Default::default(),
+            liked: false,
+            album: None,
+            artists: vec![],
+        }
+    }
+
+    fn playable(id: &str) -> Arc<PlayableTrack> {
+        Arc::new(PlayableTrack {
+            track: track(id),
+            audio: crate::model::audio_tech::AudioProperties {
+                sample_rate: 44100,
+                channels: 2,
+                bit_depth: None,
+                codec: "test".to_string(),
+                duration_secs: None,
+            },
+        })
+    }
+
+    fn slots(ids: &[&str]) -> Vec<QueueSlot> {
+        ids.iter().map(|id| QueueSlot::new(Arc::new(track(id)))).collect()
+    }
+
+    #[test]
+    fn reset_with_context_mid_list_populates_history_and_discards_old_current() {
+        let mut ps = PlaybackState::new();
+        ps.current_track = Some(playable("stale"));
+        push_to_history_inner(&mut ps.history, track("old_history"));
+
+        ps.reset_with_context(
+            vec![track("a"), track("b"), track("c")],
+            slots(&["e", "f"]),
+        );
+
+        assert!(ps.current_track.is_none());
+        let hist: Vec<String> = ps.history.iter().map(|t| t.id.clone()).collect();
+        assert_eq!(hist, vec!["a", "b", "c"]);
+        let queue_ids: Vec<String> = ps.queue.iter().map(|s| s.track.id.clone()).collect();
+        assert_eq!(queue_ids, vec!["e", "f"]);
+    }
+
+    #[test]
+    fn reset_with_context_from_index_zero_leaves_history_empty() {
+        let mut ps = PlaybackState::new();
+        push_to_history_inner(&mut ps.history, track("old_history"));
+
+        ps.reset_with_context(vec![], slots(&["b", "c"]));
+
+        assert!(ps.history.is_empty());
+    }
+
+    #[test]
+    fn reset_with_context_shuffle_path_clears_history_without_repopulating() {
+        let mut ps = PlaybackState::new();
+        ps.shuffle_enabled = true;
+        push_to_history_inner(&mut ps.history, track("old_history"));
+
+        ps.reset_with_context(vec![], slots(&["a", "b", "c"]));
+
+        assert!(ps.history.is_empty());
+        assert_eq!(ps.queue.len(), 3);
+    }
 }

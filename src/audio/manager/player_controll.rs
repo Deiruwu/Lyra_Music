@@ -10,28 +10,28 @@ use crate::model::Track;
 
 impl TrackManager {
 
-    /// Reproduce `context_tracks[start_index]` y encola el resto.
+    /// Reproduce `context_tracks[start_index]`, resetea current/queue/history
+    /// desde cero y arma la cola con el resto.
     ///
-    /// Sin shuffle: "reproducir desde acá en adelante" — los tracks
-    /// antes de `start_index` se descartan de la cola a propósito (no es
-    /// un bug, es la semántica de este modo). En shuffle, en cambio,
-    /// TODOS los demás tracks de la vista (antes y después del
-    /// clickeado) entran al sorteo — `refill_queue` ya baraja `remaining`
-    /// cuando `shuffle_enabled`, así que alcanza con no descartarlos de
-    /// entrada.
+    /// Sin shuffle: el historial se descarta y se repuebla con
+    /// `context_tracks[0..start_index]` en orden. En shuffle, el historial
+    /// también se descarta pero no se repuebla — esos tracks entran al
+    /// sorteo junto con el resto de la vista (`refill_queue` ya baraja
+    /// `remaining` cuando `shuffle_enabled`).
     pub fn play_context(&self, context_tracks: Vec<Track>, start_index: usize) {
         if start_index >= context_tracks.len() { return; }
 
         let shuffle_enabled = self.playback.lock().unwrap().shuffle_enabled;
 
-        let (first, remaining_tracks): (Track, Vec<Track>) = if shuffle_enabled {
+        let (before, first, remaining_tracks): (Vec<Track>, Track, Vec<Track>) = if shuffle_enabled {
             let mut tracks = context_tracks;
             let first = tracks.remove(start_index);
-            (first, tracks)
+            (Vec::new(), first, tracks)
         } else {
-            let mut tracks_iter = context_tracks.into_iter().skip(start_index);
-            let first = tracks_iter.next().unwrap();
-            (first, tracks_iter.collect())
+            let mut tracks = context_tracks;
+            let remaining_tracks = tracks.split_off(start_index + 1);
+            let first = tracks.pop().unwrap();
+            (tracks, first, remaining_tracks)
         };
 
         let first_track = Arc::new(first);
@@ -39,8 +39,7 @@ impl TrackManager {
 
         {
             let mut ps = self.playback.lock().unwrap();
-            ps.refill_queue(remaining);
-            ps.clear_current_to_history();
+            ps.reset_with_context(before, remaining);
             ps.auto_advance = true;
         }
 
