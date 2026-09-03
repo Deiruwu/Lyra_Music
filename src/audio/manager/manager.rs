@@ -174,7 +174,7 @@ impl PlaybackState {
     }
 }
 
-fn push_to_history_inner(h: &mut VecDeque<Track>, track: Track) {
+pub(super) fn push_to_history_inner(h: &mut VecDeque<Track>, track: Track) {
     if h.len() >= HISTORY_CAP {
         h.pop_front();
     }

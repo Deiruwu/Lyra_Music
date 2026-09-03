@@ -11,7 +11,7 @@ use crate::ui::styles::button as button_style;
 use crate::ui::styles::text_input as text_input_style;
 
 /// Ancho fijo de la isla flotante (input + toggle + resultados).
-const ISLAND_WIDTH: f32 = 480.0;
+const ISLAND_WIDTH: f32 = 640.0;
 
 /// Separación entre el borde superior de la ventana y la isla — la deja
 /// justo debajo de la topbar (sidebar toggle + botón de lupa).

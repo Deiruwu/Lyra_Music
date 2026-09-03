@@ -4,6 +4,7 @@ use crate::model::Track;
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
+use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::states_view::{ListAction, TrackViewState};
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
@@ -53,6 +54,7 @@ impl FavoritesView {
         msg: FavoritesMessage,
         rendered_tracks: &[&Track],
         playlists: &[(String, String)],
+        catalog_store: &CatalogStore,
     ) -> (Task<FavoritesMessage>, FavoritesOutMessage) {
         let mut out = FavoritesOutMessage::Idle;
 
@@ -71,9 +73,10 @@ impl FavoritesView {
 
                     ListAction::OpenContextMenu { anchor_id, selected_ids } => {
                         let is_liked = true;
+                        let member_of = catalog_store.playlists_containing_track(&anchor_id);
 
                         let items = TrackContextMenuBuilder::new(is_liked)
-                            .with_playlists(playlists, None)
+                            .with_playlists(playlists, None, &member_of)
                             .build();
 
                         FavoritesOutMessage::ContextMenuRightClicked {

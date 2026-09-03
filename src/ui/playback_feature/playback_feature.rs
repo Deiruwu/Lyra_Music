@@ -18,6 +18,7 @@ use crate::ui::playback_feature::theater::theater_panel::{TheaterMessage, Theate
 use crate::ui::playback_feature::volume::{Volume, VolumeMessage, VolumeOutMessage};
 use crate::ui::styles::button as button_style;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
+use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::ui::widgets::track_context_builder::{TrackContextAction, TrackContextMenuBuilder};
 use crate::ui::assets::{spacing, typography};
@@ -30,6 +31,7 @@ use crate::ui::theme::theme;
 pub enum PlaybackContextTarget {
     CurrentTrack,
     QueueSlot(Uuid),
+    HistorySlot(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -174,8 +176,9 @@ impl PlaybackFeature {
         &mut self,
         msg: PlaybackFeatureMessage,
         playlists: &[(String, String)],
+        catalog_store: &CatalogStore,
     ) -> (Task<PlaybackFeatureMessage>, PlaybackOutMessage) {
-        let (task, out) = self.update_inner(msg, playlists);
+        let (task, out) = self.update_inner(msg, playlists, catalog_store);
 
         // Sincronización de miniaturas de la cola (AsyncThumbnail): el
         // universo pedido = la ventana visible actual (+buffer). Corre en
@@ -193,6 +196,7 @@ impl PlaybackFeature {
         &mut self,
         msg: PlaybackFeatureMessage,
         playlists: &[(String, String)],
+        catalog_store: &CatalogStore,
     ) -> (Task<PlaybackFeatureMessage>, PlaybackOutMessage) {
         match msg {
             PlaybackFeatureMessage::Play(track) => {
@@ -258,16 +262,54 @@ impl PlaybackFeature {
                     }
                     QueueOutMessage::RequestContextMenu(slot_id) => {
                         if let Some(track) = self.queue.find_slot_track(slot_id) {
+                            let member_of = catalog_store.playlists_containing_track(&track.id);
                             let items = TrackContextMenuBuilder::new(track.liked)
-                                .with_playlists(playlists, None)
+                                .with_playlists(playlists, None, &member_of)
                                 .with_delete()
                                 .build();
                             self.track_context_menu.handle(ContextMenuEvent::RightClicked(PlaybackContextTarget::QueueSlot(slot_id)));
                             self.track_context_menu_items = items;
                         }
                     }
+                    QueueOutMessage::RequestHistoryContextMenu(steps_back) => {
+                        if let Some(track) = self.queue.history_track(steps_back) {
+                            let member_of = catalog_store.playlists_containing_track(&track.id);
+                            let items = TrackContextMenuBuilder::new(track.liked)
+                                .with_playlists(playlists, None, &member_of)
+                                .with_delete()
+                                .build();
+                            self.track_context_menu.handle(ContextMenuEvent::RightClicked(PlaybackContextTarget::HistorySlot(steps_back)));
+                            self.track_context_menu_items = items;
+                        }
+                    }
+                    QueueOutMessage::RequestCurrentContextMenu => {
+                        if let Some(track) = self.queue.current_track() {
+                            let member_of = catalog_store.playlists_containing_track(&track.id);
+                            let items = TrackContextMenuBuilder::new(track.liked)
+                                .with_playlists(playlists, None, &member_of)
+                                .with_delete()
+                                .build();
+                            self.track_context_menu.handle(ContextMenuEvent::RightClicked(PlaybackContextTarget::CurrentTrack));
+                            self.track_context_menu_items = items;
+                        }
+                    }
                     QueueOutMessage::RequestJumpBack(steps) => {
                         if let Err(e) = self.manager.skip_to_history_index(steps) {
+                            eprintln!("Error: {}", e);
+                        }
+                    }
+                    QueueOutMessage::RequestRemoveHistory(steps_back) => {
+                        if let Err(e) = self.manager.remove_from_history(steps_back) {
+                            eprintln!("Error: {}", e);
+                        }
+                    }
+                    QueueOutMessage::RequestMoveToHistory(index) => {
+                        if let Err(e) = self.manager.move_queue_to_history(index) {
+                            eprintln!("Error: {}", e);
+                        }
+                    }
+                    QueueOutMessage::RequestMoveToQueue(steps_back) => {
+                        if let Err(e) = self.manager.move_history_to_queue(steps_back, true) {
                             eprintln!("Error: {}", e);
                         }
                     }
@@ -370,8 +412,9 @@ impl PlaybackFeature {
                     }
                     PlayerOutMessage::RequestContextMenu => {
                         if let Some(playable) = &self.player.current_track {
+                            let member_of = catalog_store.playlists_containing_track(&playable.track.id);
                             let items = TrackContextMenuBuilder::new(playable.track.liked)
-                                .with_playlists(playlists, None)
+                                .with_playlists(playlists, None, &member_of)
                                 .with_delete()
                                 .build();
                             self.track_context_menu.handle(ContextMenuEvent::RightClicked(PlaybackContextTarget::CurrentTrack));
@@ -422,6 +465,7 @@ impl PlaybackFeature {
         match target {
             PlaybackContextTarget::CurrentTrack => self.player.current_track.as_ref().map(|p| p.track.clone()),
             PlaybackContextTarget::QueueSlot(slot_id) => self.queue.find_slot_track(*slot_id),
+            PlaybackContextTarget::HistorySlot(steps_back) => self.queue.history_track(*steps_back),
         }
     }
 

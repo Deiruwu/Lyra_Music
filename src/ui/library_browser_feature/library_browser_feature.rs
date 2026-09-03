@@ -9,6 +9,7 @@ use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Track;
 use crate::ui::utils::virtual_list::ScrollTracker;
+use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::album_view::{AlbumMessage, AlbumOutMessage, AlbumView};
 use crate::ui::views::artist_view::{ArtistMessage, ArtistOutMessage, ArtistView};
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
@@ -21,18 +22,21 @@ enum LibraryBrowserRoute {
 
 pub struct LibraryBrowserFeature {
     active: Option<LibraryBrowserRoute>,
-    previous: Option<LibraryBrowserRoute>,
     client: MicroserviceClient,
     manager: Arc<TrackManager>,
     followed_artist_manager: Arc<FollowedArtistManager>,
     context_menu: ContextMenu<String>,
     context_menu_items: Vec<ContextMenuItem<TrackContextAction>>,
     /// Scroll de artistas/álbumes ya visitados en esta sesión, por id —
-    /// para restaurarlo si se vuelve a abrir el mismo artista/álbum,
-    /// aunque `previous` (un solo nivel de historial) ya se haya pisado
-    /// por saltos intermedios.
+    /// para restaurarlo si se vuelve a abrir el mismo artista/álbum.
     artist_scroll_cache: HashMap<String, ScrollTracker>,
     album_scroll_cache: HashMap<String, ScrollTracker>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LibraryBrowserLocation {
+    Artist(String),
+    Album(String),
 }
 
 /// `Task<T>` genérico: estas operaciones de scroll no producen ningún
@@ -51,8 +55,6 @@ pub enum LibraryBrowserMessage {
     Album(AlbumMessage),
     OpenArtist(String),
     OpenAlbum(String),
-    Close,
-    Back,
     ContextMenuEvent(ContextMenuEvent<String>),
     TrackContextAction(TrackContextAction, String),
 }
@@ -69,7 +71,6 @@ impl LibraryBrowserFeature {
     pub fn new(client: MicroserviceClient, manager: Arc<TrackManager>, followed_artist_manager: Arc<FollowedArtistManager>) -> Self {
         Self {
             active: None,
-            previous: None,
             client,
             manager,
             followed_artist_manager,
@@ -85,11 +86,18 @@ impl LibraryBrowserFeature {
         self.active.is_some()
     }
 
-    /// Cierra cualquier vista abierta y descarta el historial de navegación.
+    /// Cierra cualquier vista abierta.
     pub fn close(&mut self) {
         self.stash_active_route_scroll();
         self.active = None;
-        self.previous = None;
+    }
+
+    pub fn current_location(&self) -> Option<LibraryBrowserLocation> {
+        match &self.active {
+            Some(LibraryBrowserRoute::Artist(view)) => Some(LibraryBrowserLocation::Artist(view.artist_id().to_string())),
+            Some(LibraryBrowserRoute::Album(view)) => Some(LibraryBrowserLocation::Album(view.album_id().to_string())),
+            None => None,
+        }
     }
 
     /// Guarda el scroll de la ruta activa (artista o álbum) en el cache
@@ -135,6 +143,7 @@ impl LibraryBrowserFeature {
         &mut self,
         message: LibraryBrowserMessage,
         playlists: &[(String, String)],
+        catalog_store: &CatalogStore,
     ) -> (Task<LibraryBrowserMessage>, LibraryBrowserOutMessage) {
         match message {
             LibraryBrowserMessage::OpenArtist(id) => {
@@ -146,7 +155,6 @@ impl LibraryBrowserFeature {
                     out_task = Task::batch([out_task, scroll_to_offset("artist_view_scroll", scroll.offset_y)]);
                 }
                 self.active = Some(LibraryBrowserRoute::Artist(view));
-                self.previous = None;
                 (out_task, LibraryBrowserOutMessage::Idle)
             }
 
@@ -159,23 +167,7 @@ impl LibraryBrowserFeature {
                     out_task = Task::batch([out_task, scroll_to_offset("album_view_scroll", scroll.offset_y)]);
                 }
                 self.active = Some(LibraryBrowserRoute::Album(view));
-                self.previous = None;
                 (out_task, LibraryBrowserOutMessage::Idle)
-            }
-
-            LibraryBrowserMessage::Close => {
-                self.close();
-                (Task::none(), LibraryBrowserOutMessage::Idle)
-            }
-
-            LibraryBrowserMessage::Back => {
-                self.active = self.previous.take();
-                let task = match &self.active {
-                    Some(LibraryBrowserRoute::Artist(view)) => scroll_to_offset("artist_view_scroll", view.scroll.offset_y),
-                    Some(LibraryBrowserRoute::Album(view)) => scroll_to_offset("album_view_scroll", view.scroll.offset_y),
-                    None => Task::none(),
-                };
-                (task, LibraryBrowserOutMessage::Idle)
             }
 
             LibraryBrowserMessage::ContextMenuEvent(event) => {
@@ -236,7 +228,6 @@ impl LibraryBrowserFeature {
                                 album_view.scroll = scroll;
                                 out_task = Task::batch([out_task, scroll_to_offset("album_view_scroll", scroll.offset_y)]);
                             }
-                            self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Album(album_view));
                             (out_task, LibraryBrowserOutMessage::Idle)
                         }
@@ -250,8 +241,9 @@ impl LibraryBrowserFeature {
                         }
                         ArtistOutMessage::TrackRightClicked(id) => {
                             if let Some(track) = view.find_song(&id) {
+                                let member_of = catalog_store.playlists_containing_track(&id);
                                 let items = TrackContextMenuBuilder::new(track.liked)
-                                    .with_playlists(playlists, None)
+                                    .with_playlists(playlists, None, &member_of)
                                     .build();
                                 self.context_menu.handle(ContextMenuEvent::RightClicked(id));
                                 self.context_menu_items = items;
@@ -266,7 +258,6 @@ impl LibraryBrowserFeature {
                                 artist_view.scroll = scroll;
                                 out_task = Task::batch([out_task, scroll_to_offset("artist_view_scroll", scroll.offset_y)]);
                             }
-                            self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Artist(artist_view));
                             (out_task, LibraryBrowserOutMessage::Idle)
                         }
@@ -297,7 +288,6 @@ impl LibraryBrowserFeature {
                                 artist_view.scroll = scroll;
                                 out_task = Task::batch([out_task, scroll_to_offset("artist_view_scroll", scroll.offset_y)]);
                             }
-                            self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Artist(artist_view));
                             (out_task, LibraryBrowserOutMessage::Idle)
                         }
@@ -316,8 +306,9 @@ impl LibraryBrowserFeature {
                         }
                         AlbumOutMessage::TrackRightClicked(id) => {
                             if let Some(track) = view.find_track(&id) {
+                                let member_of = catalog_store.playlists_containing_track(&id);
                                 let items = TrackContextMenuBuilder::new(track.liked)
-                                    .with_playlists(playlists, None)
+                                    .with_playlists(playlists, None, &member_of)
                                     .build();
                                 self.context_menu.handle(ContextMenuEvent::RightClicked(id));
                                 self.context_menu_items = items;
@@ -332,7 +323,6 @@ impl LibraryBrowserFeature {
                                 artist_view.scroll = scroll;
                                 out_task = Task::batch([out_task, scroll_to_offset("artist_view_scroll", scroll.offset_y)]);
                             }
-                            self.previous = self.active.take();
                             self.active = Some(LibraryBrowserRoute::Artist(artist_view));
                             (out_task, LibraryBrowserOutMessage::Idle)
                         }

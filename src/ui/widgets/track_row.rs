@@ -245,6 +245,12 @@ pub fn queue_static_row<'a, Message, F, G>(
     on_artist_click: F,
     on_album_click: G,
     on_play: Option<Message>,
+    on_right_click: Option<Message>,
+    on_delete: Option<Message>,
+    delete_hovered: bool,
+    on_delete_hover: Option<Message>,
+    on_delete_leave: Option<Message>,
+    is_dragging: bool,
 ) -> Element<'a, Message>
 where
     Message: Clone + 'a,
@@ -279,7 +285,7 @@ where
         .padding([spacing::SP_8, spacing::SP_10])
         .width(Length::Fill);
 
-    match on_play {
+    let row_element: Element<'a, Message> = match on_play {
         // Historial: toda la fila es clickeable para saltar a esa
         // canción — los links anidados de artista/álbum siguen
         // capturando su propio click primero (mismo patrón que
@@ -291,5 +297,54 @@ where
             .style(button_style::transparent)
             .into(),
         None => container(content).width(Length::Fill).into(),
-    }
+    };
+
+    let row_with_click: Element<'a, Message> = match on_right_click {
+        Some(msg) => mouse_area(row_element).on_right_press(msg).into(),
+        None => row_element,
+    };
+
+    let content: Element<'a, Message> = match on_delete {
+        Some(on_delete) => {
+            let delete_button = mouse_area(
+                button(
+                    container(
+                        icons::icon(if delete_hovered { Icon::DeleteOpen } else { Icon::Delete }, typography::TEXT_16)
+                    )
+                        .width(Length::Fixed(44.0))
+                        .height(Length::Fixed(44.0))
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::Center)
+                )
+                    .on_press(on_delete)
+                    .style(button_style::transparent)
+                    .padding(spacing::SP_0)
+            )
+                .on_enter(on_delete_hover.expect("on_delete_hover debe acompañar a on_delete"))
+                .on_exit(on_delete_leave.expect("on_delete_leave debe acompañar a on_delete"));
+
+            row![row_with_click, delete_button]
+                .align_y(Alignment::Center)
+                .width(Length::Fill)
+                .into()
+        }
+        None => row_with_click,
+    };
+
+    container(content)
+        .width(Length::Fill)
+        .style(move |_theme: &Theme| {
+            if is_dragging {
+                container::Style {
+                    background: Some(theme().overlay.hover.into()),
+                    border: iced::border::rounded(radii::R_6)
+                        .color(theme().border.subtle)
+                        .width(1.0),
+                    ..Default::default()
+                }
+            } else {
+                container::Style::default()
+            }
+        })
+        .into()
 }

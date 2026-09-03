@@ -30,7 +30,7 @@ use crate::tray::TrayFlags;
 
 use crate::ui::assets::radii;
 use crate::ui::library_browser_feature::library_browser_feature::{
-    LibraryBrowserFeature, LibraryBrowserMessage, LibraryBrowserOutMessage,
+    LibraryBrowserFeature, LibraryBrowserLocation, LibraryBrowserMessage, LibraryBrowserOutMessage,
 };
 use crate::ui::download_feature::{DownloadFeature, DownloadFeatureMessage, DownloadFeatureOutMessage};
 use crate::ui::playback_feature::player::TrackLink;
@@ -40,7 +40,7 @@ use crate::ui::search_feature::search_feature::{SearchFeature, SearchFeatureMess
 use crate::ui::sidebar_feature::sidebar_feature_v2::{
     SidebarFeatureV2 as SidebarFeature, SidebarMessage as SidebarFeatureMessage, SidebarOutMessage
 };
-use crate::ui::views::view_coordinator::{playlist_pairs, CoordinatorMessage};
+use crate::ui::views::view_coordinator::{playlist_pairs, ActiveRoute, CoordinatorMessage};
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::views::catalog_store::CatalogStoreMessage;
 use crate::ui::widgets::context_menu::ContextMenuEvent;
@@ -61,6 +61,7 @@ pub enum AppMessage {
     Quit,
     LibraryBrowser(LibraryBrowserMessage),
     NavigateBack,
+    NavigateForward,
     EscapePressed,
     AutosaveTick,
     DownloadFeature(DownloadFeatureMessage),
@@ -78,7 +79,26 @@ struct App {
     tray_flags: Arc<TrayFlags>,
     main_window: Option<window::Id>,
     is_theater_mode: bool,
+    nav_back_stack: Vec<NavEntry>,
+    nav_forward_stack: Vec<NavEntry>,
+    is_replaying_history: bool,
     last_saved_settings: AppSettings,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum NavEntry {
+    Content(ActiveRoute),
+    LibraryArtist(String),
+    LibraryAlbum(String),
+}
+
+const MAX_NAV_HISTORY: usize = 3;
+
+fn push_capped(stack: &mut Vec<NavEntry>, entry: NavEntry) {
+    stack.push(entry);
+    if stack.len() > MAX_NAV_HISTORY {
+        stack.remove(0);
+    }
 }
 
 impl App {
@@ -175,6 +195,9 @@ impl App {
             main_window: Some(window_id),
             manager,
             is_theater_mode: false,
+            nav_back_stack: Vec::new(),
+            nav_forward_stack: Vec::new(),
+            is_replaying_history: false,
             last_saved_settings: settings,
         };
 
@@ -238,7 +261,7 @@ impl App {
 
                 let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
                 let (tick_task, _out) = self.playback_feature
-                    .update(PlaybackFeatureMessage::Tick, &playlists);
+                    .update(PlaybackFeatureMessage::Tick, &playlists, &self.sidebar_feature.coordinator.catalog_store);
 
                 iced::Task::batch(vec![
                     position_task.map(AppMessage::PlaybackFeature),
@@ -248,11 +271,12 @@ impl App {
 
             AppMessage::PlaybackFeature(msg) => {
                 let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
-                let (task, out_msg) = self.playback_feature.update(msg, &playlists);
+                let (task, out_msg) = self.playback_feature.update(msg, &playlists, &self.sidebar_feature.coordinator.catalog_store);
 
                 let like_task = match out_msg {
                     PlaybackOutMessage::ToggleTheaterMode => {
                         self.is_theater_mode = !self.is_theater_mode;
+
                         // Salir de modo teatro reconstruye view_content() desde
                         // cero (ver resync_active_scroll) — sin esto el
                         // scrollable de la vista de fondo vuelve a offset 0.
@@ -318,10 +342,15 @@ impl App {
             }
 
             AppMessage::SidebarFeature(msg) => {
-                let closing_browser = self.library_browser.is_active()
-                    && matches!(msg, SidebarFeatureMessage::SelectNav(_) | SidebarFeatureMessage::SelectPlaylist(_));
+                let leaving = self.current_nav_entry();
+                let was_theater = self.is_theater_mode;
+
+                let is_nav_select = matches!(msg, SidebarFeatureMessage::SelectNav(_) | SidebarFeatureMessage::SelectPlaylist(_));
+                let closing_browser = self.library_browser.is_active() && is_nav_select;
                 if closing_browser {
                     self.library_browser.close();
+                }
+                if is_nav_select {
                     self.is_theater_mode = false;
                 }
 
@@ -340,13 +369,18 @@ impl App {
                 // El scroll de la ruta ya actualizada (arriba) necesita
                 // reafirmarse contra el widget nativo tras salir del library
                 // browser — ver resync_active_scroll.
-                let resync_task = if closing_browser {
+                let just_exited_overlay = is_nav_select && (was_theater || closing_browser);
+                let resync_task = if just_exited_overlay && !self.is_theater_mode && !self.library_browser.is_active() {
                     self.sidebar_feature.coordinator.resync_active_scroll().map(|m| {
                         AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m))
                     })
                 } else {
                     iced::Task::none()
                 };
+
+                if self.current_nav_entry() != leaving {
+                    self.push_history(leaving);
+                }
 
                 iced::Task::batch(vec![task.map(AppMessage::SidebarFeature), open_artist_task, resync_task])
             }
@@ -365,6 +399,7 @@ impl App {
                         let (t, _out) = self.playback_feature.update(
                             PlaybackFeatureMessage::Play(playable),
                             &playlists,
+                            &self.sidebar_feature.coordinator.catalog_store,
                         );
                         feature_task = t;
 
@@ -403,11 +438,23 @@ impl App {
             AppMessage::LibraryBrowser(msg) => self.update_library_browser(msg),
 
             AppMessage::NavigateBack => {
-                if self.library_browser.is_active() {
-                    self.update_library_browser(LibraryBrowserMessage::Back)
-                } else {
-                    iced::Task::none()
-                }
+                let Some(entry) = self.nav_back_stack.pop() else {
+                    return iced::Task::none();
+                };
+                let leaving = self.current_nav_entry();
+                let task = self.replay_nav_entry(entry);
+                push_capped(&mut self.nav_forward_stack, leaving);
+                task
+            }
+
+            AppMessage::NavigateForward => {
+                let Some(entry) = self.nav_forward_stack.pop() else {
+                    return iced::Task::none();
+                };
+                let leaving = self.current_nav_entry();
+                let task = self.replay_nav_entry(entry);
+                push_capped(&mut self.nav_back_stack, leaving);
+                task
             }
 
             AppMessage::EscapePressed => {
@@ -449,16 +496,52 @@ impl App {
         }
     }
 
+    fn current_nav_entry(&self) -> NavEntry {
+        if let Some(loc) = self.library_browser.current_location() {
+            match loc {
+                LibraryBrowserLocation::Artist(id) => NavEntry::LibraryArtist(id),
+                LibraryBrowserLocation::Album(id) => NavEntry::LibraryAlbum(id),
+            }
+        } else {
+            NavEntry::Content(self.sidebar_feature.coordinator.active_route.clone())
+        }
+    }
+
+    fn push_history(&mut self, leaving: NavEntry) {
+        if self.is_replaying_history {
+            return;
+        }
+        push_capped(&mut self.nav_back_stack, leaving);
+        self.nav_forward_stack.clear();
+    }
+
+    fn replay_nav_entry(&mut self, entry: NavEntry) -> iced::Task<AppMessage> {
+        self.is_replaying_history = true;
+        let task = match entry {
+            NavEntry::Content(ActiveRoute::Nav(nav_id)) => {
+                self.update(AppMessage::SidebarFeature(SidebarFeatureMessage::SelectNav(nav_id)))
+            }
+            NavEntry::Content(ActiveRoute::Playlist(id)) => {
+                self.update(AppMessage::SidebarFeature(SidebarFeatureMessage::SelectPlaylist(id)))
+            }
+            NavEntry::LibraryArtist(id) => self.update_library_browser(LibraryBrowserMessage::OpenArtist(id)),
+            NavEntry::LibraryAlbum(id) => self.update_library_browser(LibraryBrowserMessage::OpenAlbum(id)),
+        };
+        self.is_replaying_history = false;
+        task
+    }
+
     /// Puentea `LibraryBrowserOutMessage` hacia el `CatalogStore` del sidebar,
     /// igual que ya hace `PlaybackOutMessage::RequestToggleLike`.
     fn update_library_browser(&mut self, msg: LibraryBrowserMessage) -> iced::Task<AppMessage> {
+        let leaving = self.current_nav_entry();
+
         if matches!(msg, LibraryBrowserMessage::OpenArtist(_) | LibraryBrowserMessage::OpenAlbum(_)) {
             self.is_theater_mode = false;
         }
 
-        let was_active = self.library_browser.is_active();
         let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
-        let (task, out) = self.library_browser.update(msg, &playlists);
+        let (task, out) = self.library_browser.update(msg, &playlists, &self.sidebar_feature.coordinator.catalog_store);
 
         let bridge_task = match out {
             LibraryBrowserOutMessage::RequestToggleLike(track_id) => self
@@ -488,19 +571,11 @@ impl App {
             LibraryBrowserOutMessage::Idle => iced::Task::none(),
         };
 
-        // Se agotó el historial de `Back` (o llegó `Close`) y volvemos a
-        // mostrar view_content() — reafirmar su scroll nativo (ver
-        // resync_active_scroll).
-        let closed_now = was_active && !self.library_browser.is_active();
-        let resync_task = if closed_now && !self.is_theater_mode {
-            self.sidebar_feature.coordinator.resync_active_scroll().map(|m| {
-                AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m))
-            })
-        } else {
-            iced::Task::none()
-        };
+        if self.current_nav_entry() != leaving {
+            self.push_history(leaving);
+        }
 
-        iced::Task::batch([task.map(AppMessage::LibraryBrowser), bridge_task, resync_task])
+        iced::Task::batch([task.map(AppMessage::LibraryBrowser), bridge_task])
     }
 
     pub fn view(&self, _window: window::Id) -> Element<'_, AppMessage> {
@@ -634,9 +709,12 @@ impl App {
                 _ => None,
             });
 
-        let nav_back_sub = iced::event::listen_with(|event, _status, _window| match event {
+        let nav_sub = iced::event::listen_with(|event, _status, _window| match event {
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Back)) => {
                 Some(AppMessage::NavigateBack)
+            }
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Forward)) => {
+                Some(AppMessage::NavigateForward)
             }
             _ => None,
         });
@@ -665,7 +743,7 @@ impl App {
             download_sub,
             sidebar_sub,
             close_sub,
-            nav_back_sub,
+            nav_sub,
             library_menu_mouse_sub,
             escape_sub,
             autosave_sub,

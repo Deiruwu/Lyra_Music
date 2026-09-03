@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::ui::assets::icons::Icon;
 use crate::ui::widgets::context_menu::ContextMenuItem;
 
@@ -17,7 +19,7 @@ pub enum TrackContextAction {
 
 pub struct TrackContextMenuBuilder<'a> {
     is_liked: bool,
-    playlists: Option<(&'a [(String, String)], Option<&'a str>)>,
+    playlists: Option<(&'a [(String, String)], Option<&'a str>, &'a HashSet<String>)>,
     with_delete: bool,
     with_remove_from_playlist: bool,
 }
@@ -36,8 +38,9 @@ impl<'a> TrackContextMenuBuilder<'a> {
         mut self,
         playlists: &'a [(String, String)],
         current_playlist_id: Option<&'a str>,
+        member_of: &'a HashSet<String>,
     ) -> Self {
-        self.playlists = Some((playlists, current_playlist_id));
+        self.playlists = Some((playlists, current_playlist_id, member_of));
         self
     }
 
@@ -94,9 +97,9 @@ impl<'a> TrackContextMenuBuilder<'a> {
 
     fn add_to_playlist_item(&self) -> ContextMenuItem<TrackContextAction> {
         let children = match self.playlists {
-            Some((playlists, current_id)) => playlists
+            Some((playlists, current_id, member_of)) => playlists
                 .iter()
-                .filter(|(id, _)| Some(id.as_str()) != current_id)
+                .filter(|(id, _)| Some(id.as_str()) != current_id && !member_of.contains(id.as_str()))
                 .map(|(id, name)| {
                     ContextMenuItem::new(name.clone(), TrackContextAction::AddToPlaylist(id.clone()))
                 })

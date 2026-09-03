@@ -266,7 +266,7 @@ impl ViewCoordinator {
                 let play_context: Vec<Track> = rendered_refs.iter().map(|t| (*t).clone()).collect();
                 let playlists = playlist_pairs(self.catalog_store.playlists_metadata());
 
-                let (task, out) = self.explorer_view.update(inner, &rendered_refs, &playlists);
+                let (task, out) = self.explorer_view.update(inner, &rendered_refs, &playlists, &self.catalog_store);
                 let view_task = task.map(CoordinatorMessage::Explorer);
 
                 let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, PlaybackOrigin::Explorer, |store, extra| match extra {
@@ -290,7 +290,7 @@ impl ViewCoordinator {
                 let play_context: Vec<Track> = rendered_refs.iter().map(|t| (*t).clone()).collect();
                 let playlists = playlist_pairs(self.catalog_store.playlists_metadata());
 
-                let (task, out) = self.favorites_view.update(inner, &rendered_refs, &playlists);
+                let (task, out) = self.favorites_view.update(inner, &rendered_refs, &playlists, &self.catalog_store);
                 let view_task = task.map(CoordinatorMessage::Favorites);
 
                 let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, PlaybackOrigin::Favorites, |_store, extra| match extra {});
@@ -310,7 +310,7 @@ impl ViewCoordinator {
                 let play_context: Vec<Track> = rendered_refs.iter().map(|t| (*t).clone()).collect();
                 let playlists = playlist_pairs(self.catalog_store.playlists_metadata());
 
-                let (task, out) = playlist_view.update(inner, &rendered_refs, &playlists);
+                let (task, out) = playlist_view.update(inner, &rendered_refs, &playlists, &self.catalog_store);
                 let view_task = task.map(CoordinatorMessage::PlaylistDetail);
 
                 let (out_task, coordinator_out) = self.handle_track_list_out(out, &play_context, PlaybackOrigin::Playlist(playlist_id.clone()), |store, extra| match extra {

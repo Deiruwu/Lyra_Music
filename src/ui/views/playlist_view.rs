@@ -2,6 +2,7 @@ use std::time::Instant;
 use iced::{Element, Length, Task};
 use iced::widget::{column, space};
 use crate::model::{Track};
+use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::states_view::{ListAction, TrackViewState};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
 use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
@@ -132,6 +133,7 @@ impl PlaylistView {
         msg: PlaylistMessage,
         rendered_tracks: &[&Track],
         playlists: &[(String, String)],
+        catalog_store: &CatalogStore,
     ) -> (Task<PlaylistMessage>, PlaylistOutMessage) {
         let mut out = PlaylistOutMessage::Idle;
 
@@ -182,8 +184,9 @@ impl PlaylistView {
                             .map(|t| t.liked)
                             .unwrap_or(false);
 
+                        let member_of = catalog_store.playlists_containing_track(&anchor_id);
                         let items = TrackContextMenuBuilder::new(is_liked)
-                            .with_playlists(playlists, Some(self.playlist_id.as_str()))
+                            .with_playlists(playlists, Some(self.playlist_id.as_str()), &member_of)
                             .with_remove_from_playlist()
                             .build();
 

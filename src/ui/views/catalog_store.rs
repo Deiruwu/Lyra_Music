@@ -41,7 +41,7 @@
 /// filtrando `liked`). Se carga de forma eager al arrancar junto con los
 /// tracks, ordenado ascendente por `position`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use iced::Task;
@@ -236,6 +236,20 @@ impl CatalogStore {
         ids.iter()
             .filter_map(|(id, _pos)| self.track_by_id(id))
             .collect()
+    }
+
+    pub fn playlists_containing_track(&self, track_id: &str) -> HashSet<String> {
+        let mut result: HashSet<String> = self.playlist_order
+            .iter()
+            .filter(|(_, tracks)| tracks.iter().any(|(id, _)| id == track_id))
+            .map(|(playlist_id, _)| playlist_id.clone())
+            .collect();
+
+        if self.liked_order.iter().any(|id| id == track_id) {
+            result.insert(self.playlist_manager.system_playlist_id().to_string());
+        }
+
+        result
     }
 
     pub fn delete_track(&mut self, track_id: &str) {

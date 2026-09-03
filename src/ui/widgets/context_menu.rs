@@ -139,10 +139,19 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
         let menu_width = MENU_WIDTH + MENU_PADDING;
         let menu_height = (item_count as f32 * ITEM_HEIGHT) + MENU_PADDING;
 
-        let max_x = (viewport.width - menu_width - VIEWPORT_MARGIN).max(VIEWPORT_MARGIN);
-        let max_y = (viewport.height - menu_height - VIEWPORT_MARGIN).max(VIEWPORT_MARGIN);
+        let x = if raw.x + menu_width + VIEWPORT_MARGIN > viewport.width {
+            (raw.x - menu_width).max(VIEWPORT_MARGIN)
+        } else {
+            raw.x
+        };
 
-        Point::new(raw.x.min(max_x), raw.y.min(max_y))
+        let y = if raw.y + menu_height + VIEWPORT_MARGIN > viewport.height {
+            (raw.y - menu_height).max(VIEWPORT_MARGIN)
+        } else {
+            raw.y
+        };
+
+        Point::new(x, y)
     }
 
     pub fn is_open(&self) -> bool {
@@ -276,6 +285,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
 
         if let Some((submenu_row_index, children)) = submenu_flyout {
             let submenu_id_for_flyout = self.open_submenu;
+            let submenu_item_count = children.len();
             let mut sub_list = column![].spacing(spacing::SP_2);
 
             for child in children {
@@ -312,7 +322,7 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
             let submenu_hoverable = mouse_area(submenu_container)
                 .on_enter(on_submenu_hover(submenu_id_for_flyout));
 
-            let submenu_anchor_y = anchor.y + 4.0 + MENU_PADDING
+            let mut submenu_anchor_y = anchor.y + 4.0 + MENU_PADDING
                 + submenu_row_index * (ITEM_HEIGHT + 2.0);
 
             let mut submenu_x = anchor.x + 6.0 + MENU_WIDTH + MENU_PADDING;
@@ -320,6 +330,11 @@ impl<Id: PartialEq + Clone> ContextMenu<Id> {
             if let Some(viewport) = self.viewport_size {
                 if submenu_x + SUBMENU_WIDTH > viewport.width - VIEWPORT_MARGIN {
                     submenu_x = anchor.x + 6.0 - SUBMENU_WIDTH - MENU_PADDING;
+                }
+
+                let submenu_height = (submenu_item_count as f32 * ITEM_HEIGHT) + MENU_PADDING;
+                if submenu_anchor_y + submenu_height + VIEWPORT_MARGIN > viewport.height {
+                    submenu_anchor_y = (viewport.height - submenu_height - VIEWPORT_MARGIN).max(VIEWPORT_MARGIN);
                 }
             }
 

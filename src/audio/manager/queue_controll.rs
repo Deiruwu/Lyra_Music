@@ -1,4 +1,4 @@
-use crate::audio::manager::manager::TrackManager;
+use crate::audio::manager::manager::{push_to_history_inner, TrackManager};
 use crate::audio::manager::error_mananger::ManagerError;
 use crate::model::Track;
 
@@ -29,6 +29,19 @@ impl TrackManager {
 
         let slot = ps.queue.remove(index).unwrap();
         ps.original_order.retain(|id| *id != slot.id);
+        drop(ps);
+        self.broadcast_queue_update();
+        Ok(())
+    }
+
+    pub fn move_queue_to_history(&self, index: usize) -> Result<(), ManagerError> {
+        let mut ps = self.playback.lock().unwrap();
+        if index >= ps.queue.len() {
+            return Err(ManagerError::IndexOutOfRange);
+        }
+        let slot = ps.queue.remove(index).unwrap();
+        ps.original_order.retain(|id| *id != slot.id);
+        push_to_history_inner(&mut ps.history, (*slot.track).clone());
         drop(ps);
         self.broadcast_queue_update();
         Ok(())

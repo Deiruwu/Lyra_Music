@@ -4,6 +4,7 @@ use crate::model::Track;
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
+use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::states_view::{ListAction, TrackViewState};
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::catalog_search_input::catalog_search_input;
@@ -60,6 +61,7 @@ impl ExplorerView {
         msg: ExplorerMessage,
         rendered_tracks: &[&Track],
         playlists: &[(String, String)],
+        catalog_store: &CatalogStore,
     ) -> (Task<ExplorerMessage>, ExplorerOutMessage) {
         let mut out = ExplorerOutMessage::Idle;
 
@@ -77,9 +79,10 @@ impl ExplorerView {
 
                     ListAction::OpenContextMenu { anchor_id, selected_ids } => {
                         let is_liked = rendered_tracks.iter().find(|t| t.id == anchor_id).map(|t| t.liked).unwrap_or(false);
+                        let member_of = catalog_store.playlists_containing_track(&anchor_id);
 
                         let items = TrackContextMenuBuilder::new(is_liked)
-                            .with_playlists(playlists, None)
+                            .with_playlists(playlists, None, &member_of)
                             .with_delete()
                             .build();
 

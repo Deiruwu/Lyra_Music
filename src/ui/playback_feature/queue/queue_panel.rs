@@ -23,6 +23,7 @@ use crate::ui::theme::theme;
 pub(crate) const ROW_HEIGHT: f32 = 66.0;
 pub(crate) const ROW_SPACING: f32 = 4.0;
 pub(crate) const ROW_STRIDE: f32 = ROW_HEIGHT + ROW_SPACING;
+const DIVIDER_EXTRA_GAP: f32 = 10.0;
 
 pub(crate) const QUEUE_COLLAPSED_WIDTH: f32 = 20.0;
 pub(crate) const QUEUE_EXPANDED_WIDTH: f32 = 340.0;
@@ -76,14 +77,19 @@ pub enum QueueMessage {
     Unhovered,
     DeleteHovered(usize),
     DeleteUnhovered,
+    DeleteHoveredHistory(usize),
+    DeleteUnhoveredHistory,
     UiPlayClicked(usize),
     UiRemoveClicked(usize),
     UiMoveClicked(usize, usize),
     OpenTrackLink(TrackLink),
     RightClicked(usize),
+    RightClickedHistory(usize),
+    RightClickedCurrent,
     /// Click en una fila de historial: saltar `n` canciones atrás
     /// (1-based, ver `QueueOutMessage::RequestJumpBack`).
     UiJumpToHistory(usize),
+    UiRemoveHistoryClicked(usize),
 
     // ── Drag & drop ──────────────────────────────────────────────────────
     GlobalPressed,
@@ -105,11 +111,22 @@ pub enum QueueOutMessage {
     RequestMove(usize, usize),
     RequestOpenTrackLink(TrackLink),
     RequestContextMenu(Uuid),
+    RequestHistoryContextMenu(usize),
+    RequestCurrentContextMenu,
     RequestJumpBack(usize),
+    RequestRemoveHistory(usize),
+    RequestMoveToHistory(usize),
+    RequestMoveToQueue(usize),
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum DragOrigin {
+    Queue(usize),
+    History(usize),
 }
 
 struct DragState {
-    source_index: usize,
+    origin: DragOrigin,
     current_index: usize,
     grab_offset: f32,
     cursor_y: f32,
@@ -121,7 +138,7 @@ struct DragState {
 /// borrar, links, right-click siguen andando igual). Mismo patrón que
 /// `PendingDrag` en `playlist_view.rs`.
 struct PendingDrag {
-    source_index: usize,
+    origin: DragOrigin,
     grab_offset: f32,
     start_y: f32,
 }
@@ -136,8 +153,9 @@ pub struct QueuePanel {
     history: Vec<Track>,
     /// Track sonando ahora mismo (`TrackManager::get_current_track()`), si hay.
     current_track: Option<Track>,
-    hovered_row: Option<usize>,
+    hovered_zone: Option<DragOrigin>,
     hovered_delete: Option<usize>,
+    hovered_delete_history: Option<usize>,
     drag: Option<DragState>,
     pending_drag: Option<PendingDrag>,
     last_cursor_y: f32,
@@ -154,8 +172,9 @@ impl Default for QueuePanel {
             queue: Vec::new(),
             history: Vec::new(),
             current_track: None,
-            hovered_row: None,
+            hovered_zone: None,
             hovered_delete: None,
+            hovered_delete_history: None,
             drag: None,
             pending_drag: None,
             last_cursor_y: 0.0,
@@ -189,6 +208,23 @@ impl QueuePanel {
     /// la unidad sobre la que virtualiza/scrollea `view()`.
     fn merged_total(&self) -> usize {
         self.queue_start_offset() + self.queue.len()
+    }
+
+    fn extra_gap(&self) -> f32 {
+        if !self.history.is_empty() && self.current_track.is_some() {
+            DIVIDER_EXTRA_GAP
+        } else {
+            0.0
+        }
+    }
+
+    fn row_y(&self, merged_index: usize) -> f32 {
+        let base = merged_index as f32 * ROW_STRIDE;
+        if merged_index >= self.history.len() {
+            base + self.extra_gap()
+        } else {
+            base
+        }
     }
 
     /// Track en la fila `merged_index` de la lista fusionada, sea de
@@ -233,7 +269,16 @@ impl QueuePanel {
         self.queue.iter().find(|s| s.id == slot_id).map(|s| (*s.track).clone())
     }
 
-    fn move_dragged_item(&mut self, hovered_index: usize, now: Instant) {
+    pub fn history_track(&self, steps_back: usize) -> Option<Track> {
+        let index = self.history.len().checked_sub(steps_back)?;
+        self.history.get(index).cloned()
+    }
+
+    pub fn current_track(&self) -> Option<Track> {
+        self.current_track.clone()
+    }
+
+    fn move_dragged_item_in_queue(&mut self, hovered_index: usize, now: Instant) {
         let Some(drag) = self.drag.as_mut() else { return };
         if hovered_index == drag.current_index {
             return;
@@ -270,11 +315,11 @@ impl QueuePanel {
                 (task, QueueOutMessage::Idle)
             }
             QueueMessage::Hovered(index) => {
-                self.hovered_row = Some(index);
+                self.hovered_zone = Some(DragOrigin::Queue(index));
                 (Task::none(), QueueOutMessage::Idle)
             }
             QueueMessage::Unhovered => {
-                self.hovered_row = None;
+                self.hovered_zone = None;
                 (Task::none(), QueueOutMessage::Idle)
             }
             QueueMessage::DeleteHovered(index) => {
@@ -284,6 +329,17 @@ impl QueuePanel {
             QueueMessage::DeleteUnhovered => {
                 self.hovered_delete = None;
                 (Task::none(), QueueOutMessage::Idle)
+            }
+            QueueMessage::DeleteHoveredHistory(steps_back) => {
+                self.hovered_delete_history = Some(steps_back);
+                (Task::none(), QueueOutMessage::Idle)
+            }
+            QueueMessage::DeleteUnhoveredHistory => {
+                self.hovered_delete_history = None;
+                (Task::none(), QueueOutMessage::Idle)
+            }
+            QueueMessage::UiRemoveHistoryClicked(steps_back) => {
+                (Task::none(), QueueOutMessage::RequestRemoveHistory(steps_back))
             }
             QueueMessage::UiPlayClicked(index) => (Task::none(), QueueOutMessage::RequestPlay(index)),
             QueueMessage::UiRemoveClicked(index) => (Task::none(), QueueOutMessage::RequestRemove(index)),
@@ -295,6 +351,12 @@ impl QueuePanel {
                     Some(slot) => (Task::none(), QueueOutMessage::RequestContextMenu(slot.id)),
                     None => (Task::none(), QueueOutMessage::Idle),
                 }
+            }
+            QueueMessage::RightClickedHistory(steps_back) => {
+                (Task::none(), QueueOutMessage::RequestHistoryContextMenu(steps_back))
+            }
+            QueueMessage::RightClickedCurrent => {
+                (Task::none(), QueueOutMessage::RequestCurrentContextMenu)
             }
 
             QueueMessage::Scrolled(viewport) => {
@@ -310,7 +372,8 @@ impl QueuePanel {
             QueueMessage::AutoScrollTick => {
                 let now = Instant::now();
                 let merged_total = self.merged_total();
-                let queue_start = self.queue_start_offset() as f32 * ROW_STRIDE;
+                let queue_start = self.row_y(self.queue_start_offset());
+                let extra_gap = self.extra_gap();
 
                 let Some(drag) = self.drag.as_mut() else {
                     return (Task::none(), QueueOutMessage::Idle);
@@ -325,16 +388,20 @@ impl QueuePanel {
                     return (Task::none(), QueueOutMessage::Idle);
                 };
 
-                let max_offset = (merged_total as f32 * ROW_STRIDE - self.scroll.viewport_height).max(0.0);
+                let max_offset = (merged_total as f32 * ROW_STRIDE + extra_gap - self.scroll.viewport_height).max(0.0);
                 self.scroll.offset_y = (self.scroll.offset_y + delta_y).clamp(0.0, max_offset);
 
 
                 drag.cursor_y += delta_y;
 
-                let hovered_index = (((drag.cursor_y - queue_start) / ROW_STRIDE).floor() as isize)
-                    .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize;
-
-                self.move_dragged_item(hovered_index, now);
+                if matches!(drag.origin, DragOrigin::Queue(_))
+                    && drag.cursor_y >= queue_start
+                    && !self.queue.is_empty()
+                {
+                    let hovered_index = (((drag.cursor_y - queue_start) / ROW_STRIDE).floor() as isize)
+                        .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize;
+                    self.move_dragged_item_in_queue(hovered_index, now);
+                }
 
                 (
                     scroll_by(Id::new(QUEUE_SCROLL_ID), AbsoluteOffset { x: 0.0, y: delta_y }),
@@ -348,11 +415,19 @@ impl QueuePanel {
             // CursorMoved, así que nunca llega a promoverse a `self.drag`.
             QueueMessage::GlobalPressed => {
                 if self.drag.is_none() && self.pending_drag.is_none() {
-                    if let Some(index) = self.hovered_row {
-                        if index < self.queue.len() {
-                            let row_top = index as f32 * ROW_STRIDE;
+                    if let Some(origin) = self.hovered_zone {
+                        let valid = match origin {
+                            DragOrigin::Queue(i) => i < self.queue.len(),
+                            DragOrigin::History(sb) => sb >= 1 && sb <= self.history.len(),
+                        };
+                        if valid {
+                            let merged_index = match origin {
+                                DragOrigin::Queue(i) => self.queue_start_offset() + i,
+                                DragOrigin::History(sb) => self.history.len() - sb,
+                            };
+                            let row_top = self.row_y(merged_index);
                             self.pending_drag = Some(PendingDrag {
-                                source_index: index,
+                                origin,
                                 grab_offset: self.last_cursor_y - row_top,
                                 start_y: self.last_cursor_y,
                             });
@@ -368,9 +443,13 @@ impl QueuePanel {
 
                 if let Some(pending) = &self.pending_drag {
                     if (cursor_y - pending.start_y).abs() > DRAG_THRESHOLD_PX {
+                        let current_index = match pending.origin {
+                            DragOrigin::Queue(i) => i,
+                            DragOrigin::History(steps_back) => self.history.len() - steps_back,
+                        };
                         self.drag = Some(DragState {
-                            source_index: pending.source_index,
-                            current_index: pending.source_index,
+                            origin: pending.origin,
+                            current_index,
                             grab_offset: pending.grab_offset,
                             cursor_y,
                         });
@@ -378,31 +457,38 @@ impl QueuePanel {
                     }
                 }
 
-                let queue_start = self.queue_start_offset() as f32 * ROW_STRIDE;
+                let queue_start = self.row_y(self.queue_start_offset());
 
                 let Some(drag) = self.drag.as_mut() else {
-                    // Si el cursor cae sobre historial/actual (antes del
-                    // inicio de la cola), no hay fila de cola hovereada —
-                    // eso ya alcanza para que GlobalPressed no pueda armar
-                    // un drag desde ahí.
-                    let hovered_index = if self.queue.is_empty() || cursor_y < queue_start {
+                    let history_end = self.history.len() as f32 * ROW_STRIDE;
+                    self.hovered_zone = if !self.history.is_empty() && cursor_y < history_end {
+                        let history_index = ((cursor_y / ROW_STRIDE).floor() as isize)
+                            .clamp(0, self.history.len().saturating_sub(1) as isize) as usize;
+                        Some(DragOrigin::History(self.history.len() - history_index))
+                    } else if cursor_y < queue_start {
                         None
+                    } else if !self.queue.is_empty() {
+                        let q_index = (((cursor_y - queue_start) / ROW_STRIDE).floor() as isize)
+                            .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize;
+                        Some(DragOrigin::Queue(q_index))
                     } else {
-                        Some(
-                            (((cursor_y - queue_start) / ROW_STRIDE).floor() as isize)
-                                .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize,
-                        )
+                        None
                     };
-                    self.hovered_row = hovered_index;
                     return (Task::none(), QueueOutMessage::Idle);
                 };
 
                 drag.cursor_y = cursor_y;
 
-                let hovered_index = (((cursor_y - queue_start) / ROW_STRIDE).floor() as isize)
-                    .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize;
-
-                self.move_dragged_item(hovered_index, now);
+                match drag.origin {
+                    DragOrigin::Queue(_) => {
+                        if cursor_y >= queue_start && !self.queue.is_empty() {
+                            let hovered_index = (((cursor_y - queue_start) / ROW_STRIDE).floor() as isize)
+                                .clamp(0, self.queue.len().saturating_sub(1) as isize) as usize;
+                            self.move_dragged_item_in_queue(hovered_index, now);
+                        }
+                    }
+                    DragOrigin::History(_) => {}
+                }
 
                 (Task::none(), QueueOutMessage::Idle)
             }
@@ -418,19 +504,33 @@ impl QueuePanel {
                     return (Task::none(), QueueOutMessage::Idle);
                 };
 
-                if let Some(slot) = self.queue.get(drag.current_index) {
-                    let id = Self::slot_id_of(slot);
-                    self.animator.snap_to_target(&id, drag.current_index);
-                }
+                let queue_start = self.row_y(self.queue_start_offset());
+                let crossed_into_queue = drag.cursor_y >= queue_start;
 
-                if drag.source_index == drag.current_index {
-                    return (Task::none(), QueueOutMessage::Idle);
+                match drag.origin {
+                    DragOrigin::Queue(source_index) => {
+                        if let Some(slot) = self.queue.get(drag.current_index) {
+                            let id = Self::slot_id_of(slot);
+                            self.animator.snap_to_target(&id, drag.current_index);
+                        }
+                        if crossed_into_queue {
+                            if source_index == drag.current_index {
+                                (Task::none(), QueueOutMessage::Idle)
+                            } else {
+                                (Task::none(), QueueOutMessage::RequestMove(source_index, drag.current_index))
+                            }
+                        } else {
+                            (Task::none(), QueueOutMessage::RequestMoveToHistory(drag.current_index))
+                        }
+                    }
+                    DragOrigin::History(steps_back) => {
+                        if crossed_into_queue {
+                            (Task::none(), QueueOutMessage::RequestMoveToQueue(steps_back))
+                        } else {
+                            (Task::none(), QueueOutMessage::Idle)
+                        }
+                    }
                 }
-
-                (
-                    Task::none(),
-                    QueueOutMessage::RequestMove(drag.source_index, drag.current_index),
-                )
             }
 
             QueueMessage::AnimationFrame(_now) => {
@@ -481,9 +581,17 @@ impl QueuePanel {
         // 2. Renderizamos SOLO las filas de la ventana.
         for index in window.start..window.end {
             if index < self.history.len() {
+                let steps_back = self.history.len() - index;
+
+                let row_is_dragged = self.drag.as_ref().is_some_and(|d| {
+                    matches!(d.origin, DragOrigin::History(sb) if sb == steps_back)
+                });
+                if row_is_dragged {
+                    continue;
+                }
+
                 let track = &self.history[index];
                 let thumbnail = thumbnails.get(&thumb_key(track)).cloned();
-                let steps_back = self.history.len() - index;
                 let row = queue_static_row(
                     index + 1,
                     track,
@@ -492,8 +600,14 @@ impl QueuePanel {
                     |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
                     |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
                     Some(QueueMessage::UiJumpToHistory(steps_back)),
+                    Some(QueueMessage::RightClickedHistory(steps_back)),
+                    Some(QueueMessage::UiRemoveHistoryClicked(steps_back)),
+                    self.hovered_delete_history == Some(steps_back),
+                    Some(QueueMessage::DeleteHoveredHistory(steps_back)),
+                    Some(QueueMessage::DeleteUnhoveredHistory),
+                    false,
                 );
-                let y = index as f32 * ROW_STRIDE;
+                let y = self.row_y(index);
                 layers.push(container(row).width(Length::Fill).padding(Padding::new(0.0).top(y)).into());
                 continue;
             }
@@ -509,8 +623,14 @@ impl QueuePanel {
                     |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
                     |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
                     None,
+                    Some(QueueMessage::RightClickedCurrent),
+                    None,
+                    false,
+                    None,
+                    None,
+                    false,
                 );
-                let y = index as f32 * ROW_STRIDE;
+                let y = self.row_y(index);
                 layers.push(container(row).width(Length::Fill).padding(Padding::new(0.0).top(y)).into());
 
                 // Separador fino arriba del actual (solo si hay historial
@@ -525,11 +645,11 @@ impl QueuePanel {
                         snap: false,
                     });
                     let inset_divider = row![
-                        space().width(Length::FillPortion(3)),
-                        container(divider).width(Length::FillPortion(4)),
-                        space().width(Length::FillPortion(3)),
+                        space().width(Length::FillPortion(1)),
+                        container(divider).width(Length::FillPortion(3)),
+                        space().width(Length::FillPortion(1)),
                     ];
-                    let divider_y = y - ROW_SPACING / 2.0 - 0.5;
+                    let divider_y = y - (ROW_SPACING + self.extra_gap()) / 2.0 - 0.5;
                     layers.push(
                         container(inset_divider)
                             .width(Length::Fill)
@@ -546,10 +666,9 @@ impl QueuePanel {
             let slot_id = Self::slot_id_of(slot);
             let thumbnail = thumbnails.get(&thumb_key(track.as_ref())).cloned();
 
-            let row_is_dragged = self
-                .drag
-                .as_ref()
-                .is_some_and(|d| d.current_index == q_index);
+            let row_is_dragged = self.drag.as_ref().is_some_and(|d| {
+                matches!(d.origin, DragOrigin::Queue(_)) && d.current_index == q_index
+            });
 
             let row = queue_track_row(
                 index + 1,
@@ -557,7 +676,7 @@ impl QueuePanel {
                 thumbnail,
                 QueueMessage::UiPlayClicked(q_index),
                 QueueMessage::UiRemoveClicked(q_index),
-                !is_dragging && self.hovered_row == Some(q_index),
+                !is_dragging && self.hovered_zone == Some(DragOrigin::Queue(q_index)),
                 self.hovered_delete == Some(q_index),
                 QueueMessage::DeleteHovered(q_index),
                 QueueMessage::DeleteUnhovered,
@@ -571,7 +690,7 @@ impl QueuePanel {
                 continue;
             }
 
-            let y = queue_start as f32 * ROW_STRIDE + self.animator.visual_y_of(&slot_id, now);
+            let y = self.row_y(queue_start) + self.animator.visual_y_of(&slot_id, now);
 
             layers.push(
                 container(row)
@@ -583,33 +702,67 @@ impl QueuePanel {
 
         // 3. Ghost del drag & drop (siempre se pinta por encima de la lista).
         if let Some(drag) = &self.drag {
-            if let Some(slot) = self.queue.get(drag.current_index) {
-                let track = &slot.track;
-                let thumbnail = thumbnails.get(&thumb_key(track.as_ref())).cloned();
-                let ghost_y = (drag.cursor_y - drag.grab_offset).max(0.0);
+            let ghost_y = (drag.cursor_y - drag.grab_offset).max(0.0);
 
-                let ghost_row = queue_track_row(
-                    queue_start + drag.current_index + 1,
-                    track.as_ref(),
-                    thumbnail,
-                    QueueMessage::UiPlayClicked(drag.current_index),
-                    QueueMessage::UiRemoveClicked(drag.current_index),
-                    false,
-                    false,
-                    QueueMessage::DeleteHovered(drag.current_index),
-                    QueueMessage::DeleteUnhovered,
-                    true,
-                    |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
-                    |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
-                    QueueMessage::RightClicked(drag.current_index),
-                );
+            match drag.origin {
+                DragOrigin::Queue(_) => {
+                    if let Some(slot) = self.queue.get(drag.current_index) {
+                        let track = &slot.track;
+                        let thumbnail = thumbnails.get(&thumb_key(track.as_ref())).cloned();
 
-                layers.push(
-                    container(ghost_row)
-                        .width(Length::Fill)
-                        .padding(Padding::new(0.0).top(ghost_y))
-                        .into(),
-                );
+                        let ghost_row = queue_track_row(
+                            queue_start + drag.current_index + 1,
+                            track.as_ref(),
+                            thumbnail,
+                            QueueMessage::UiPlayClicked(drag.current_index),
+                            QueueMessage::UiRemoveClicked(drag.current_index),
+                            false,
+                            false,
+                            QueueMessage::DeleteHovered(drag.current_index),
+                            QueueMessage::DeleteUnhovered,
+                            true,
+                            |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
+                            |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
+                            QueueMessage::RightClicked(drag.current_index),
+                        );
+
+                        layers.push(
+                            container(ghost_row)
+                                .width(Length::Fill)
+                                .padding(Padding::new(0.0).top(ghost_y))
+                                .into(),
+                        );
+                    }
+                }
+                DragOrigin::History(steps_back) => {
+                    let history_index = self.history.len().checked_sub(steps_back);
+                    if let Some(track) = history_index.and_then(|i| self.history.get(i)) {
+                        let thumbnail = thumbnails.get(&thumb_key(track)).cloned();
+
+                        let ghost_row = queue_static_row(
+                            drag.current_index + 1,
+                            track,
+                            thumbnail,
+                            QueueRowVariant::History,
+                            |id| QueueMessage::OpenTrackLink(TrackLink::Artist(id)),
+                            |id| QueueMessage::OpenTrackLink(TrackLink::Album(id)),
+                            None,
+                            None,
+                            None,
+                            false,
+                            None,
+                            None,
+                            true,
+                        );
+
+                        layers.push(
+                            container(ghost_row)
+                                .width(Length::Fill)
+                                .padding(Padding::new(0.0).top(ghost_y))
+                                .into(),
+                        );
+                    }
+                }
             }
         }
 
@@ -617,7 +770,7 @@ impl QueuePanel {
         //    fiel y deja el `y` absoluto del animator anclando cada fila.
         //    El historial+actual tienen altura fija (no animan reorder);
         //    solo la porción de cola usa la altura dinámica del animator.
-        let list_height = queue_start as f32 * ROW_STRIDE
+        let list_height = self.row_y(queue_start)
             + self.animator.calculate_dynamic_height(self.queue.len(), now);
         let content_stack = stack(layers).height(Length::Fixed(list_height));
 
@@ -664,11 +817,12 @@ impl QueuePanel {
     ) -> Task<QueueMessage> {
         self.drag = None;
         self.pending_drag = None;
+        self.hovered_delete_history = None;
 
         let track_changed = self.current_track.as_ref().map(|t| &t.id) != current_track.as_ref().map(|t| &t.id);
         // Posición (antes de sobreescribir) de la fila que ERA la actual —
         // para decidir si seguir el avance o no (ver más abajo).
-        let was_visible_before = self.show && self.is_row_visible(self.history.len() as f32 * ROW_STRIDE);
+        let was_visible_before = self.show && self.is_row_visible(self.row_y(self.history.len()));
 
         let start = history.len().saturating_sub(HISTORY_VISIBLE_CAP);
         self.history = history[start..].to_vec();
@@ -699,7 +853,7 @@ impl QueuePanel {
         }
 
         // Reclampa el offset de scroll por si la lista se encogió.
-        let max_offset = (self.merged_total() as f32 * ROW_STRIDE - self.scroll.viewport_height).max(0.0);
+        let max_offset = (self.merged_total() as f32 * ROW_STRIDE + self.extra_gap() - self.scroll.viewport_height).max(0.0);
         self.scroll.offset_y = self.scroll.offset_y.min(max_offset);
 
         // Seguir el avance solo si el track que ERA actual estaba
@@ -732,9 +886,9 @@ impl QueuePanel {
             return Task::none();
         }
 
-        let row_top = self.history.len() as f32 * ROW_STRIDE;
+        let row_top = self.row_y(self.history.len());
         let row_center = row_top + ROW_HEIGHT / 2.0;
-        let content_height = self.merged_total() as f32 * ROW_STRIDE;
+        let content_height = self.merged_total() as f32 * ROW_STRIDE + self.extra_gap();
         let range = (content_height - self.scroll.viewport_height).max(1.0);
 
         let target_offset = (row_center - self.scroll.viewport_height / 2.0).clamp(0.0, range);
