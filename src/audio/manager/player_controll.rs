@@ -215,6 +215,11 @@ impl TrackManager {
         let _ = self.engine_tx.send(AudioCommand::SetVolume(vol));
     }
 
+    /// Duración de la transición entre canciones (0 = apagada).
+    pub fn set_crossfade(&self, seconds: f32) {
+        self.state.crossfade_ms.store((seconds.max(0.0) * 1000.0) as u32, Ordering::Relaxed);
+    }
+
     pub fn get_position(&self) -> Duration {
         self.state.get_position()
     }

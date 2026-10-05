@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::ui::assets::icons::Icon;
-use crate::ui::playlist_color; // [playlist-color]
+use crate::ui::cover_palette;
 use crate::ui::widgets::context_menu::ContextMenuItem;
 
 const ADD_TO_PLAYLIST_SUBMENU_ID: usize = 0;
@@ -150,7 +150,7 @@ impl<'a> TrackContextMenuBuilder<'a> {
                 .map(|(id, name)| {
                     ContextMenuItem::new(name.clone(), TrackContextAction::AddToPlaylist(id.clone()))
                         .icon(Icon::Playlist)
-                        .tint(playlist_color::accent(playlist_color::color_of(id))) // [playlist-color]
+                        .tint(cover_palette::accent(cover_palette::playlist_color(id)))
                 })
                 .collect(),
             None => Vec::new(),

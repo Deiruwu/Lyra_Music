@@ -42,10 +42,10 @@ use iced::widget::image::Handle;
 use iced::widget::{button, column, container, image, mouse_area, row, space, stack, text, text_input, Id};
 use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding, Theme};
 use iced::border::{rounded, Radius};
-use crate::model::Track;
 use crate::ui::assets::icons::{self, Icon};
 use crate::ui::utils::playlist_metadata::{format_track_count, format_total_duration};
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
+use crate::ui::widgets::cover_collage::{cover_collage, CollageTile};
 
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::{spacing, typography};
@@ -54,6 +54,12 @@ use crate::ui::assets::radii;
 use crate::ui::styles::text_input as text_input_style;
 
 const COVER_SIZE: f32 = 176.0;
+const CONTENT_PADDING_TOP: f32 = spacing::SP_32;
+const CONTENT_PADDING_BOTTOM: f32 = spacing::SP_28;
+/// Alto del header en modo `edge_to_edge` (fijo: la vista lo suma al scroll de la tabla).
+pub const EDGE_HEADER_HEIGHT: f32 = CONTENT_PADDING_TOP + COVER_SIZE + CONTENT_PADDING_BOTTOM;
+/// Margen lateral del contenido en modo `edge_to_edge`.
+const EDGE_PADDING_X: f32 = spacing::SP_28;
 const COVER_RADIUS: f32 = 16.0;
 const PLAY_BUTTON_SIZE: f32 = 52.0;
 
@@ -62,6 +68,8 @@ pub enum HeaderCover {
     Single(Option<Handle>),
     /// Cuatro carátulas en orden de lectura; con menos de cuatro se usa la primera sola.
     Mosaic(Vec<Option<Handle>>),
+    /// Portadas de varias playlists repartidas según cuántas sean (Remix).
+    Collage(Vec<CollageTile>),
 }
 
 /// Datos puramente informativos del banner. No incluye el `Handle` de
@@ -74,11 +82,17 @@ pub struct PlaylistHeaderData<'a> {
     /// "ME GUSTA". `None` para omitirlo.
     pub kicker: Option<&'a str>,
     /// Línea descriptiva bajo el nombre (p. ej. el origen de una mezcla). `None` para omitirla.
-    pub description: Option<&'a str>,
+    pub description: Option<String>,
     pub track_count: usize,
     pub total_duration_seconds: i64,
-    /// [playlist-color] Color de arranque del degradado; `None` usa el del tema.
+    /// Cuántas tienen letra; `None` para no mostrarlo (solo lo usan las playlists).
+    pub lyrics_count: Option<usize>,
+    /// Color de arranque del degradado; `None` usa el del tema.
     pub tint: Option<Color>,
+    /// Color donde termina el degradado; `None` se funde con el fondo del panel.
+    pub tint_end: Option<Color>,
+    /// De borde a borde del panel (con sus esquinas superiores) y de alto fijo.
+    pub edge_to_edge: bool,
 }
 
 /// Id del input de renombre, para darle foco al abrirlo.
@@ -103,17 +117,17 @@ pub enum TitleEdit<'a, Message> {
 pub fn playlist_header<'a, Message: Clone + 'a>(
     data: PlaylistHeaderData<'a>,
     cover: HeaderCover,
-    on_play: Message,
+    on_play: Option<Message>,
     on_cover_click: Option<Message>,
     title_edit: Option<TitleEdit<'a, Message>>,
     is_playing: bool,
-    corner: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let tint = data.tint.unwrap_or(theme().surface.gradient_start);
     let cover_element = match cover {
         HeaderCover::Single(handle) => single_cover(handle),
         HeaderCover::Mosaic(handles) if handles.len() >= 4 => cover_mosaic(handles),
         HeaderCover::Mosaic(handles) => single_cover(handles.into_iter().next().flatten()),
+        HeaderCover::Collage(tiles) => cover_collage(tiles, COVER_SIZE, COVER_RADIUS),
     };
 
     let cover_element: Element<'a, Message> = if let Some(on_click) = on_cover_click {
@@ -199,8 +213,12 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         None => space().height(0).into(),
     };
 
+    let lyrics_summary = match data.lyrics_count {
+        Some(count) if count > 0 => format!(" · {count} con letra"),
+        _ => String::new(),
+    };
     let metadata = text(format!(
-        "{} · {}",
+        "{} · {}{lyrics_summary}",
         format_track_count(data.track_count),
         format_total_duration(data.total_duration_seconds),
     ))
@@ -208,11 +226,60 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         .size(typography::TEXT_13)
         .color(theme().content.muted);
 
+    let mut info_column = column![
+        kicker,
+        title,
+        description,
+        space().height(8),
+        metadata,
+    ]
+        .align_x(Alignment::Start)
+        .spacing(spacing::SP_2);
+    if let Some(on_play) = on_play {
+        info_column = info_column.push(space().height(16)).push(play_button(is_playing, on_play));
+    }
+
+    let padding_x = if data.edge_to_edge { EDGE_PADDING_X } else { spacing::SP_8 };
+    let content = row![
+        cover_element,
+        info_column,
+    ]
+        .spacing(spacing::SP_24)
+        .align_y(Alignment::End)
+        .padding(Padding { top: CONTENT_PADDING_TOP, bottom: CONTENT_PADDING_BOTTOM, left: padding_x, right: padding_x });
+
+
+    let edge_to_edge = data.edge_to_edge;
+    let tint_end = data.tint_end;
+    let header = container(content)
+        .width(Length::Fill)
+        .style(move |_theme: &Theme| container::Style {
+            // Vertical: el color elegido arriba, fundiéndose hacia abajo con el fondo del panel.
+            background: Some(
+                iced::gradient::Linear::new(std::f32::consts::PI)
+                    .add_stop(0.0, tint)
+                    .add_stop(1.0, tint_end.unwrap_or(theme().surface.panel))
+                    .into(),
+            ),
+            border: Border {
+                radius: if edge_to_edge { Radius::new(0.0).top_left(radii::R_18).top_right(radii::R_18) } else { Radius::new(0.0) },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+    if edge_to_edge {
+        header.height(Length::Fixed(EDGE_HEADER_HEIGHT)).into()
+    } else {
+        header.into()
+    }
+}
+
+/// Botón redondo de reproducir/pausar en el color de acento.
+pub fn play_button<'a, Message: Clone + 'a>(is_playing: bool, on_press: Message) -> Element<'a, Message> {
     let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
-    let play_button = button(
-        container(
-            icons::icon(play_icon, typography::TEXT_20).color(theme().content.on_accent),
-        )
+    button(
+        container(icons::icon(play_icon, typography::TEXT_20).color(theme().content.on_accent))
             .width(Length::Fixed(PLAY_BUTTON_SIZE))
             .height(Length::Fixed(PLAY_BUTTON_SIZE))
             .align_x(Alignment::Center)
@@ -230,84 +297,8 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
                 ..Default::default()
             }
         })
-        .on_press(on_play);
-
-    let info_column = column![
-        kicker,
-        title,
-        description,
-        space().height(8),
-        metadata,
-        space().height(16),
-        play_button,
-    ]
-        .align_x(Alignment::Start)
-        .spacing(spacing::SP_2);
-
-    let content = row![
-        cover_element,
-        info_column,
-    ]
-        .spacing(spacing::SP_24)
-        .align_y(Alignment::End)
-        .padding(Padding { top: spacing::SP_32, bottom: spacing::SP_28, left: spacing::SP_8, right: spacing::SP_8 });
-
-    // Control opcional en la esquina superior derecha (p. ej. el selector de color).
-    let content: Element<'a, Message> = match corner {
-        Some(corner) => stack![
-            content,
-            container(corner)
-                .width(Length::Fill)
-                .align_x(Alignment::End)
-                .padding(Padding { top: spacing::SP_16, right: spacing::SP_16, ..Default::default() }),
-        ]
-            .into(),
-        None => content.into(),
-    };
-
-    container(content)
-        .width(Length::Fill)
-        .style(move |_theme: &Theme| container::Style {
-            background: Some(
-                iced::gradient::Linear::new(std::f32::consts::PI * 1.5)
-                    .add_stop(0.0, tint)
-                    .add_stop(1.0, theme().surface.base)
-                    .into(),
-            ),
-            ..Default::default()
-        })
+        .on_press(on_press)
         .into()
-}
-
-/// Banner de una colección sin portada propia (Explorar, Me gusta): mosaico de
-/// carátulas, conteo/duración de `tracks` y botón que reproduce todo o, si ya
-/// suena algo de esta colección, pausa/reanuda.
-pub fn collection_header<'a, Message: Clone + 'a>(
-    kicker: &'a str,
-    name: &'a str,
-    tracks: &[&Track],
-    mosaic: Vec<Option<Handle>>,
-    is_current: bool,
-    is_playing: bool,
-    on_play_all: Message,
-    on_toggle: Message,
-) -> Element<'a, Message> {
-    playlist_header(
-        PlaylistHeaderData {
-            name,
-            kicker: Some(kicker),
-            description: None,
-            track_count: tracks.len(),
-            total_duration_seconds: tracks.iter().map(|t| t.duration_seconds as i64).sum(),
-            tint: None,
-        },
-        HeaderCover::Mosaic(mosaic),
-        if is_current { on_toggle } else { on_play_all },
-        None,
-        None,
-        is_current && is_playing,
-        None,
-    )
 }
 
 fn single_cover<'a, Message: Clone + 'a>(handle: Option<Handle>) -> Element<'a, Message> {
@@ -356,7 +347,7 @@ fn cover_mosaic<'a, Message: 'a>(handles: Vec<Option<Handle>>) -> Element<'a, Me
 /// espejo (el de arriba a la izquierda redondea abajo a la derecha, etc.); los
 /// contenedores no tienen ese problema. Se invierte para que la esquina pedida
 /// sea la que se redondea.
-fn mirrored_for_image(radius: Radius) -> Radius {
+pub(crate) fn mirrored_for_image(radius: Radius) -> Radius {
     Radius {
         top_left: radius.bottom_right,
         top_right: radius.bottom_left,

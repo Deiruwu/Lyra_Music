@@ -8,7 +8,7 @@ use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::widgets::selection_state::{DoubleClickDetector, SelectionState};
 use crate::ui::widgets::track_list_builder;
-use crate::ui::widgets::track_list_builder::TrackEvent;
+use crate::ui::widgets::track_list_builder::{TrackEvent, COLUMN_HEADER_HEIGHT};
 
 pub(crate) const ROW_HEIGHT: f32 = 60.0;
 const BUFFER_ROWS: usize = 15;
@@ -85,6 +85,10 @@ pub struct TrackViewState {
 
     pub mouse_position: Option<Point>,
 
+    /// Alto de lo que va arriba de las filas dentro del mismo scroll (0 si
+    /// la tabla scrollea sola). Lo usan miniaturas, teclado y arrastre.
+    pub rows_offset: f32,
+
     pub playing_icon_hovered: bool,
 
     /// Override explícito del usuario (click en un header). `None` =
@@ -123,6 +127,7 @@ impl Default for TrackViewState {
             tracks_selection: SelectionState::new(),
             scroll: ScrollTracker::default(),
             mouse_position: None,
+            rows_offset: 0.0,
             playing_icon_hovered: false,
             active_sort_key: None,
             sort_direction_asc: true,
@@ -150,6 +155,7 @@ impl TrackViewState {
             rendered_tracks,
             ROW_HEIGHT,
             BUFFER_ROWS,
+            self.rows_offset,
         )
     }
 
@@ -263,6 +269,27 @@ impl TrackViewState {
     pub fn move_selection(&mut self, delta: isize, extend: bool, rendered_tracks: &[&Track]) -> Option<usize> {
         let visible_ids: Vec<&String> = rendered_tracks.iter().map(|t| &t.id).collect();
         self.tracks_selection.move_cursor(delta, extend, &visible_ids)
+    }
+
+    /// Canciones que arrastra apretar la fila bajo el mouse: toda la selección (en el orden
+    /// visible) si esa fila está seleccionada, si no solo esa fila.
+    pub fn drag_candidate<'a>(&self, rendered_tracks: &[&'a Track]) -> Option<Vec<&'a Track>> {
+        let position = self.mouse_position?;
+        // Con los títulos de columna fijos arriba, apretarlos no agarra la fila de abajo.
+        let header_pinned = self.rows_offset > 0.0 && self.scroll.offset_y + COLUMN_HEADER_HEIGHT >= self.rows_offset;
+        if !self.scroll.is_within_content(position.x) || (header_pinned && position.y < COLUMN_HEADER_HEIGHT) {
+            return None;
+        }
+        let content_y = position.y + self.scroll.offset_y - self.rows_offset;
+        if content_y < 0.0 {
+            return None;
+        }
+        let pressed = rendered_tracks.get((content_y / ROW_HEIGHT) as usize)?;
+        if self.tracks_selection.is_selected(&pressed.id) {
+            Some(rendered_tracks.iter().filter(|t| self.tracks_selection.is_selected(&t.id)).copied().collect())
+        } else {
+            Some(vec![*pressed])
+        }
     }
 
     /// Track bajo el cursor de selección (el que reproduce Enter).

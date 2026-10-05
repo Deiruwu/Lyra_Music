@@ -19,6 +19,12 @@ pub struct AppSettings {
     pub explorer_play_stats: bool,
     /// Playlists habilitadas en Remix.
     pub remix_playlists: Vec<String>,
+    /// Acento elegido en Ajustes (`#rrggbb`); `None` = el violeta de fábrica.
+    pub accent_color: Option<String>,
+    /// Transición entre canciones (fundir el final de una con el inicio de la siguiente).
+    pub crossfade_enabled: bool,
+    /// Duración de la transición, en segundos (se recuerda aunque esté apagada).
+    pub crossfade_seconds: f32,
 }
 
 impl Default for AppSettings {
@@ -32,6 +38,9 @@ impl Default for AppSettings {
             search_filter: SearchFilter::default(),
             explorer_play_stats: false,
             remix_playlists: Vec::new(),
+            accent_color: None,
+            crossfade_enabled: false,
+            crossfade_seconds: 6.0,
         }
     }
 }

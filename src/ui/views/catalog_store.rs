@@ -429,6 +429,15 @@ impl CatalogStore {
         self.toggle_like(&id)
     }
 
+    /// Como `add_track_to_playlist`, pero agrega el track al catálogo si todavía no está.
+    pub fn add_track_object_to_playlist(&mut self, playlist_id: &str, track: Track) -> Task<CatalogStoreMessage> {
+        let id = track.id.clone();
+        if !self.index_by_id.contains_key(&id) {
+            self.upsert_track(track);
+        }
+        self.add_track_to_playlist(playlist_id, &id)
+    }
+
     pub fn is_artist_followed(&self, artist_id: &str) -> bool {
         self.followed_artists.contains_key(artist_id)
     }
@@ -704,6 +713,35 @@ impl CatalogStore {
                 )
             }
         }
+    }
+
+    /// Mueve juntas las canciones `track_ids` (en su orden dentro de la playlist) para que el
+    /// bloque empiece en `to_idx` de la lista sin ellas, y renumera las posiciones.
+    pub fn move_tracks_in_playlist(&mut self, playlist_id: &str, track_ids: &[String], to_idx: usize) -> Task<CatalogStoreMessage> {
+        let Some(ids) = self.playlist_order.get_mut(playlist_id) else {
+            return Task::none();
+        };
+
+        let (block, mut rest): (Vec<_>, Vec<_>) = ids.iter().cloned().partition(|(id, _)| track_ids.contains(id));
+        let at = to_idx.min(rest.len());
+        rest.splice(at..at, block);
+        if rest.iter().map(|(id, _)| id).eq(ids.iter().map(|(id, _)| id)) {
+            return Task::none();
+        }
+
+        let renumbered: Vec<(String, f64)> = rest.into_iter().enumerate().map(|(i, (id, _))| (id, i as f64)).collect();
+        *ids = renumbered.clone();
+        self.bump_version();
+
+        let manager = Arc::clone(&self.playlist_manager);
+        let playlist_id = playlist_id.to_string();
+        Task::perform(
+            async move {
+                let result = manager.renumber_playlist(&playlist_id, &renumbered).await;
+                (playlist_id, result.map_err(|e| e.to_string()))
+            },
+            |(pid, res)| CatalogStoreMessage::TrackReordered(pid, res),
+        )
     }
 
     // ── CARGA (chunking) ─────────────────────────────────────────────────────

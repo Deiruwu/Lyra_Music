@@ -52,6 +52,9 @@ pub enum PillPhase {
     MetadataUpdated,
     /// No se pudieron actualizar los metadatos.
     MetadataFailed,
+    /// Canciones agregadas a una playlist (el título es la playlist): el texto
+    /// del resultado y si entró alguna (si no, ya estaban todas).
+    PlaylistAdd { summary: String, added_any: bool },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -130,6 +133,7 @@ pub fn download_pill<'a, Message: Clone + 'a>(
         PillPhase::LyricsNotFound => "No se encontró letra".to_string(),
         PillPhase::MetadataUpdated => "Metadatos actualizados".to_string(),
         PillPhase::MetadataFailed => "Falló al actualizar metadatos".to_string(),
+        PillPhase::PlaylistAdd { summary, .. } => summary.clone(),
     };
 
     let progress: Option<f32> = match (&entry.phase, entry.downloaded_bytes, entry.total_bytes) {
@@ -171,13 +175,20 @@ pub fn download_pill<'a, Message: Clone + 'a>(
     };
 
     let background = match entry.phase {
-        PillPhase::Finished | PillPhase::Analyzed | PillPhase::LyricsFound | PillPhase::MetadataUpdated => {
+        PillPhase::Finished
+        | PillPhase::Analyzed
+        | PillPhase::LyricsFound
+        | PillPhase::MetadataUpdated
+        | PillPhase::PlaylistAdd { added_any: true, .. } => {
             tint(t.surface.panel, t.status.cached, STATUS_TINT_AMOUNT)
         }
         PillPhase::Failed | PillPhase::AnalyzeFailed | PillPhase::MetadataFailed => {
             tint(t.surface.panel, t.status.error, STATUS_TINT_AMOUNT)
         }
-        PillPhase::Requested | PillPhase::Downloading | PillPhase::LyricsNotFound => t.surface.panel,
+        PillPhase::Requested
+        | PillPhase::Downloading
+        | PillPhase::LyricsNotFound
+        | PillPhase::PlaylistAdd { added_any: false, .. } => t.surface.panel,
     };
 
     container(content)

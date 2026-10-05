@@ -4,6 +4,9 @@ use std::time::{Duration, Instant};
 use crate::audio::decoder::{ChannelMode, TARGET_SAMPLE_RATE, TARGET_CHANNELS};
 use crate::model::audio_tech::PlayableTrack;
 
+/// `crossfade_position_ms` sin posición que fijar.
+const NO_ANCHOR: u32 = u32::MAX;
+
 // ---  Comandos IPC ---
 pub enum AudioCommand {
     Play {
@@ -21,6 +24,9 @@ pub enum AudioCommand {
     Stop,
     Seek(Duration),
     SetVolume(f32),
+    /// La que sigue en la cola, abierta de antemano para fundirla con el final de la
+    /// actual (`None` = no hay o la transición está apagada).
+    PrepareNext(Option<Arc<PlayableTrack>>),
 }
 
 // --- ESTADO COMPARTIDO LOCK-FREE ---
@@ -52,6 +58,19 @@ pub struct EngineState {
     /// Referencia común para convertir Instant -> i64 de forma atómica.
     process_start: Instant,
     pub flush_flag: AtomicBool,
+    /// Duración de la transición entre canciones, en ms (0 = apagada).
+    pub crossfade_ms: AtomicU32,
+    /// El motor ya pasó (fundiendo) a la canción preparada; el supervisor pone al
+    /// día cola e historial sin volver a mandar `Play` (ver `take_crossfade`).
+    crossfaded: AtomicBool,
+    /// Posición de la canción nueva al anunciarla (silencio inicial saltado), o
+    /// `NO_ANCHOR` si ya se fijó (un salto durante el cruce).
+    crossfade_position_ms: AtomicU32,
+    /// Cuándo se anunció, para sumar lo que sonó hasta que el supervisor lo atiende.
+    crossfade_announced_nanos: AtomicI64,
+    /// El motor tiene abierta una siguiente para la transición (la descartan `Play`,
+    /// `Load`, `Stop` y el propio cruce).
+    pub next_prepared: AtomicBool,
 }
 
 impl EngineState {
@@ -66,6 +85,11 @@ impl EngineState {
             anchor_instant_nanos: AtomicI64::new(0),
             process_start: Instant::now(),
             flush_flag: AtomicBool::new(false),
+            crossfade_ms: AtomicU32::new(0),
+            crossfaded: AtomicBool::new(false),
+            crossfade_position_ms: AtomicU32::new(NO_ANCHOR),
+            crossfade_announced_nanos: AtomicI64::new(0),
+            next_prepared: AtomicBool::new(false),
         }
     }
 
@@ -83,6 +107,28 @@ impl EngineState {
         // Convertimos los milisegundos del ancla a muestras y reseteamos el contador
         let samples = (ms as u64 * TARGET_SAMPLE_RATE as u64 * TARGET_CHANNELS as u64) / 1000;
         self.total_samples_consumed.store(samples, Ordering::Relaxed);
+    }
+
+    /// La canción nueva de la transición ya suena, desde `position_ms` (o `None` si su
+    /// posición ya se fijó por un salto).
+    pub fn announce_crossfade(&self, position_ms: Option<u32>) {
+        self.crossfade_position_ms.store(position_ms.unwrap_or(NO_ANCHOR), Ordering::Relaxed);
+        self.crossfade_announced_nanos.store(self.now_nanos(), Ordering::Relaxed);
+        self.crossfaded.store(true, Ordering::Release);
+    }
+
+    /// Para el supervisor: `Some` si el motor pasó a la canción preparada, con la posición
+    /// que tiene ahora (lo anunciado más lo que sonó desde entonces) si hay que fijarla.
+    pub fn take_crossfade(&self) -> Option<Option<u32>> {
+        if !self.crossfaded.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        let position = self.crossfade_position_ms.load(Ordering::Relaxed);
+        if position == NO_ANCHOR {
+            return Some(None);
+        }
+        let since_ms = (self.now_nanos() - self.crossfade_announced_nanos.load(Ordering::Relaxed)).max(0) / 1_000_000;
+        Some(Some(position + since_ms as u32))
     }
 
     /// Congela el ancla en la posición actual sin tocar el reloj —

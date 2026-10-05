@@ -68,8 +68,8 @@ pub enum LibraryBrowserMessage {
 #[derive(Debug, Clone)]
 pub enum LibraryBrowserOutMessage {
     Idle,
-    RequestToggleLike(Track),
-    RequestAddToPlaylist { playlist_id: String, track_id: String },
+    RequestToggleLike(Vec<Track>),
+    RequestAddToPlaylist { playlist_id: String, tracks: Vec<Track> },
     RequestToggleFollowArtist(String, String, Option<String>),
     RequestTrackTool(TrackTool, String),
 }
@@ -138,11 +138,42 @@ impl LibraryBrowserFeature {
         }
     }
 
-    /// Mueve la selección de la lista abierta (flechas, RePág/AvPág).
-    pub fn move_selection(&mut self, step: SelectionStep, catalog_store: &CatalogStore) -> Task<LibraryBrowserMessage> {
+    /// Ctrl/Shift sostenidos, para la selección múltiple con el mouse.
+    pub fn set_modifiers(&mut self, modifiers: iced::keyboard::Modifiers) {
         match &mut self.active {
-            Some(LibraryBrowserRoute::Artist(view)) => view.move_selection(step, catalog_store).map(LibraryBrowserMessage::Artist),
-            Some(LibraryBrowserRoute::Album(view)) => view.move_selection(step).map(LibraryBrowserMessage::Album),
+            Some(LibraryBrowserRoute::Artist(view)) => view.set_modifiers(modifiers),
+            Some(LibraryBrowserRoute::Album(view)) => view.set_modifiers(modifiers),
+            Some(LibraryBrowserRoute::Mix(view)) => view.list.keybinds_press = modifiers,
+            None => {}
+        }
+    }
+
+    /// Canciones a las que aplica una acción del menú sobre `anchor_id` (la selección, si lo incluye).
+    fn selected_or(&self, anchor_id: &str, catalog_store: &CatalogStore) -> Vec<Track> {
+        let tracks = match &self.active {
+            Some(LibraryBrowserRoute::Artist(view)) => view.selected_or(anchor_id, catalog_store),
+            Some(LibraryBrowserRoute::Album(view)) => view.selected_or(anchor_id),
+            Some(LibraryBrowserRoute::Mix(view)) => view.selected_or(anchor_id),
+            None => Vec::new(),
+        };
+        tracks.into_iter().cloned().collect()
+    }
+
+    /// Canciones bajo el mouse en la vista abierta, para arrastrarlas a una playlist.
+    pub fn drag_candidate(&self, catalog_store: &CatalogStore) -> Option<Vec<Track>> {
+        match &self.active {
+            Some(LibraryBrowserRoute::Artist(view)) => view.drag_candidate(catalog_store).map(|tracks| tracks.into_iter().cloned().collect()),
+            Some(LibraryBrowserRoute::Album(view)) => view.drag_candidate().map(|tracks| tracks.into_iter().cloned().collect()),
+            Some(LibraryBrowserRoute::Mix(view)) => view.drag_candidate(),
+            None => None,
+        }
+    }
+
+    /// Mueve la selección de la lista abierta (flechas, RePág/AvPág).
+    pub fn move_selection(&mut self, step: SelectionStep, extend: bool, catalog_store: &CatalogStore) -> Task<LibraryBrowserMessage> {
+        match &mut self.active {
+            Some(LibraryBrowserRoute::Artist(view)) => view.move_selection(step, extend, catalog_store).map(LibraryBrowserMessage::Artist),
+            Some(LibraryBrowserRoute::Album(view)) => view.move_selection(step, extend).map(LibraryBrowserMessage::Album),
             Some(LibraryBrowserRoute::Mix(view)) => view.move_selection(step).map(LibraryBrowserMessage::Mix),
             None => Task::none(),
         }
@@ -299,6 +330,10 @@ impl LibraryBrowserFeature {
                         }
                         MixOutMessage::OpenArtist(id) => Task::done(LibraryBrowserMessage::OpenArtist(id)),
                         MixOutMessage::OpenAlbum(id) => Task::done(LibraryBrowserMessage::OpenAlbum(id)),
+                        MixOutMessage::ToggleShuffle => {
+                            self.manager.toggle_shuffle();
+                            Task::none()
+                        }
                         MixOutMessage::RequestTogglePlayback => {
                             if self.manager.state.is_playing() { self.manager.pause(); } else { self.manager.resume(); }
                             Task::none()
@@ -325,14 +360,16 @@ impl LibraryBrowserFeature {
                 let Some(track) = self.find_track(&track_id, catalog_store) else {
                     return (Task::none(), LibraryBrowserOutMessage::Idle);
                 };
+                // Reproducir, encolar, me gusta y agregar a playlist van a toda la selección.
+                let tracks = self.selected_or(&track_id, catalog_store);
 
                 match action {
                     TrackContextAction::PlayNow => {
-                        self.manager.play_context(vec![track.clone()], 0);
+                        self.manager.play_context(tracks, 0);
                         (Task::none(), LibraryBrowserOutMessage::Idle)
                     }
                     TrackContextAction::Enqueue => {
-                        self.manager.enqueue(track.clone());
+                        self.manager.enqueue_many(tracks);
                         (Task::none(), LibraryBrowserOutMessage::Idle)
                     }
                     TrackContextAction::StartRadio => {
@@ -340,7 +377,7 @@ impl LibraryBrowserFeature {
                         (Task::none(), LibraryBrowserOutMessage::Idle)
                     }
                     TrackContextAction::FrontEnqueue => {
-                        self.manager.enqueue_front(track.clone());
+                        self.manager.enqueue_front_many(tracks);
                         (Task::none(), LibraryBrowserOutMessage::Idle)
                     }
                     TrackContextAction::CopyId => {
@@ -353,10 +390,10 @@ impl LibraryBrowserFeature {
                         (Task::none(), LibraryBrowserOutMessage::RequestTrackTool(tool, track_id))
                     }
                     TrackContextAction::ToggleLike => {
-                        (Task::none(), LibraryBrowserOutMessage::RequestToggleLike(track.clone()))
+                        (Task::none(), LibraryBrowserOutMessage::RequestToggleLike(tracks))
                     }
                     TrackContextAction::AddToPlaylist(playlist_id) => {
-                        (Task::none(), LibraryBrowserOutMessage::RequestAddToPlaylist { playlist_id, track_id })
+                        (Task::none(), LibraryBrowserOutMessage::RequestAddToPlaylist { playlist_id, tracks })
                     }
                     TrackContextAction::DeleteFromCatalog | TrackContextAction::RemoveFromPlaylist => {
                         (Task::none(), LibraryBrowserOutMessage::Idle)
@@ -519,7 +556,7 @@ impl LibraryBrowserFeature {
                 view.view(now_playing_id, is_playing).map(LibraryBrowserMessage::Album)
             }
             Some(LibraryBrowserRoute::Mix(view)) => {
-                view.view(now_playing_id, is_playing).map(LibraryBrowserMessage::Mix)
+                view.view(now_playing_id, is_playing, self.manager.is_shuffled()).map(LibraryBrowserMessage::Mix)
             }
             None => space().into(),
         }

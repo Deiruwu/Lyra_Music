@@ -27,6 +27,7 @@ const RECONNECT_DELAY_SECS: u64 = 2;
 const ANALYZED_KEY_SUFFIX: &str = "::analyzed";
 const LYRICS_KEY_SUFFIX: &str = "::lyrics";
 const METADATA_KEY_SUFFIX: &str = "::metadata";
+const PLAYLIST_ADD_KEY_SUFFIX: &str = "::playlist";
 
 /// Las píldoras no pertenecen a ninguna vista paginada — el epoch de
 /// `ThumbnailCache` no aplica acá, se pasa constante.
@@ -235,6 +236,25 @@ impl DownloadFeature {
             .unwrap_or(Task::none())
     }
 
+    /// Letrero de canciones agregadas a una playlist: cuántas entraron y cuántas ya estaban.
+    pub fn notify_playlist_add(
+        &mut self,
+        thumbnails: &mut ThumbnailCache,
+        playlist_name: &str,
+        added: usize,
+        already: usize,
+        sample: &Track,
+    ) -> Task<DownloadFeatureMessage> {
+        let summary = playlist_add_summary(added, already);
+        self.push_notice(
+            thumbnails,
+            notice_track(sample.id.clone(), playlist_name.to_string(), sample.thumbnail_small.clone()),
+            PLAYLIST_ADD_KEY_SUFFIX,
+            PillPhase::PlaylistAdd { summary, added_any: added > 0 },
+            HOLD_AFTER_TERMINAL_MS + SUCCESS_EXTRA_HOLD_MS,
+        )
+    }
+
     /// Inserta o actualiza la píldora de descarga (key == id de track) por
     /// id, preservando el progreso si ya existía (las fases post-descarga
     /// no traen esos campos).
@@ -358,4 +378,31 @@ fn download_events() -> impl futures::Stream<Item = DownloadFeatureMessage> {
             tokio::time::sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
         }
     })
+}
+
+/// "2 canciones agregadas", "Ya estaba en la playlist", "3 agregadas · 1 ya estaba"...
+fn playlist_add_summary(added: usize, already: usize) -> String {
+    match (added, already) {
+        (1, 0) => "Canción agregada".to_string(),
+        (n, 0) => format!("{n} canciones agregadas"),
+        (0, 1) => "Ya estaba en la playlist".to_string(),
+        (0, n) => format!("Ya estaban las {n} en la playlist"),
+        (n, 1) => format!("{n} agregadas · 1 ya estaba"),
+        (n, m) => format!("{n} agregadas · {m} ya estaban"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::playlist_add_summary;
+
+    #[test]
+    fn el_letrero_dice_que_entro_y_que_ya_estaba() {
+        assert_eq!(playlist_add_summary(1, 0), "Canción agregada");
+        assert_eq!(playlist_add_summary(4, 0), "4 canciones agregadas");
+        assert_eq!(playlist_add_summary(0, 1), "Ya estaba en la playlist");
+        assert_eq!(playlist_add_summary(0, 3), "Ya estaban las 3 en la playlist");
+        assert_eq!(playlist_add_summary(2, 1), "2 agregadas · 1 ya estaba");
+        assert_eq!(playlist_add_summary(2, 5), "2 agregadas · 5 ya estaban");
+    }
 }

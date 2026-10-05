@@ -1,18 +1,18 @@
-use iced::{Element, Length, Task};
+use iced::{Color, Element, Task};
 use iced::widget::image::Handle;
-use iced::widget::{column, space};
+use iced::widget::Id;
 use crate::model::Track;
 use crate::ui::assets::icons::Icon;
+use crate::ui::cover_palette;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::states_view::{ListAction, TrackViewState};
 use crate::ui::views::view_data::{NavId, ViewData};
-use crate::ui::widgets::catalog_search_input::catalog_search_input;
-use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusTone};
+use crate::ui::widgets::collection_page::{action_bar, contains_now_playing, empty_page, filter_input, icon_toggle, mosaic_header, ACTION_BAR_HEIGHT, CONTENT_PADDING_X, ROWS_OFFSET};
+use crate::ui::widgets::playlist_header::{play_button, EDGE_HEADER_HEIGHT};
 use crate::ui::widgets::track_list_builder::{TrackBuilder, TrackEvent};
 use crate::ui::widgets::track_list_out_message::TrackListOutMessage;
 use crate::ui::widgets::track_context_builder::TrackContextMenuBuilder;
-use crate::ui::widgets::playlist_header::collection_header;
 
 pub const VIEW_DATA: ViewData = ViewData::new(
     NavId::Favorites,
@@ -28,10 +28,16 @@ pub enum FavoritesMessage {
     Table(TrackEvent),
     PlayAll,
     TogglePlayback,
+    ToggleFilter,
+    ToggleShuffle,
 }
 
 #[derive(Debug, Clone)]
-pub enum FavoritesExtra {}
+pub enum FavoritesExtra {
+    ToggleShuffle,
+}
+
+const FILTER_INPUT_ID: &str = "favorites_filter_input";
 
 pub type FavoritesOutMessage = TrackListOutMessage<FavoritesExtra>;
 
@@ -39,15 +45,24 @@ pub type FavoritesOutMessage = TrackListOutMessage<FavoritesExtra>;
 
 pub struct FavoritesView {
     pub list: TrackViewState,
+    /// Campo de filtro visible (lupa activa).
+    filter_open: bool,
 }
 
 // ─── IMPLEMENTACIÓN ─────────────────────────────────────────────
 
 impl FavoritesView {
     pub fn new() -> Self {
-        Self {
-            list: TrackViewState::new(),
-        }
+        let mut list = TrackViewState::new();
+        list.rows_offset = ROWS_OFFSET;
+        Self { list, filter_open: false }
+    }
+
+    /// Ctrl+F: muestra el filtro de la página y le da foco con el texto seleccionado.
+    pub fn open_filter(&mut self) -> Task<FavoritesMessage> {
+        self.filter_open = true;
+        let id = Id::new(FILTER_INPUT_ID);
+        Task::batch([iced::widget::operation::focus(id.clone()), iced::widget::operation::select_all(id)])
     }
 
     pub fn update(
@@ -57,6 +72,7 @@ impl FavoritesView {
         playlists: &[(String, String)],
         catalog_store: &CatalogStore,
     ) -> (Task<FavoritesMessage>, FavoritesOutMessage) {
+        let mut task = Task::none();
         let out = match &msg {
             // ─── EVENTOS DE LA TABLA (TrackBuilder) ────────────────────────
             FavoritesMessage::Table(event) => {
@@ -96,9 +112,23 @@ impl FavoritesView {
             }
             FavoritesMessage::PlayAll => FavoritesOutMessage::RequestPlayAll,
             FavoritesMessage::TogglePlayback => FavoritesOutMessage::RequestTogglePlayback,
+            FavoritesMessage::ToggleShuffle => FavoritesOutMessage::extra(FavoritesExtra::ToggleShuffle),
+            FavoritesMessage::ToggleFilter => {
+                self.filter_open = !self.filter_open;
+                if self.filter_open {
+                    task = iced::widget::operation::focus(Id::new(FILTER_INPUT_ID));
+                    FavoritesOutMessage::Idle
+                } else if !self.list.search_filter.is_empty() {
+                    // Al cerrar la lupa no queda un filtro escondido.
+                    self.list.apply_search_filter(String::new());
+                    FavoritesOutMessage::RequestSearch(String::new())
+                } else {
+                    FavoritesOutMessage::Idle
+                }
+            }
         };
 
-        (Task::none(), out)
+        (task, out)
     }
 
     pub fn view<'a>(
@@ -106,62 +136,58 @@ impl FavoritesView {
         rendered_tracks: Vec<&'a Track>,
         thumbnails: &'a AsyncThumbnail,
         mosaic: Vec<Option<Handle>>,
+        base_color: Color,
         now_playing_id: Option<String>,
         is_playing: bool,
+        is_shuffled: bool,
     ) -> Element<'a, FavoritesMessage> {
-        let header = collection_header(
-            "PLAYLIST",
-            "Me gusta",
-            &rendered_tracks,
-            mosaic,
-            now_playing_id.is_some(),
-            is_playing,
-            FavoritesMessage::PlayAll,
-            FavoritesMessage::TogglePlayback,
-        );
+        let header = mosaic_header("PLAYLIST", "Me gusta", &rendered_tracks, mosaic, base_color);
+        let is_current = contains_now_playing(&rendered_tracks, now_playing_id.as_deref());
+        let toolbar = self.view_action_bar(is_current, is_current && is_playing, is_shuffled);
+        let band = cover_palette::band_tint(base_color);
 
-        let search_bar = catalog_search_input(
-            "Buscar en tus favoritos...",
-            &self.list.search_filter,
-            FavoritesMessage::SearchInputChanged,
-        );
+        if rendered_tracks.is_empty() {
+            let message = if self.list.search_filter.trim().is_empty() {
+                "Aún no has marcado ninguna canción con \"Me gusta\"."
+            } else {
+                "Nada en tus favoritos coincide con el filtro."
+            };
+            return empty_page(header, toolbar, message, band);
+        }
 
-        let fixed_header = column![
-            header,
-            space().height(Length::Fixed(16.0)),
-            search_bar,
+        TrackBuilder::new(
+            rendered_tracks,
+            &self.list.scroll,
+            thumbnails,
+            &self.list.tracks_selection.selected_ids,
+            "favorites_catalog_scroll",
+        )
+            .leading(header, EDGE_HEADER_HEIGHT)
+            .toolbar(toolbar, ACTION_BAR_HEIGHT)
+            .band(band)
+            .content_padding_x(CONTENT_PADDING_X)
+            .index_sortable()
+            .sort(self.list.active_sort_key, self.list.sort_direction_asc)
+            .playing(now_playing_id, is_playing)
+            .icon_hovered(self.list.playing_icon_hovered)
+            .on_event(FavoritesMessage::Table)
+            .build()
+    }
+
+    /// Reproducir y aleatorio; a la derecha el filtro (lupa).
+    fn view_action_bar(&self, is_current: bool, is_playing: bool, is_shuffled: bool) -> Element<'_, FavoritesMessage> {
+        let play_message = if is_current { FavoritesMessage::TogglePlayback } else { FavoritesMessage::PlayAll };
+        let left = vec![
+            play_button(is_playing, play_message),
+            icon_toggle(Icon::Shuffle, is_shuffled, FavoritesMessage::ToggleShuffle),
         ];
 
-        let body_content: Element<'_, FavoritesMessage> = if rendered_tracks.is_empty() {
-            catalog_status_message(
-                "Aún no has marcado ninguna canción con \"Me gusta\".",
-                StatusTone::Muted,
-            )
-        } else {
-            let tracks_refs: Vec<&Track> = rendered_tracks;
+        let mut right = Vec::new();
+        if self.filter_open {
+            right.push(filter_input("Filtrar tus favoritos…", &self.list.search_filter, FavoritesMessage::SearchInputChanged, FILTER_INPUT_ID));
+        }
+        right.push(icon_toggle(Icon::Search, self.filter_open, FavoritesMessage::ToggleFilter));
 
-            TrackBuilder::new(
-                tracks_refs,
-                &self.list.scroll,
-                thumbnails,
-                &self.list.tracks_selection.selected_ids,
-                "favorites_catalog_scroll",
-            )
-                .index_sortable()
-                .sort(self.list.active_sort_key, self.list.sort_direction_asc)
-                .playing(now_playing_id, is_playing)
-                .icon_hovered(self.list.playing_icon_hovered)
-                .on_event(FavoritesMessage::Table)
-                .build()
-        };
-
-        column![
-            fixed_header,
-            space().height(Length::Fixed(16.0)),
-            body_content,
-        ]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        action_bar(left, right)
     }
 }

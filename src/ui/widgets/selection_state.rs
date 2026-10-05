@@ -1,3 +1,4 @@
+use crate::model::Track;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -88,6 +89,29 @@ impl SelectionState {
         Some(target)
     }
 
+    /// Clic en la fila `id` de `ids`: Shift agranda desde el ancla, Ctrl suma o quita, si no selecciona solo esa.
+    pub fn click(&mut self, id: &str, modifiers: iced::keyboard::Modifiers, ids: &[String]) {
+        let Some(index) = ids.iter().position(|candidate| candidate == id) else { return };
+        if modifiers.shift() {
+            let visible: Vec<&String> = ids.iter().collect();
+            self.select_range(index, &visible);
+        } else if modifiers.control() || modifiers.command() {
+            self.toggle(id.to_string(), index);
+        } else {
+            self.select_single(id.to_string(), index);
+        }
+    }
+
+    /// Clic derecho: conserva la selección si la fila ya estaba en ella, si no selecciona solo esa.
+    pub fn right_click(&mut self, id: &str, ids: &[String]) {
+        if self.is_selected(id) {
+            return;
+        }
+        if let Some(index) = ids.iter().position(|candidate| candidate == id) {
+            self.select_single(id.to_string(), index);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.selected_ids.clear();
         self.anchor_index = None;
@@ -96,6 +120,16 @@ impl SelectionState {
 
     pub fn is_selected(&self, id: &str) -> bool {
         self.selected_ids.contains(id)
+    }
+}
+
+/// Las de `tracks` a las que aplica una acción sobre `anchor_id`: toda la selección
+/// (en el orden de `tracks`) si lo incluye, si no solo el ancla.
+pub fn selected_or<'a>(tracks: Vec<&'a Track>, selection: &SelectionState, anchor_id: &str) -> Vec<&'a Track> {
+    if selection.is_selected(anchor_id) {
+        tracks.into_iter().filter(|t| selection.is_selected(&t.id)).collect()
+    } else {
+        tracks.into_iter().filter(|t| t.id == anchor_id).collect()
     }
 }
 

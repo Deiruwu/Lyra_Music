@@ -145,6 +145,8 @@ struct PendingDrag {
 
 pub struct QueuePanel {
     pub show: bool,
+    /// Columna expandida para otro panel (agregar canciones) aunque la cola esté cerrada.
+    forced_open: bool,
     pub queue_width: f32,
     pub target_width: f32,
     queue: Vec<QueueSlot>,
@@ -167,6 +169,7 @@ impl Default for QueuePanel {
     fn default() -> Self {
         Self {
             show: false,
+            forced_open: false,
             queue_width: QUEUE_COLLAPSED_WIDTH,
             target_width: QUEUE_COLLAPSED_WIDTH,
             queue: Vec::new(),
@@ -188,6 +191,31 @@ impl QueuePanel {
     pub fn is_animating(&self) -> bool {
         let now = Instant::now();
         self.animator.is_animating(now)
+    }
+
+    /// Ancho actual de la columna (anima entre cerrada y expandida).
+    pub fn width(&self) -> f32 {
+        self.queue_width
+    }
+
+    /// Cierra la cola (otro panel toma la columna).
+    pub fn hide(&mut self) {
+        if self.show {
+            self.show = false;
+            self.refresh_target_width();
+        }
+    }
+
+    /// Mantiene la columna expandida mientras otro panel la ocupa.
+    pub fn set_forced_open(&mut self, forced: bool) {
+        if self.forced_open != forced {
+            self.forced_open = forced;
+            self.refresh_target_width();
+        }
+    }
+
+    fn refresh_target_width(&mut self) {
+        self.target_width = if self.show || self.forced_open { QUEUE_EXPANDED_WIDTH } else { QUEUE_COLLAPSED_WIDTH };
     }
 
     pub fn is_animating_width(&self) -> bool {
@@ -310,7 +338,7 @@ impl QueuePanel {
             QueueMessage::Toggle => {
                 let was_shown = self.show;
                 self.show = !self.show;
-                self.target_width = if self.show { QUEUE_EXPANDED_WIDTH } else { QUEUE_COLLAPSED_WIDTH };
+                self.refresh_target_width();
 
                 // Al abrir el panel (no en cada toggle), saltar al track
                 // actual — de ahí en más el seguimiento es condicional
@@ -836,7 +864,7 @@ impl QueuePanel {
 
         if self.history.is_empty() && self.current_track.is_none() && self.queue.is_empty() {
             self.show = false;
-            self.target_width = QUEUE_COLLAPSED_WIDTH;
+            self.refresh_target_width();
             self.animator.clear();
             self.scroll.reset();
             return Task::none();

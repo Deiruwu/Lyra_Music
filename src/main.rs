@@ -26,7 +26,6 @@ use crate::db::playlist_manager::PlaylistManager;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::db::artist_tag_manager::ArtistTagManager;
-use crate::db::playlist_color_manager::PlaylistColorManager; // [playlist-color]
 use crate::audio::play_history_recorder::PlayHistoryRecorder;
 use crate::microservices::client::MicroserviceClient;
 use crate::settings::AppSettings;
@@ -49,11 +48,14 @@ use crate::ui::sidebar_feature::sidebar_feature_v2::{
     SidebarFeatureV2 as SidebarFeature, SidebarMessage as SidebarFeatureMessage, SidebarOutMessage
 };
 use crate::ui::views::view_coordinator::{playlist_pairs, ActiveRoute, CoordinatorMessage};
+use crate::ui::views::view_data::NavId;
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::views::catalog_store::CatalogStoreMessage;
-use crate::ui::widgets::track_context_builder::TrackTool;
+use crate::ui::widgets::track_context_builder::{youtube_link, TrackContextAction, TrackContextMenuBuilder, TrackTool};
 use crate::ui::widgets::context_menu::ContextMenuEvent;
 use crate::ui::widgets::selection_state::SelectionStep;
+use crate::ui::widgets::corner_mask::{corner_ring, CORNER_RING_WIDTH};
+use crate::ui::settings_view::{SettingsMessage, SettingsView};
 use crate::ui::assets::spacing;
 use crate::ui::theme::theme;
 
@@ -63,6 +65,9 @@ static TRAY_FLAGS: OnceLock<Arc<TrayFlags>> = OnceLock::new();
 #[derive(Debug, Clone)]
 pub enum AppMessage {
     SearchFeature(SearchFeatureMessage),
+    /// Tuerca de la barra superior: abre o cierra Ajustes.
+    ToggleSettings,
+    Settings(SettingsMessage),
     PlaybackFeature(PlaybackFeatureMessage),
     SidebarFeature(SidebarFeatureMessage),
     WindowOpened(window::Id),
@@ -73,6 +78,8 @@ pub enum AppMessage {
     NavigateBack,
     NavigateForward,
     EscapePressed,
+    /// Ctrl+F: filtro de la página activa o, si no tiene, la búsqueda.
+    FindPressed,
     /// Espacio: pausa/reanuda.
     TogglePlayback,
     /// Flechas / RePág / AvPág: mueve la selección de la lista visible (`extend` con Shift).
@@ -90,6 +97,9 @@ struct App {
     _engine: AudioEngine,
     manager: Arc<TrackManager>,
     search_feature: SearchFeature,
+    /// Ajustes ocupa el panel central (detrás solo del modo teatro).
+    settings_open: bool,
+    settings_view: SettingsView,
     playback_feature: PlaybackFeature,
     download_feature: DownloadFeature,
     sidebar_feature: SidebarFeature,
@@ -135,6 +145,7 @@ impl App {
         manager.set_repeat_mode(settings.repeat_mode);
         manager.set_shuffle_enabled(settings.shuffle_enabled);
         manager.set_radio_enabled(settings.radio_enabled);
+        manager.set_crossfade(if settings.crossfade_enabled { settings.crossfade_seconds } else { 0.0 });
 
         let session = PlaybackSession::load();
         if let Some(origin) = session.origin {
@@ -189,12 +200,11 @@ impl App {
                 .expect("Fallo fatal al inicializar PlaylistManager");
             let play_history_manager = PlayHistoryManager::new(pool.clone());
             let followed_artist_manager = FollowedArtistManager::new(pool.clone());
-            let artist_tag_manager = ArtistTagManager::new(pool.clone());
-            let playlist_colors = PlaylistColorManager::new(pool); // [playlist-color]
-            (playlist_manager, play_history_manager, followed_artist_manager, artist_tag_manager, playlist_colors)
+            let artist_tag_manager = ArtistTagManager::new(pool);
+            (playlist_manager, play_history_manager, followed_artist_manager, artist_tag_manager)
         };
 
-        let (playlist_manager, play_history_manager, followed_artist_manager, artist_tag_manager, playlist_colors) =
+        let (playlist_manager, play_history_manager, followed_artist_manager, artist_tag_manager) =
             match tokio::runtime::Handle::try_current() {
                 Ok(handle) => tokio::task::block_in_place(|| handle.block_on(init_local_db)),
                 Err(_) => {
@@ -207,7 +217,6 @@ impl App {
         let play_history_manager = Arc::new(play_history_manager);
         let followed_artist_manager = Arc::new(followed_artist_manager);
         let artist_tag_manager = Arc::new(artist_tag_manager);
-        let playlist_colors = Arc::new(playlist_colors); // [playlist-color]
 
         PlayHistoryRecorder::spawn(Arc::clone(&manager), Arc::clone(&play_history_manager), sidebar_client.as_ref().clone());
 
@@ -218,11 +227,13 @@ impl App {
             Arc::clone(&play_history_manager),
             Arc::clone(&followed_artist_manager),
             artist_tag_manager,
-            playlist_colors,
         );
         sidebar_feature.set_expanded_immediate(settings.sidebar_expanded);
         sidebar_feature.coordinator.explorer_view.show_play_stats = settings.explorer_play_stats;
         sidebar_feature.coordinator.remix_view.enabled = settings.remix_playlists.clone();
+        if let Some(accent) = settings.accent_color.as_deref().and_then(crate::ui::theme::from_hex) {
+            crate::ui::theme::set_accent(accent);
+        }
 
         let mut search_feature = SearchFeature::new();
         search_feature.input.filter = settings.search_filter;
@@ -230,6 +241,8 @@ impl App {
         let mut app = Self {
             _engine: engine,
             search_feature,
+            settings_open: false,
+            settings_view: SettingsView::new(settings.crossfade_enabled, settings.crossfade_seconds),
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
             download_feature,
             sidebar_feature,
@@ -266,10 +279,61 @@ impl App {
     }
 
     pub fn update(&mut self, message: AppMessage) -> iced::Task<AppMessage> {
+        // Ctrl/Shift también cuentan para la selección múltiple de artista, álbum y mezcla.
+        if let AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::KeybindsChanged(modifiers))) = &message {
+            self.library_browser.set_modifiers(*modifiers);
+        }
+
+        // Al apretar, el coordinator decide qué se arrastra: su lista o, si la tapa la biblioteca, la canción bajo el mouse ahí.
+        if matches!(message, AppMessage::SidebarFeature(SidebarFeatureMessage::GlobalLeftPressed)) {
+            let covered = self.is_theater_mode || self.search_feature.input.is_open;
+            let content_visible = !covered && !self.library_browser.is_active();
+            let external = (!covered && self.library_browser.is_active())
+                .then(|| self.library_browser.drag_candidate(&self.sidebar_feature.coordinator.catalog_store))
+                .flatten();
+            self.sidebar_feature.coordinator.set_drag_context(content_visible, external);
+        }
+
+        let side_panel_was_open = self.is_side_panel_visible();
+        let queue_was_shown = self.playback_feature.is_queue_shown();
+
+        let task = self.update_inner(message);
+
+        // La cola y los paneles laterales (agregar canciones, playlists de Remix) comparten la columna: abrir uno cierra el otro.
+        if self.is_side_panel_visible() && !side_panel_was_open {
+            self.playback_feature.hide_queue();
+        } else if self.playback_feature.is_queue_shown() && !queue_was_shown {
+            self.sidebar_feature.coordinator.close_side_panel();
+        }
+        self.playback_feature.set_queue_forced_open(self.is_side_panel_visible());
+
+        // Letreros de "agregadas a la playlist", vengan de donde vengan.
+        let notices: Vec<_> = self.sidebar_feature.coordinator.take_add_notices();
+        let notice_tasks: Vec<_> = notices
+            .iter()
+            .map(|notice| {
+                self.download_feature
+                    .notify_playlist_add(&mut self.view_thumbnails, &notice.playlist_name, notice.added, notice.already, &notice.sample)
+                    .map(AppMessage::DownloadFeature)
+            })
+            .collect();
+        if notice_tasks.is_empty() { task } else { iced::Task::batch(std::iter::once(task).chain(notice_tasks)) }
+    }
+
+    /// Un panel lateral está ocupando la columna de la cola.
+    fn is_side_panel_visible(&self) -> bool {
+        !self.is_theater_mode
+            && !self.settings_open
+            && !self.library_browser.is_active()
+            && self.sidebar_feature.coordinator.is_side_panel_open()
+    }
+
+    fn update_inner(&mut self, message: AppMessage) -> iced::Task<AppMessage> {
         match message {
             AppMessage::WindowOpened(id) => window::size(id).map(AppMessage::WindowResized),
 
             AppMessage::WindowResized(size) => {
+                self.search_feature.set_viewport(size);
                 self.library_browser.set_viewport(size);
                 iced::Task::batch([
                     iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::GlobalWindowResized(size))),
@@ -331,6 +395,7 @@ impl App {
             }
 
             AppMessage::CursorMoved(position) => {
+                self.search_feature.set_cursor(position);
                 self.library_browser.set_cursor(position);
                 self.playback_feature.set_cursor(position);
                 self.sidebar_feature.set_cursor(position);
@@ -369,6 +434,9 @@ impl App {
                 let like_task = match out_msg {
                     PlaybackOutMessage::ToggleTheaterMode => {
                         self.is_theater_mode = !self.is_theater_mode;
+                        if self.is_theater_mode {
+                            self.settings_open = false;
+                        }
 
                         // Salir de modo teatro reconstruye view_content() desde
                         // cero (ver resync_active_scroll) — sin esto el
@@ -398,17 +466,11 @@ impl App {
                             TrackLink::Album(id) => LibraryBrowserMessage::OpenAlbum(id),
                         }))
                     }
-                    PlaybackOutMessage::RequestAddToPlaylist { playlist_id, track_id } => {
-                        self.sidebar_feature
-                            .coordinator
-                            .catalog_store
-                            .add_track_to_playlist(&playlist_id, &track_id)
-                            .map(|catalog_msg| {
-                                AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
-                                    CoordinatorMessage::Catalog(catalog_msg)
-                                ))
-                            })
-                    }
+                    PlaybackOutMessage::RequestAddToPlaylist { playlist_id, track } => self
+                        .sidebar_feature
+                        .coordinator
+                        .add_tracks_to_playlist(&playlist_id, vec![track])
+                        .map(|m| AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m))),
                     PlaybackOutMessage::RequestDeleteFromCatalog(track_id) => {
                         iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
                             CoordinatorMessage::RequestDeleteTracks(vec![track_id])
@@ -459,6 +521,7 @@ impl App {
                 }
                 if is_nav_select {
                     self.is_theater_mode = false;
+                    self.settings_open = false;
                 }
 
                 let (task, out) = self.sidebar_feature.update(msg);
@@ -525,6 +588,18 @@ impl App {
                     SearchFeatureOutMessage::OpenArtist(artist_id) => {
                         app_task = iced::Task::done(AppMessage::LibraryBrowser(LibraryBrowserMessage::OpenArtist(artist_id)));
                     }
+                    SearchFeatureOutMessage::RequestContextMenu(track) => {
+                        let catalog_store = &self.sidebar_feature.coordinator.catalog_store;
+                        let playlists = playlist_pairs(catalog_store.playlists_metadata());
+                        let member_of = catalog_store.playlists_containing_track(&track.id);
+                        let items = TrackContextMenuBuilder::new(catalog_store.is_liked(&track.id))
+                            .with_playlists(&playlists, None, &member_of)
+                            .build();
+                        self.search_feature.open_context_menu(track.id, items);
+                    }
+                    SearchFeatureOutMessage::TrackContextAction(action, track) => {
+                        app_task = self.apply_search_track_action(action, track);
+                    }
                     SearchFeatureOutMessage::Idle => {}
                 }
 
@@ -541,11 +616,13 @@ impl App {
                 let catalog_task = match out {
                     DownloadFeatureOutMessage::TrackReady(track) => {
                         self.library_browser.patch_track(&track);
+                        self.sidebar_feature.coordinator.forget_lyrics(&track.id);
                         iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
                             CoordinatorMessage::Catalog(CatalogStoreMessage::TrackDownloadedAndCached(track))
                         )))
                     }
                     DownloadFeatureOutMessage::LyricsUpdated(track_id) => {
+                        self.sidebar_feature.coordinator.lyrics_found(&track_id);
                         self.playback_feature.lyrics_updated(&track_id).map(AppMessage::PlaybackFeature)
                     }
                     DownloadFeatureOutMessage::Idle => iced::Task::none(),
@@ -587,7 +664,7 @@ impl App {
                 }
                 if self.library_browser.is_active() {
                     let catalog_store = &self.sidebar_feature.coordinator.catalog_store;
-                    return self.library_browser.move_selection(step, catalog_store).map(AppMessage::LibraryBrowser);
+                    return self.library_browser.move_selection(step, extend, catalog_store).map(AppMessage::LibraryBrowser);
                 }
                 self.sidebar_feature
                     .coordinator
@@ -607,6 +684,36 @@ impl App {
                 iced::Task::none()
             }
 
+            AppMessage::ToggleSettings => {
+                self.settings_open = !self.settings_open;
+                if self.settings_open {
+                    self.settings_view.opened();
+                    self.is_theater_mode = false;
+                    return iced::Task::none();
+                }
+                self.resync_after_closing_settings()
+            }
+
+            AppMessage::Settings(msg) => {
+                if let Some(seconds) = self.settings_view.update(msg) {
+                    self.manager.set_crossfade(seconds);
+                }
+                iced::Task::none()
+            }
+
+            AppMessage::FindPressed => {
+                if self.is_theater_mode {
+                    return iced::Task::none();
+                }
+                if !self.library_browser.is_active()
+                    && !self.search_feature.input.is_open
+                    && let Some(task) = self.sidebar_feature.coordinator.open_filter()
+                {
+                    return task.map(|m| AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m)));
+                }
+                iced::Task::done(AppMessage::SearchFeature(SearchFeatureMessage::Ui(SearchMessage::Open)))
+            }
+
             AppMessage::EscapePressed => {
                 if self.sidebar_feature.coordinator.cancel_delete_dialog()
                     || self.sidebar_feature.coordinator.cancel_cover_crop()
@@ -615,11 +722,24 @@ impl App {
                     return iced::Task::none();
                 }
 
+                if self.settings_open && !self.search_feature.input.is_open {
+                    self.settings_open = false;
+                    return self.resync_after_closing_settings();
+                }
+
+                if self.search_feature.dismiss_context_menu() {
+                    return iced::Task::none();
+                }
                 if self.search_feature.input.is_open {
                     return iced::Task::done(AppMessage::SearchFeature(SearchFeatureMessage::Ui(SearchMessage::Close)));
                 }
 
-                if !self.is_theater_mode && !self.library_browser.is_active() && self.sidebar_feature.coordinator.cancel_rename() {
+                if !self.is_theater_mode
+                    && !self.library_browser.is_active()
+                    && (self.sidebar_feature.coordinator.cancel_rename()
+                        || (self.sidebar_feature.coordinator.is_side_panel_open() && self.sidebar_feature.coordinator.close_side_panel())
+                        || self.sidebar_feature.coordinator.clear_selection())
+                {
                     return iced::Task::none();
                 }
 
@@ -658,6 +778,12 @@ impl App {
             search_filter: self.search_feature.input.filter,
             explorer_play_stats: self.sidebar_feature.coordinator.explorer_view.show_play_stats,
             remix_playlists: self.sidebar_feature.coordinator.remix_view.enabled.clone(),
+            crossfade_enabled: self.settings_view.crossfade_enabled(),
+            crossfade_seconds: self.settings_view.crossfade_seconds(),
+            accent_color: {
+                let accent = theme().accent.primary;
+                (accent != crate::ui::theme::default_accent()).then(|| crate::ui::theme::to_hex(accent))
+            },
         }
     }
 
@@ -718,27 +844,27 @@ impl App {
         if matches!(msg, LibraryBrowserMessage::OpenArtist(_) | LibraryBrowserMessage::OpenAlbum(_)) {
             self.is_theater_mode = false;
         }
+        if matches!(msg, LibraryBrowserMessage::OpenArtist(_) | LibraryBrowserMessage::OpenAlbum(_) | LibraryBrowserMessage::OpenMix(_)) {
+            self.settings_open = false;
+        }
 
         let playlists = playlist_pairs(self.sidebar_feature.coordinator.playlists_metadata());
         let (task, out) = self.library_browser.update(msg, &playlists, &self.sidebar_feature.coordinator.catalog_store);
 
         let bridge_task = match out {
-            LibraryBrowserOutMessage::RequestToggleLike(track) => self
+            LibraryBrowserOutMessage::RequestToggleLike(tracks) => {
+                let catalog_store = &mut self.sidebar_feature.coordinator.catalog_store;
+                iced::Task::batch(tracks.into_iter().map(|track| {
+                    catalog_store.toggle_like_track(track).map(|catalog_msg| {
+                        AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)))
+                    })
+                }).collect::<Vec<_>>())
+            }
+            LibraryBrowserOutMessage::RequestAddToPlaylist { playlist_id, tracks } => self
                 .sidebar_feature
                 .coordinator
-                .catalog_store
-                .toggle_like_track(track)
-                .map(|catalog_msg| {
-                    AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)))
-                }),
-            LibraryBrowserOutMessage::RequestAddToPlaylist { playlist_id, track_id } => self
-                .sidebar_feature
-                .coordinator
-                .catalog_store
-                .add_track_to_playlist(&playlist_id, &track_id)
-                .map(|catalog_msg| {
-                    AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)))
-                }),
+                .add_tracks_to_playlist(&playlist_id, tracks)
+                .map(|m| AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m))),
             LibraryBrowserOutMessage::RequestToggleFollowArtist(artist_id, name, photo_url) => self
                 .sidebar_feature
                 .coordinator
@@ -769,19 +895,76 @@ impl App {
             })
     }
 
+    /// Aplica una opción del menú de una canción de la búsqueda (puede no estar en el catálogo).
+    fn apply_search_track_action(&mut self, action: TrackContextAction, track: crate::model::Track) -> iced::Task<AppMessage> {
+        let to_app = |catalog_msg| AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)));
+        let catalog_store = &mut self.sidebar_feature.coordinator.catalog_store;
+        match action {
+            TrackContextAction::PlayNow => self.manager.play_context(vec![track], 0),
+            TrackContextAction::FrontEnqueue => self.manager.enqueue_front(track),
+            TrackContextAction::Enqueue => self.manager.enqueue(track),
+            TrackContextAction::StartRadio => self.manager.start_radio(track),
+            TrackContextAction::ToggleLike => return catalog_store.toggle_like_track(track).map(to_app),
+            TrackContextAction::AddToPlaylist(playlist_id) => {
+                return self
+                    .sidebar_feature
+                    .coordinator
+                    .add_tracks_to_playlist(&playlist_id, vec![track])
+                    .map(|m| AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m)));
+            }
+            TrackContextAction::CopyId => return iced::clipboard::write(track.id),
+            TrackContextAction::CopyYoutubeLink => return iced::clipboard::write(youtube_link(&track.id)),
+            TrackContextAction::Tool(_) | TrackContextAction::DeleteFromCatalog | TrackContextAction::RemoveFromPlaylist => {}
+        }
+        iced::Task::none()
+    }
+
+    /// Tuerca de la barra superior, resaltada mientras Ajustes está abierto.
+    fn view_settings_toggle(&self) -> Element<'_, AppMessage> {
+        let color = if self.settings_open { theme().accent.primary } else { theme().content.primary };
+        iced::widget::button(crate::ui::assets::icons::icon(crate::ui::assets::icons::Icon::Settings, crate::ui::assets::typography::TEXT_18).color(color))
+            .style(crate::ui::styles::button::minimal)
+            .padding(spacing::SP_8)
+            .on_press(AppMessage::ToggleSettings)
+            .into()
+    }
+
+    /// Al cerrar Ajustes vuelve a verse la vista de fondo: se reafirma su scroll.
+    fn resync_after_closing_settings(&self) -> iced::Task<AppMessage> {
+        if self.is_theater_mode || self.library_browser.is_active() {
+            return iced::Task::none();
+        }
+        self.sidebar_feature
+            .coordinator
+            .resync_active_scroll()
+            .map(|m| AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m)))
+    }
+
     pub fn view(&self, _window: window::Id) -> Element<'_, AppMessage> {
         let center_content: Element<'_, AppMessage> = if self.is_theater_mode {
             self.playback_feature.view_theater().map(AppMessage::PlaybackFeature)
+        } else if self.settings_open {
+            self.settings_view.view().map(AppMessage::Settings)
         } else if self.library_browser.is_active() {
             self.library_browser.view(&self.sidebar_feature.coordinator.catalog_store).map(AppMessage::LibraryBrowser)
         } else {
             self.sidebar_feature.view_content().map(AppMessage::SidebarFeature)
         };
 
+        // El teatro, la biblioteca (artista, álbum, mezcla) y las páginas de colección van de borde a
+        // borde (pintan su propio fondo) y ponen sus propios márgenes.
+        let edge_to_edge = self.is_theater_mode
+            || (!self.settings_open
+                && (self.library_browser.is_active()
+                    || matches!(
+                        self.sidebar_feature.coordinator.active_route,
+                        ActiveRoute::Playlist(_) | ActiveRoute::Nav(NavId::Explorer | NavId::Favorites | NavId::Remix)
+                    )));
+
         let center_view = container(center_content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(spacing::SP_20)
+            .padding(if edge_to_edge { spacing::SP_0 } else { spacing::SP_20 })
             .style(|_theme| container::Style {
                 background: Some(Background::Color(theme().surface.panel)),
                 border: Border {
@@ -791,23 +974,43 @@ impl App {
                 ..Default::default()
             });
 
-        let queue_view = container(
-            self.playback_feature.view_queue().map(AppMessage::PlaybackFeature)
-        );
+        // El panel va envuelto en `CORNER_RING_WIDTH` de aire: ahí se apoya el anillo que, de borde a
+        // borde, vuelve a redondear sus esquinas cuando el contenido scrolleado las tapa.
+        let center_view: Element<'_, AppMessage> = {
+            let wrapped = container(center_view).padding(CORNER_RING_WIDTH);
+            if edge_to_edge {
+                stack![wrapped, corner_ring(radii::R_18, theme().surface.base)].into()
+            } else {
+                wrapped.into()
+            }
+        };
+        // Lo que rodea al panel se achica lo mismo que ese aire, para que nada se mueva.
+        let beside_panel = 15.0 - CORNER_RING_WIDTH;
 
+        let side_panel = if self.is_side_panel_visible() { self.sidebar_feature.view_side_panel() } else { None };
+        let queue_view = match side_panel {
+            // Mismo ancho (animado) que la cola: se ve como si la cola se transformara en el panel.
+            Some(panel) => container(panel.map(AppMessage::SidebarFeature))
+                .width(Length::Fixed(self.playback_feature.queue_width()))
+                .height(Length::Fill)
+                .clip(true),
+            None => container(self.playback_feature.view_queue().map(AppMessage::PlaybackFeature)),
+        };
+
+        let ring_rows = Padding { top: CORNER_RING_WIDTH, bottom: CORNER_RING_WIDTH, ..Padding::ZERO };
         let content_layer = row![
-            self.sidebar_feature.view_sidebar().map(AppMessage::SidebarFeature),
-            space().width(15),
+            container(self.sidebar_feature.view_sidebar().map(AppMessage::SidebarFeature)).padding(ring_rows),
+            space().width(beside_panel),
             center_view,
-            space().width(15),
-            queue_view
+            space().width(beside_panel),
+            container(queue_view).padding(ring_rows),
         ]
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(Padding {
-                top: spacing::SP_10,
+                top: spacing::SP_10 - CORNER_RING_WIDTH,
                 right: spacing::SP_15,
-                bottom: spacing::SP_10,
+                bottom: spacing::SP_10 - CORNER_RING_WIDTH,
                 left: spacing::SP_0,
             });
 
@@ -846,7 +1049,9 @@ impl App {
             space().width(Length::Fill),
             container(search_toggle)
                 .align_x(Alignment::End)
-                .padding(Padding { top: spacing::SP_10, right: spacing::SP_15, ..Default::default() }),
+                .padding(Padding { top: spacing::SP_10, ..Default::default() }),
+            container(self.view_settings_toggle())
+                .padding(Padding { top: spacing::SP_10, right: spacing::SP_15, left: spacing::SP_8, ..Default::default() }),
         ]
             .align_y(iced::alignment::Vertical::Center)
             .width(Length::Fill);
@@ -868,6 +1073,9 @@ impl App {
 
         if let Some(search_overlay) = search_overlay {
             absolute_root_layers.push(search_overlay.map(AppMessage::SearchFeature));
+        }
+        if let Some(menu) = self.search_feature.view_context_menu() {
+            absolute_root_layers.push(menu.map(AppMessage::SearchFeature));
         }
 
         // 3. INYECTAMOS LOS OVERLAYS DEL SIDEBAR (Menús y Diálogos) EN LA CÚSPIDE.
@@ -929,6 +1137,11 @@ impl App {
             let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
                 return None;
             };
+            if (modifiers.control() || modifiers.command())
+                && matches!(&key, iced::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("f"))
+            {
+                return Some(AppMessage::FindPressed);
+            }
             let step = match key {
                 iced::keyboard::Key::Named(Named::Space) => return Some(AppMessage::TogglePlayback),
                 iced::keyboard::Key::Named(Named::Enter) => return Some(AppMessage::PlaySelection),

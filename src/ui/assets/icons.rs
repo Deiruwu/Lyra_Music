@@ -67,6 +67,12 @@ pub enum Icon {
     #[strum(serialize = "\u{f0337}")]
     Link,
 
+    #[strum(serialize = "\u{f00c}")]
+    Check,
+
+    #[strum(serialize = "\u{f013}")]
+    Settings,
+
     // Track manager
     #[strum(serialize = "\u{f0ad}")]
     Tools,

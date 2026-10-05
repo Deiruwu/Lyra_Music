@@ -9,24 +9,28 @@ use crate::db::playlist_manager::PlaylistManager;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::db::artist_tag_manager::ArtistTagManager;
-use crate::db::playlist_color_manager::PlaylistColorManager; // [playlist-color]
-use crate::ui::playlist_color::{self, PlaylistColor}; // [playlist-color]
+use crate::ui::cover_palette;
 use crate::ui::views::artists_view::{ArtistsMessage, ArtistsOutMessage, ArtistsView};
 use crate::ui::views::remix_view::{self, RemixMessage, RemixView};
 use crate::microservices::client::MicroserviceClient;
 use crate::model::{Mix, SearchItem, Track};
 use crate::ui::views::playlist_adder::AdderMessage;
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
-use crate::ui::utils::cover_manager::CoverManager;
+use crate::ui::utils::lyrics_index::LyricsIndex;
+use crate::ui::utils::cover_manager::{CoverManager, CoverVariant};
 use crate::ui::utils::image::load_crop_preview;
 use crate::ui::views::catalog_store::{CatalogStore, CatalogStoreMessage};
 use crate::ui::views::home_view::{HomeView, HomeViewMessage, HomeViewOutMessage};
 use crate::ui::views::explorer_view_v2::{ExplorerView, ExplorerMessage, ExplorerExtra};
-use crate::ui::views::favorite_view::{FavoritesView, FavoritesMessage};
+use crate::ui::views::favorite_view::{FavoritesView, FavoritesMessage, FavoritesExtra};
 use crate::ui::views::playlist_view::{PlaylistView, PlaylistMessage, PlaylistExtra};
 use crate::ui::views::states_view::{TrackViewState, ROW_HEIGHT};
 use crate::ui::views::view_data::NavId;
+use crate::ui::assets::icons::Icon;
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
+use crate::ui::widgets::cover_collage::CollageTile;
+use crate::ui::widgets::drag_pill::drag_pill;
+use crate::ui::widgets::track_row::truncate;
 use crate::ui::widgets::cover_crop_editor::{CoverCropEditor, CropEditorMessage, CropEditorOutcome};
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::ui::widgets::track_context_builder::{youtube_link, TrackContextAction};
@@ -65,10 +69,6 @@ pub enum CoordinatorMessage {
     PlaylistDetail(PlaylistMessage),
     Artists(ArtistsMessage),
     Remix(RemixMessage),
-    /// [playlist-color] Colores guardados `(id, tono, saturación, brillo)`, cargados al arrancar.
-    PlaylistColorsLoaded(Result<Vec<(String, f64, Option<f64>, Option<f64>)>, String>),
-    /// [playlist-color] Resultado de guardar un color.
-    PlaylistColorSaved(Result<(), String>),
     /// Terminó la descarga de una canción pedida desde el panel de agregar de una playlist.
     AdderDownloadFinished { playlist_id: String, track_id: String, result: Result<Track, String> },
 
@@ -87,6 +87,8 @@ pub enum CoordinatorMessage {
 
     // ─── Miniaturas ──────────────────────────────────────────────
     ThumbnailLoaded(String, Vec<u8>),
+    /// Resultado de revisar en disco qué canciones tienen `.lrc`.
+    LyricsChecked(Vec<(String, bool)>),
     WindowResized(Size),
 
     // ─── Portadas de playlists ──────────────────────────────────
@@ -127,6 +129,10 @@ pub struct ViewCoordinator {
     pub manager: Arc<TrackManager>,
 
     pub thumbnails: AsyncThumbnail,
+    /// Qué canciones descargadas tienen letra (marca en las playlists).
+    lyrics_index: LyricsIndex,
+    /// Color predominante de las carátulas del mosaico activo, por clave de thumbnail.
+    mosaic_colors: HashMap<String, iced::Color>,
 
     /// Portadas de playlists (archivos locales, keyed por playlist_id).
     pub covers: CoverManager,
@@ -163,12 +169,45 @@ pub struct ViewCoordinator {
     /// Editor de recorte abierto tras elegir una imagen de portada.
     cover_crop: Option<CoverCropEditor>,
 
-    /// [playlist-color] Persistencia de los tonos de playlist.
-    playlist_colors: Arc<PlaylistColorManager>,
-
     /// Búsqueda y descarga para el panel de agregar canciones a una playlist.
     client: Arc<MicroserviceClient>,
+
+    /// Letreros pendientes de "agregadas a la playlist" (los muestra `main.rs`).
+    pending_add_notices: Vec<PlaylistAddNotice>,
+
+    /// Canciones arrastradas hacia una playlist del sidebar.
+    track_drag: Option<TrackDrag>,
+    cursor: iced::Point,
+    /// La vista activa se está mostrando (no la tapan el teatro ni la biblioteca).
+    content_visible: bool,
+    /// Canciones bajo el cursor en lo que tapa la vista activa (artista, álbum, mezcla).
+    external_drag_candidate: Option<Vec<Track>>,
 }
+
+/// Resultado de agregar canciones a una playlist, para el letrero de confirmación.
+#[derive(Debug, Clone)]
+pub struct PlaylistAddNotice {
+    pub playlist_name: String,
+    /// Las que entraron.
+    pub added: usize,
+    /// Las que ya estaban y se saltaron.
+    pub already: usize,
+    /// Una de las canciones, para la miniatura del letrero.
+    pub sample: Track,
+}
+
+/// Canciones que se están arrastrando (la selección si la fila apretada estaba seleccionada).
+struct TrackDrag {
+    tracks: Vec<Track>,
+    label: String,
+    start: iced::Point,
+    /// Pasa a `true` cuando el cursor supera `TRACK_DRAG_THRESHOLD_PX`.
+    active: bool,
+}
+
+/// Movimiento mínimo antes de que apretar una fila cuente como arrastre.
+const TRACK_DRAG_THRESHOLD_PX: f32 = 6.0;
+const TRACK_DRAG_GHOST_MAX_CHARS: usize = 32;
 
 impl ViewCoordinator {
     pub fn new(
@@ -178,7 +217,6 @@ impl ViewCoordinator {
         play_history_manager: Arc<PlayHistoryManager>,
         followed_artist_manager: Arc<FollowedArtistManager>,
         artist_tag_manager: Arc<ArtistTagManager>,
-        playlist_colors: Arc<PlaylistColorManager>,
     ) -> (Self, Task<CoordinatorMessage>) {
         let (catalog_store, catalog_task) = CatalogStore::load(
             Arc::clone(&client),
@@ -194,6 +232,8 @@ impl ViewCoordinator {
             catalog_store,
             manager,
             thumbnails: AsyncThumbnail::new(128),
+            mosaic_colors: HashMap::new(),
+            lyrics_index: LyricsIndex::default(),
             covers: CoverManager::new(),
             home_view,
             explorer_view: ExplorerView::new(),
@@ -207,21 +247,19 @@ impl ViewCoordinator {
             track_context_selected_ids: HashSet::new(),
             delete_tracks_dialog: ConfirmDialog::new(),
             cover_crop: None,
-            playlist_colors: Arc::clone(&playlist_colors),
+            pending_add_notices: Vec::new(),
+            track_drag: None,
+            cursor: iced::Point::ORIGIN,
+            content_visible: true,
+            external_drag_candidate: None,
             client,
         };
 
-        // [playlist-color]
-        let colors_task = Task::perform(
-            async move { playlist_colors.load_all().await.map_err(|e| e.to_string()) },
-            CoordinatorMessage::PlaylistColorsLoaded,
-        );
 
         let init_task = Task::batch([
             catalog_task.map(CoordinatorMessage::Catalog),
             home_task.map(CoordinatorMessage::Home),
             artists_task.map(CoordinatorMessage::Artists),
-            colors_task,
         ]);
 
         (coordinator, init_task)
@@ -234,6 +272,141 @@ impl ViewCoordinator {
     pub fn set_cursor(&mut self, position: iced::Point) {
         self.track_context_menu.handle(ContextMenuEvent::MouseMoved(position));
         self.artists_view.set_cursor(position);
+        self.cursor = position;
+        if let Some(drag) = &mut self.track_drag
+            && !drag.active
+            && position.distance(drag.start) > TRACK_DRAG_THRESHOLD_PX
+        {
+            drag.active = true;
+        }
+    }
+
+    /// Playlist de la que viene lo que suena (`id`, `está_sonando`), si hay algo cargado.
+    pub fn playing_playlist(&self) -> Option<(String, bool)> {
+        self.manager.get_current_track()?;
+        match self.manager.get_playback_origin()? {
+            PlaybackOrigin::Playlist(id) => Some((id, self.manager.state.is_playing())),
+            _ => None,
+        }
+    }
+
+    /// Agrega `track_id` al final de la cola si no está sonando ni ya en ella.
+    fn enqueue_if_missing(&self, track_id: &str) {
+        let is_current = self.manager.get_current_track().is_some_and(|current| current.track.id == track_id);
+        let is_queued = self.manager.get_queue_snapshot().iter().any(|slot| slot.track.id == track_id);
+        if is_current || is_queued {
+            return;
+        }
+        if let Some(track) = self.catalog_store.track_by_id(track_id) {
+            self.manager.enqueue(track.clone());
+        }
+    }
+
+    /// El servidor encontró la letra de `track_id`.
+    pub fn lyrics_found(&mut self, track_id: &str) {
+        self.lyrics_index.mark_found(track_id);
+    }
+
+    /// `track_id` se (re)descargó: hay que volver a mirar si tiene letra.
+    pub fn forget_lyrics(&mut self, track_id: &str) {
+        self.lyrics_index.forget(track_id);
+    }
+
+    /// Lista de canciones de la vista activa, si tiene una.
+    fn active_list(&self) -> Option<&TrackViewState> {
+        match &self.active_route {
+            ActiveRoute::Nav(NavId::Explorer) => Some(&self.explorer_view.list),
+            ActiveRoute::Nav(NavId::Favorites) => Some(&self.favorites_view.list),
+            ActiveRoute::Nav(NavId::Remix) => Some(&self.remix_view.list),
+            ActiveRoute::Playlist(_) => self.playlist_view.as_ref().map(|view| &view.list),
+            _ => None,
+        }
+    }
+
+    /// Qué se ve en el centro y, si la vista activa está tapada, las canciones bajo el cursor ahí.
+    pub fn set_drag_context(&mut self, content_visible: bool, external_candidate: Option<Vec<Track>>) {
+        self.content_visible = content_visible;
+        self.external_drag_candidate = external_candidate;
+    }
+
+    /// Botón izquierdo apretado: si fue sobre una canción (de la lista activa o de lo que la tapa),
+    /// prepara su arrastre (o el de toda la selección, si la fila estaba seleccionada).
+    pub fn begin_track_press(&mut self) {
+        let tracks = if self.content_visible {
+            self.active_list()
+                .and_then(|list| list.drag_candidate(&self.active_route_rendered_tracks()))
+                .map(|tracks| tracks.into_iter().cloned().collect())
+        } else {
+            self.external_drag_candidate.take()
+        };
+
+        self.track_drag = tracks.filter(|tracks: &Vec<Track>| !tracks.is_empty()).map(|tracks| {
+            let label = match tracks.as_slice() {
+                [track] => truncate(&track.title, TRACK_DRAG_GHOST_MAX_CHARS),
+                many => format!("{} canciones", many.len()),
+            };
+            TrackDrag { tracks, label, start: self.cursor, active: false }
+        });
+    }
+
+    pub fn is_dragging_tracks(&self) -> bool {
+        self.track_drag.as_ref().is_some_and(|drag| drag.active)
+    }
+
+    /// Botón soltado: con un arrastre activo y `playlist_id`, agrega las canciones a esa playlist.
+    pub fn end_track_drag(&mut self, playlist_id: Option<&str>) -> Task<CoordinatorMessage> {
+        let Some(drag) = self.track_drag.take().filter(|drag| drag.active) else { return Task::none() };
+        let Some(playlist_id) = playlist_id else { return Task::none() };
+
+        // Soltar sobre el sidebar no reordena la playlist abierta.
+        if let Some(view) = &mut self.playlist_view {
+            view.cancel_row_drag();
+        }
+        self.add_tracks_to_playlist(playlist_id, drag.tracks)
+    }
+
+    /// Agrega `tracks` a la playlist (las que no estén en el catálogo, como las de un artista o
+    /// álbum, se suman solas) y deja el letrero de cuántas entraron y cuántas ya estaban.
+    pub fn add_tracks_to_playlist(&mut self, playlist_id: &str, tracks: Vec<Track>) -> Task<CoordinatorMessage> {
+        let mut seen = HashSet::new();
+        let tracks: Vec<Track> = tracks.into_iter().filter(|t| seen.insert(t.id.clone())).collect();
+        let Some(sample) = tracks.first().cloned() else { return Task::none() };
+        let (already, new): (Vec<Track>, Vec<Track>) =
+            tracks.into_iter().partition(|t| self.catalog_store.is_track_in_playlist(playlist_id, &t.id));
+
+        if let Some((_, name, _)) = self.catalog_store.playlists_metadata().iter().find(|(id, _, _)| id == playlist_id) {
+            self.pending_add_notices.push(PlaylistAddNotice {
+                playlist_name: name.clone(),
+                added: new.len(),
+                already: already.len(),
+                sample,
+            });
+        }
+
+        Task::batch(
+            new.into_iter()
+                .map(|track| self.catalog_store.add_track_object_to_playlist(playlist_id, track).map(CoordinatorMessage::Catalog))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// Letreros de "agregadas a la playlist" que todavía no se mostraron.
+    pub fn take_add_notices(&mut self) -> Vec<PlaylistAddNotice> {
+        std::mem::take(&mut self.pending_add_notices)
+    }
+
+    /// Píldora con la canción (o cuántas) que sigue al cursor mientras se arrastra.
+    /// Dentro de una playlist no se pinta mientras el cursor sigue sobre sus filas (ahí se reordena).
+    pub fn view_track_drag_ghost(&self) -> Option<Element<'_, CoordinatorMessage>> {
+        let drag = self.track_drag.as_ref().filter(|drag| drag.active)?;
+        if self.content_visible
+            && matches!(self.active_route, ActiveRoute::Playlist(_))
+            && self.active_list().is_some_and(|list| list.mouse_position.is_some())
+        {
+            return None;
+        }
+
+        Some(drag_pill(Icon::QueueMusic, &drag.label, self.cursor))
     }
 
     /// Único punto de entrada público. Delega el manejo del mensaje a
@@ -246,6 +419,15 @@ impl ViewCoordinator {
 
         let wanted = self.active_view_thumbnail_targets();
         let sync_task = self.thumbnails.sync(&wanted, CoordinatorMessage::ThumbnailLoaded);
+
+        // Solo las playlists muestran qué canciones tienen letra.
+        let lyrics_task = match &self.active_route {
+            ActiveRoute::Playlist(id) => {
+                let tracks = self.catalog_store.tracks_for_playlist(id);
+                self.lyrics_index.sync(&tracks, CoordinatorMessage::LyricsChecked)
+            }
+            _ => Task::none(),
+        };
 
         let wanted_covers = self.active_cover_targets();
         let cover_task = self.covers.sync(&wanted_covers, CoordinatorMessage::CoverLoaded);
@@ -260,17 +442,13 @@ impl ViewCoordinator {
 
         let mixes_task = self.request_mixes_if_ready().map(CoordinatorMessage::Home);
 
-        if self.active_route == ActiveRoute::Nav(NavId::Remix) {
-            self.remix_view.ensure_mixed(&self.catalog_store);
-        }
-
         let artists_task = if self.active_route == ActiveRoute::Nav(NavId::Artists) {
             self.artists_view.sync(self.catalog_store.followed_artists()).map(CoordinatorMessage::Artists)
         } else {
             Task::none()
         };
 
-        (Task::batch([route_task, sync_task, cover_task, scroll_task, home_task, mixes_task, artists_task]), out)
+        (Task::batch([route_task, sync_task, lyrics_task, cover_task, scroll_task, home_task, mixes_task, artists_task]), out)
     }
 
     /// Pide las mezclas de Home una sola vez, cuando ya cargaron el historial y los Me gusta.
@@ -392,11 +570,16 @@ impl ViewCoordinator {
                 let (task, out) = self.explorer_view.update(inner, &rendered_refs, &playlists, &self.catalog_store);
                 let view_task = task.map(CoordinatorMessage::Explorer);
 
+                let manager = Arc::clone(&self.manager);
                 let (out_task, coordinator_out) = self.handle_track_list_out(out, |s: &Self| {
                     let all = s.catalog_store.explorer_tracks();
                     s.explorer_view.list.rendered(&all, &s.catalog_store).iter().map(|t| (*t).clone()).collect()
                 }, PlaybackOrigin::Explorer, |store, extra| match extra {
                     ExplorerExtra::RefreshPlayStats => store.refresh_play_stats().map(CoordinatorMessage::Catalog),
+                    ExplorerExtra::ToggleShuffle => {
+                        manager.toggle_shuffle();
+                        Task::none()
+                    }
                 });
 
                 (Task::batch([view_task, out_task]), coordinator_out)
@@ -426,10 +609,16 @@ impl ViewCoordinator {
                 let (task, out) = self.favorites_view.update(inner, &rendered_refs, &playlists, &self.catalog_store);
                 let view_task = task.map(CoordinatorMessage::Favorites);
 
+                let manager = Arc::clone(&self.manager);
                 let (out_task, coordinator_out) = self.handle_track_list_out(out, |s: &Self| {
                     let liked = s.catalog_store.tracks_for_playlist(s.catalog_store.system_playlist_id());
                     s.favorites_view.list.rendered(&liked, &s.catalog_store).iter().map(|t| (*t).clone()).collect()
-                }, PlaybackOrigin::Favorites, |_store, extra| match extra {});
+                }, PlaybackOrigin::Favorites, |_store, extra| match extra {
+                    FavoritesExtra::ToggleShuffle => {
+                        manager.toggle_shuffle();
+                        Task::none()
+                    }
+                });
 
                 (Task::batch([view_task, out_task]), coordinator_out)
             }
@@ -450,13 +639,16 @@ impl ViewCoordinator {
                 let (task, out) = playlist_view.update(inner, &rendered_refs, &playlists, &self.catalog_store);
                 let view_task = task.map(CoordinatorMessage::PlaylistDetail);
 
-                let playlist_colors = Arc::clone(&self.playlist_colors); // [playlist-color]
                 let client = Arc::clone(&self.client);
+                let manager = Arc::clone(&self.manager);
                 let (out_task, coordinator_out) = self.handle_track_list_out(out, |s: &Self| {
                     let Some(view) = &s.playlist_view else { return Vec::new() };
                     let all = s.catalog_store.tracks_for_playlist(&ctx_playlist_id);
                     view.list.rendered(&all, &s.catalog_store).iter().map(|t| (*t).clone()).collect()
                 }, PlaybackOrigin::Playlist(playlist_id.clone()), |store, extra| match extra {
+                    PlaylistExtra::RequestMoveBlock { playlist_id, track_ids, to } => {
+                        store.move_tracks_in_playlist(&playlist_id, &track_ids, to).map(CoordinatorMessage::Catalog)
+                    }
                     PlaylistExtra::RequestReorder { playlist_id, from, to } => {
                         store.reorder_track_in_playlist(&playlist_id, from, to)
                             .map(CoordinatorMessage::Catalog)
@@ -477,6 +669,10 @@ impl ViewCoordinator {
                         },
                         |result| CoordinatorMessage::PlaylistDetail(PlaylistMessage::Adder(AdderMessage::RemoteLoaded(result))),
                     ),
+                    PlaylistExtra::ToggleShuffle => {
+                        manager.toggle_shuffle();
+                        Task::none()
+                    }
                     PlaylistExtra::AddTrack { playlist_id, track_id } => {
                         store.add_track_to_playlist(&playlist_id, &track_id).map(CoordinatorMessage::Catalog)
                     }
@@ -491,14 +687,6 @@ impl ViewCoordinator {
                             },
                         )
                     }
-                    // [playlist-color]
-                    PlaylistExtra::RequestColorChange { playlist_id, color } => {
-                        playlist_color::set_color(&playlist_id, color);
-                        Task::perform(
-                            async move { playlist_colors.set_color(&playlist_id, color).await.map_err(|e| e.to_string()) },
-                            CoordinatorMessage::PlaylistColorSaved,
-                        )
-                    }
                     PlaylistExtra::RequestCoverChange { playlist_id } => {
                         Task::perform(
                             crate::ui::utils::cover_picker::pick_cover_image(),
@@ -511,7 +699,19 @@ impl ViewCoordinator {
             }
 
             CoordinatorMessage::Catalog(inner) => {
+                // Una canción agregada a la playlist que suena entra también al final de la cola.
+                let added_to_playing = match &inner {
+                    CatalogStoreMessage::TrackAddedToPlaylist(playlist_id, track_id, Ok(()))
+                        if self.playing_playlist().is_some_and(|(id, _)| &id == playlist_id) =>
+                    {
+                        Some(track_id.clone())
+                    }
+                    _ => None,
+                };
                 let task = self.catalog_store.update(inner).map(CoordinatorMessage::Catalog);
+                if let Some(track_id) = added_to_playing {
+                    self.enqueue_if_missing(&track_id);
+                }
                 (task, CoordinatorOutMessage::Idle)
             }
 
@@ -569,28 +769,6 @@ impl ViewCoordinator {
                 (task, CoordinatorOutMessage::Idle)
             }
 
-            // [playlist-color]
-            CoordinatorMessage::PlaylistColorsLoaded(result) => {
-                match result {
-                    Ok(colors) => playlist_color::replace_all(colors.into_iter().map(|(id, hue, saturation, value)| {
-                        let color = PlaylistColor {
-                            hue: hue as f32,
-                            saturation: saturation.map_or(playlist_color::DEFAULT_SATURATION, |s| s as f32),
-                            value: value.map_or(playlist_color::DEFAULT_VALUE, |v| v as f32),
-                        };
-                        (id, color)
-                    })),
-                    Err(e) => eprintln!("[COLOR] No se pudieron cargar los colores de playlist: {e}"),
-                }
-                (Task::none(), CoordinatorOutMessage::Idle)
-            }
-            CoordinatorMessage::PlaylistColorSaved(result) => {
-                if let Err(e) = result {
-                    eprintln!("[COLOR] No se pudo guardar el color de la playlist: {e}");
-                }
-                (Task::none(), CoordinatorOutMessage::Idle)
-            }
-
             CoordinatorMessage::TrackContextMenuEvent(event) => {
                 if matches!(event, ContextMenuEvent::Dismissed) {
                     self.track_context_menu_items.clear();
@@ -633,12 +811,30 @@ impl ViewCoordinator {
                 (Task::none(), CoordinatorOutMessage::Idle)
             }
 
+            CoordinatorMessage::LyricsChecked(results) => {
+                self.lyrics_index.on_checked(results);
+                (Task::none(), CoordinatorOutMessage::Idle)
+            }
+
             CoordinatorMessage::ThumbnailLoaded(key, bytes) => {
+                let mosaic_keys: HashSet<String> = self.active_mosaic_tracks().iter().map(|t| thumb_key(t)).collect();
+                if mosaic_keys.contains(&key)
+                    && let Some(color) = cover_palette::dominant_color(&bytes)
+                {
+                    self.mosaic_colors.retain(|k, _| mosaic_keys.contains(k));
+                    self.mosaic_colors.insert(key.clone(), color);
+                }
                 self.thumbnails.on_loaded(key, bytes);
                 (Task::none(), CoordinatorOutMessage::Idle)
             }
 
             CoordinatorMessage::CoverLoaded(key, bytes) => {
+                // La portada chica (sidebar) alcanza para sacar el color de la playlist.
+                if let Some(playlist_id) = key.strip_suffix(CoverVariant::Small.suffix())
+                    && let Some(color) = cover_palette::dominant_color(&bytes)
+                {
+                    cover_palette::set_playlist_color(playlist_id, color);
+                }
                 self.covers.on_loaded(key, bytes);
                 (Task::none(), CoordinatorOutMessage::Idle)
             }
@@ -815,17 +1011,7 @@ impl ViewCoordinator {
                     .collect();
                 Task::batch(tasks)
             }
-            TrackContextAction::AddToPlaylist(target_playlist_id) => {
-                let tasks: Vec<_> = selected_ids
-                    .iter()
-                    .map(|id| {
-                        self.catalog_store
-                            .add_track_to_playlist(&target_playlist_id, id)
-                            .map(CoordinatorMessage::Catalog)
-                    })
-                    .collect();
-                Task::batch(tasks)
-            }
+            TrackContextAction::AddToPlaylist(target_playlist_id) => self.add_tracks_to_playlist(&target_playlist_id, selection),
             TrackContextAction::CopyId => {
                 iced::clipboard::write(track_id)
             }
@@ -891,6 +1077,40 @@ impl ViewCoordinator {
             _ => format!("¿Eliminar {} canciones del catálogo?", ids.len()),
         };
         self.delete_tracks_dialog.request(ids, prompt);
+    }
+
+    /// Hay un panel lateral abierto en la vista activa (agregar canciones en una playlist, playlists en Remix).
+    pub fn is_side_panel_open(&self) -> bool {
+        match &self.active_route {
+            ActiveRoute::Playlist(_) => self.playlist_view.as_ref().is_some_and(|v| v.is_adder_open()),
+            ActiveRoute::Nav(NavId::Remix) => self.remix_view.is_picker_open(),
+            _ => false,
+        }
+    }
+
+    /// Cierra los paneles laterales (la cola ocupa su lugar); `true` si había alguno abierto.
+    pub fn close_side_panel(&mut self) -> bool {
+        let adder_was_open = self.playlist_view.as_mut().is_some_and(|view| {
+            let was_open = view.is_adder_open();
+            view.close_adder();
+            was_open
+        });
+        self.remix_view.close_picker() || adder_was_open
+    }
+
+    /// Panel lateral de la vista activa, para la columna de la cola.
+    pub fn view_side_panel(&self) -> Option<Element<'_, CoordinatorMessage>> {
+        match &self.active_route {
+            ActiveRoute::Playlist(_) => self
+                .playlist_view
+                .as_ref()?
+                .view_adder(&self.catalog_store, &self.thumbnails)
+                .map(|panel| panel.map(CoordinatorMessage::PlaylistDetail)),
+            ActiveRoute::Nav(NavId::Remix) if self.remix_view.is_picker_open() => Some(
+                self.remix_view.view_picker(&self.catalog_store, &self.covers).map(CoordinatorMessage::Remix),
+            ),
+            _ => None,
+        }
     }
 
     /// Menú contextual y diálogo de la vista de Artistas (a nivel ventana).
@@ -992,9 +1212,7 @@ impl ViewCoordinator {
             }
             ActiveRoute::Nav(NavId::Remix) => {
                 let tracks = self.remix_rendered();
-                let mut targets = self.remix_view.list.visible_thumbnail_targets(&tracks);
-                targets.extend(mosaic_targets(&mosaic_tracks(tracks)));
-                targets
+                self.remix_view.list.visible_thumbnail_targets(&tracks)
             }
             ActiveRoute::Playlist(id) => {
                 let Some(view) = &self.playlist_view else {
@@ -1028,6 +1246,21 @@ impl ViewCoordinator {
         mosaic_tracks(liked.into_iter().rev())
     }
 
+    /// Mosaico del header de la vista activa (Explorar o Me gusta).
+    fn active_mosaic_tracks(&self) -> Vec<&Track> {
+        match &self.active_route {
+            ActiveRoute::Nav(NavId::Explorer) => self.explorer_mosaic_tracks(),
+            ActiveRoute::Nav(NavId::Favorites) => self.favorites_mosaic_tracks(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Color del header: el más vivo de las carátulas del mosaico, o uno derivado de `fallback_id`.
+    fn mosaic_color(&self, tracks: &[&Track], fallback_id: &str) -> iced::Color {
+        cover_palette::most_vivid(tracks.iter().filter_map(|t| self.mosaic_colors.get(&thumb_key(t)).copied()))
+            .unwrap_or_else(|| cover_palette::fallback_color(fallback_id))
+    }
+
     fn mosaic_handles(&self, tracks: &[&Track]) -> Vec<Option<iced::widget::image::Handle>> {
         tracks.iter().map(|t| self.thumbnails.get(&thumb_key(t)).cloned()).collect()
     }
@@ -1040,11 +1273,13 @@ impl ViewCoordinator {
     /// de JPEG residente y una lectura de disco + decode + resize + re-encode
     /// por playlist, para pintar una sola.
     fn active_cover_targets(&self) -> Vec<(String, String)> {
-        use crate::ui::utils::cover_manager::{covers_path, CoverVariant};
+        use crate::ui::utils::cover_manager::covers_path;
 
-        let active_playlist = match &self.active_route {
-            ActiveRoute::Playlist(id) => Some(id.as_str()),
-            _ => None,
+        // La portada grande la piden el header de la playlist abierta y el collage de Remix.
+        let large_wanted: Vec<&str> = match &self.active_route {
+            ActiveRoute::Playlist(id) => vec![id.as_str()],
+            ActiveRoute::Nav(NavId::Remix) => self.remix_view.collage_playlist_ids(&self.catalog_store),
+            _ => Vec::new(),
         };
 
         self.catalog_store
@@ -1054,7 +1289,7 @@ impl ViewCoordinator {
                 let small_path = covers_path(id, CoverVariant::Small).to_string_lossy().into_owned();
                 let mut out = vec![(CoverVariant::Small.key(id), small_path)];
 
-                if active_playlist == Some(id.as_str()) {
+                if large_wanted.contains(&id.as_str()) {
                     let large_path = cover_url.clone().unwrap_or_else(|| {
                         covers_path(id, CoverVariant::Large).to_string_lossy().into_owned()
                     });
@@ -1110,9 +1345,11 @@ impl ViewCoordinator {
                 let all_refs = self.catalog_store.explorer_tracks();
                 let rendered_tracks = self.explorer_view.list.rendered(&all_refs, &self.catalog_store);
 
-                let mosaic = self.mosaic_handles(&self.explorer_mosaic_tracks());
+                let mosaic_tracks = self.explorer_mosaic_tracks();
+                let mosaic = self.mosaic_handles(&mosaic_tracks);
+                let color = self.mosaic_color(&mosaic_tracks, "explorer");
                 self.explorer_view
-                    .view(rendered_tracks, &self.thumbnails, mosaic, now_playing_id, is_playing)
+                    .view(rendered_tracks, &self.thumbnails, mosaic, color, now_playing_id, is_playing, self.manager.is_shuffled())
                     .map(CoordinatorMessage::Explorer)
             }
             ActiveRoute::Nav(NavId::Favorites) => {
@@ -1120,16 +1357,25 @@ impl ViewCoordinator {
                     .tracks_for_playlist(self.catalog_store.system_playlist_id());
                 let liked_tracks = self.favorites_view.list.rendered(&liked_tracks, &self.catalog_store);
 
-                let mosaic = self.mosaic_handles(&self.favorites_mosaic_tracks());
+                let mosaic_tracks = self.favorites_mosaic_tracks();
+                let mosaic = self.mosaic_handles(&mosaic_tracks);
+                let color = self.mosaic_color(&mosaic_tracks, "favorites");
                 self.favorites_view
-                    .view(liked_tracks, &self.thumbnails, mosaic, now_playing_id, is_playing)
+                    .view(liked_tracks, &self.thumbnails, mosaic, color, now_playing_id, is_playing, self.manager.is_shuffled())
                     .map(CoordinatorMessage::Favorites)
             }
             ActiveRoute::Nav(NavId::Remix) => {
                 let tracks = self.remix_rendered();
-                let mosaic = self.mosaic_handles(&mosaic_tracks(tracks.iter().copied()));
+                let collage = self.remix_view
+                    .collage_playlist_ids(&self.catalog_store)
+                    .into_iter()
+                    .map(|id| CollageTile {
+                        handle: self.cover_handle(id, CoverVariant::Large).or_else(|| self.cover_handle(id, CoverVariant::Small)),
+                        color: cover_palette::header_tint(cover_palette::playlist_color(id)),
+                    })
+                    .collect();
                 self.remix_view
-                    .view(tracks, &self.thumbnails, mosaic, now_playing_id, is_playing, &self.catalog_store)
+                    .view(tracks, &self.thumbnails, collage, now_playing_id, is_playing, &self.catalog_store)
                     .map(CoordinatorMessage::Remix)
             }
             ActiveRoute::Playlist(id) => {
@@ -1144,7 +1390,16 @@ impl ViewCoordinator {
 
                         let cover_handle = self.covers.get(&crate::ui::utils::cover_manager::CoverVariant::Large.key(id)).cloned();
 
-                        view.view(&meta.1, cover_handle, tracks_refs, &self.thumbnails, now_playing_id, is_playing, &self.catalog_store)
+                        view.view(
+                            &meta.1,
+                            cover_handle,
+                            tracks_refs,
+                            &self.thumbnails,
+                            now_playing_id,
+                            is_playing,
+                            self.manager.is_shuffled(),
+                            self.lyrics_index.with_lyrics(),
+                        )
                             .map(CoordinatorMessage::PlaylistDetail)
                     } else {
                         iced::widget::space().into()
@@ -1208,6 +1463,36 @@ impl ViewCoordinator {
             }
             _ => Task::none(),
         }
+    }
+
+    /// Ctrl+F: abre el filtro de la página activa; `None` si la página no tiene filtro.
+    pub fn open_filter(&mut self) -> Option<Task<CoordinatorMessage>> {
+        match &self.active_route {
+            ActiveRoute::Nav(NavId::Explorer) => Some(self.explorer_view.open_filter().map(CoordinatorMessage::Explorer)),
+            ActiveRoute::Nav(NavId::Favorites) => Some(self.favorites_view.open_filter().map(CoordinatorMessage::Favorites)),
+            ActiveRoute::Nav(NavId::Remix) => Some(self.remix_view.open_filter().map(CoordinatorMessage::Remix)),
+            ActiveRoute::Playlist(_) => Some(self.playlist_view.as_mut()?.open_filter().map(CoordinatorMessage::PlaylistDetail)),
+            _ => None,
+        }
+    }
+
+    /// Deselecciona las canciones de la lista activa; `true` si había alguna seleccionada.
+    pub fn clear_selection(&mut self) -> bool {
+        let list = match &self.active_route {
+            ActiveRoute::Nav(NavId::Explorer) => &mut self.explorer_view.list,
+            ActiveRoute::Nav(NavId::Favorites) => &mut self.favorites_view.list,
+            ActiveRoute::Nav(NavId::Remix) => &mut self.remix_view.list,
+            ActiveRoute::Playlist(_) => match &mut self.playlist_view {
+                Some(view) => &mut view.list,
+                None => return false,
+            },
+            _ => return false,
+        };
+        if list.tracks_selection.selected_ids.is_empty() {
+            return false;
+        }
+        list.tracks_selection.clear();
+        true
     }
 
     /// Cierra el input de renombre de la playlist abierta; `true` si había uno.
@@ -1337,8 +1622,8 @@ fn scroll_to_selected(
         return Task::none();
     };
 
-    let max_offset = (rendered.len() as f32 * ROW_HEIGHT - list.scroll.viewport_height).max(0.0);
-    let target_offset = (index as f32 * ROW_HEIGHT).min(max_offset);
+    let max_offset = (list.rows_offset + rendered.len() as f32 * ROW_HEIGHT - list.scroll.viewport_height).max(0.0);
+    let target_offset = (list.rows_offset + index as f32 * ROW_HEIGHT).min(max_offset);
     list.scroll.offset_y = target_offset;
 
     scroll_to_offset(scrollable_id, target_offset)
@@ -1356,15 +1641,21 @@ fn move_and_reveal(
     let previous = list.tracks_selection.cursor_index.or(list.tracks_selection.anchor_index);
     let delta = step.rows(list.scroll.rows_per_page(ROW_HEIGHT));
 
+    // Sin nada seleccionado, RePág/AvPág mueven la vista y no la selección.
+    if step.is_page() && list.tracks_selection.selected_ids.is_empty() {
+        let content_height = list.rows_offset + rendered.len() as f32 * ROW_HEIGHT;
+        return list.scroll.scroll_by_clamped(delta as f32 * ROW_HEIGHT, content_height, scrollable_id);
+    }
+
     let Some(index) = list.move_selection(delta, extend, rendered) else {
         return Task::none();
     };
-    let row_top = index as f32 * ROW_HEIGHT;
+    let row_top = list.rows_offset + index as f32 * ROW_HEIGHT;
 
     if step.is_page() {
         let previous = previous.map_or(index, |p| p.min(rendered.len() - 1));
         let moved_rows = index as f32 - previous as f32;
-        let content_height = rendered.len() as f32 * ROW_HEIGHT;
+        let content_height = list.rows_offset + rendered.len() as f32 * ROW_HEIGHT;
         list.scroll.page_and_reveal(moved_rows * ROW_HEIGHT, content_height, row_top, ROW_HEIGHT, scrollable_id)
     } else {
         list.scroll.reveal(row_top, ROW_HEIGHT, scrollable_id)

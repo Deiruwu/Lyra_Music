@@ -1,9 +1,11 @@
 use iced::{Element, Task};
 use crate::microservices::client::MicroserviceClient;
 use crate::model::audio_tech::PlayableTrack;
-use crate::model::{SearchItem, TrackState};
+use crate::model::{SearchItem, Track, TrackState};
 use crate::ui::search_feature::search_bar::{album_thumb_key, artist_thumb_key, SearchFilter, SearchInput, SearchMessage, SearchOutMessage};
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
+use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
+use crate::ui::widgets::track_context_builder::TrackContextAction;
 
 /// Epoch fijo para este feature. La búsqueda no tiene noción de
 /// "páginas" ni "scroll" que invalide resultados viejos — un resultado
@@ -20,6 +22,8 @@ pub enum SearchFeatureMessage {
     ThumbnailColorLoaded { key: String, bytes: Vec<u8>, epoch: u64 },
     ThumbnailGrayLoaded  { track_id: String, bytes: Vec<u8>, epoch: u64 },
     DownloadFinished(Result<PlayableTrack, String>),
+    ContextMenuEvent(ContextMenuEvent<String>),
+    ContextAction(TrackContextAction, String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +32,10 @@ pub enum SearchFeatureOutMessage {
     TrackReadyToPlay(PlayableTrack),
     OpenAlbum(String),
     OpenArtist(String),
+    /// Clic derecho en una canción: `main.rs` arma el menú (sabe de likes y playlists).
+    RequestContextMenu(Track),
+    /// Opción elegida en el menú de una canción.
+    TrackContextAction(TrackContextAction, Track),
 }
 
 pub struct SearchFeature {
@@ -35,6 +43,8 @@ pub struct SearchFeature {
     pub input: SearchInput,
     pub results: Vec<SearchItem>,
     pub is_searching: bool,
+    context_menu: ContextMenu<String>,
+    context_menu_items: Vec<ContextMenuItem<TrackContextAction>>,
 }
 
 impl SearchFeature {
@@ -50,6 +60,8 @@ impl SearchFeature {
             input: SearchInput::default(),
             results: Vec::new(),
             is_searching: false,
+            context_menu: ContextMenu::new(),
+            context_menu_items: Vec::new(),
         }
     }
 
@@ -60,6 +72,9 @@ impl SearchFeature {
     ) -> (Task<SearchFeatureMessage>, SearchFeatureOutMessage) {
         match msg {
             SearchFeatureMessage::Ui(ui_msg) => {
+                if matches!(ui_msg, SearchMessage::ToggleOpen | SearchMessage::Dismiss | SearchMessage::Close) {
+                    self.dismiss_context_menu();
+                }
                 let (task, out_msg) = self.input.update(ui_msg);
                 let mut extra_task = Task::none();
                 let mut feature_out = SearchFeatureOutMessage::Idle;
@@ -110,6 +125,7 @@ impl SearchFeature {
                         );
                     }
 
+                    SearchOutMessage::RequestContextMenu(track) => feature_out = SearchFeatureOutMessage::RequestContextMenu(track),
                     SearchOutMessage::RequestOpenAlbum(album_id) => feature_out = SearchFeatureOutMessage::OpenAlbum(album_id),
                     SearchOutMessage::RequestOpenArtist(artist_id) => feature_out = SearchFeatureOutMessage::OpenArtist(artist_id),
 
@@ -219,7 +235,69 @@ impl SearchFeature {
                 println!("Error descargando/procesando la canción: {}", e);
                 (Task::none(), SearchFeatureOutMessage::Idle)
             }
+
+            SearchFeatureMessage::ContextMenuEvent(event) => {
+                if matches!(event, ContextMenuEvent::Dismissed) {
+                    self.context_menu_items.clear();
+                }
+                self.context_menu.handle(event);
+                (Task::none(), SearchFeatureOutMessage::Idle)
+            }
+
+            SearchFeatureMessage::ContextAction(action, track_id) => {
+                self.dismiss_context_menu();
+                match self.result_track(&track_id) {
+                    Some(track) => (Task::none(), SearchFeatureOutMessage::TrackContextAction(action, track.clone())),
+                    None => (Task::none(), SearchFeatureOutMessage::Idle),
+                }
+            }
         }
+    }
+
+    /// Abre el menú de una canción de los resultados con las opciones ya armadas.
+    pub fn open_context_menu(&mut self, track_id: String, items: Vec<ContextMenuItem<TrackContextAction>>) {
+        self.context_menu_items = items;
+        self.context_menu.handle(ContextMenuEvent::RightClicked(track_id));
+    }
+
+    /// Cierra el menú de canción; `true` si estaba abierto.
+    pub fn dismiss_context_menu(&mut self) -> bool {
+        let was_open = self.context_menu.open_id().is_some();
+        self.context_menu.handle(ContextMenuEvent::Dismissed);
+        self.context_menu_items.clear();
+        was_open
+    }
+
+    pub fn set_cursor(&mut self, position: iced::Point) {
+        self.context_menu.handle(ContextMenuEvent::MouseMoved(position));
+    }
+
+    pub fn set_viewport(&mut self, size: iced::Size) {
+        self.context_menu.handle(ContextMenuEvent::ViewportResized(size));
+    }
+
+    fn result_track(&self, track_id: &str) -> Option<&Track> {
+        self.results.iter().find_map(|item| match item {
+            SearchItem::Track(track) if track.id == track_id => Some(track),
+            _ => None,
+        })
+    }
+
+    /// Menú de canción abierto sobre la isla de búsqueda.
+    pub fn view_context_menu(&self) -> Option<Element<'_, SearchFeatureMessage>> {
+        if !self.input.is_open {
+            return None;
+        }
+        let open_track_id = self.context_menu.open_id();
+        let (anchor, track_id) = self.context_menu.render_target(|_| open_track_id)?;
+        Some(self.context_menu.view(
+            anchor,
+            self.context_menu_items.clone(),
+            track_id,
+            SearchFeatureMessage::ContextAction,
+            SearchFeatureMessage::ContextMenuEvent(ContextMenuEvent::Dismissed),
+            |sub| SearchFeatureMessage::ContextMenuEvent(ContextMenuEvent::SubmenuHovered(sub)),
+        ))
     }
 
     pub fn view_toggle(&self) -> Element<'_, SearchFeatureMessage> {

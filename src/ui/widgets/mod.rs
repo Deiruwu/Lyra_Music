@@ -15,4 +15,7 @@ pub mod track_context_builder;
 pub mod track_list_out_message;
 pub mod download_pill;
 pub mod cover_crop_editor;
-pub mod color_picker; // [playlist-color]
+pub mod collection_page;
+pub mod drag_pill;
+pub mod cover_collage;
+pub mod corner_mask;

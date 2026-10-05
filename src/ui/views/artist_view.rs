@@ -3,12 +3,13 @@ use std::sync::Arc;
 use iced::border::rounded;
 use iced::widget::image::Handle;
 use iced::widget::scrollable::Viewport;
-use iced::widget::{button, column, container, image, responsive, row, rule, scrollable, space, stack, text, Id};
+use iced::widget::{button, column, container, image, mouse_area, responsive, row, rule, scrollable, space, stack, text, Id};
 use iced::{Alignment, ContentFit, Element, Length, Padding, Task, Theme};
 
 use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
 use crate::model::{AlbumSummary, AlbumType, ArtistDto, ArtistProfileDto, Track};
+use crate::ui::styles::RowSelectionShape;
 use crate::ui::styles::button as button_style;
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::{self, Icon};
@@ -16,7 +17,7 @@ use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::gallery_thumbnail::{GalleryThumbnail, Treatment};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::views::catalog_store::CatalogStore;
-use crate::ui::widgets::selection_state::{stepped_index, DoubleClickDetector, SelectionStep};
+use crate::ui::widgets::selection_state::{selected_or, DoubleClickDetector, SelectionState, SelectionStep};
 use crate::ui::widgets::track_row::truncate;
 use crate::ui::widgets::track_row_simple::{track_row_with_thumbnail, THUMBNAIL_ROW_HEIGHT};
 use crate::utils::formatting::format_views;
@@ -48,10 +49,13 @@ const BANNER_TOP_CROP_FRACTION: f32 = 0.55;
 const BANNER_MAX_SIDE: u32 = 1920;
 const BANNER_ASPECT_RATIO: f32 = BANNER_SOURCE_ASPECT_RATIO * BANNER_TOP_CROP_FRACTION;
 const CONTENT_PADDING_X: f32 = spacing::SP_24;
+/// Desde qué altura del banner (0 arriba, 1 abajo) empieza a fundirse con la página.
+const BANNER_FADE_START: f32 = 0.45;
 const SECTION_SPACING: f32 = spacing::SP_28;
 const SONGS_HEADER_HEIGHT: f32 = 30.0;
 const SONGS_HEADER_SPACING: f32 = spacing::SP_12;
-const SONG_ROW_SPACING: f32 = spacing::SP_4;
+/// Sin espacio entre filas: varias seleccionadas seguidas forman un solo bloque.
+const SONG_ROW_SPACING: f32 = spacing::SP_0;
 
 /// Qué lista de canciones muestra la sección de canciones del artista.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +89,11 @@ pub struct ArtistView {
     pub scroll: ScrollTracker,
     icon_hovered: bool,
     songs_mode: ArtistSongsMode,
-    selected_id: Option<String>,
+    selection: SelectionState,
+    /// Ctrl/Shift sostenidos (selección múltiple con el mouse).
+    modifiers: iced::keyboard::Modifiers,
+    /// Canción bajo el mouse (desde ahí se arrastra a una playlist).
+    hovered_song_id: Option<String>,
     clicks: DoubleClickDetector,
 }
 
@@ -106,6 +114,8 @@ pub enum ArtistMessage {
     /// Click en una fila: selecciona; doble click reproduce.
     SongClicked(String),
     SongRightClicked(String),
+    SongHovered(String),
+    SongUnhovered(String),
     SongArtistPressed(String),
     SongAlbumPressed(String),
     SongTogglePlayback,
@@ -145,7 +155,9 @@ impl ArtistView {
             scroll: ScrollTracker::default(),
             icon_hovered: false,
             songs_mode: ArtistSongsMode::Top,
-            selected_id: None,
+            selection: SelectionState::new(),
+            modifiers: iced::keyboard::Modifiers::default(),
+            hovered_song_id: None,
             clicks: DoubleClickDetector::default(),
         };
 
@@ -186,12 +198,20 @@ impl ArtistView {
                 if self.clicks.register(&id) {
                     out = ArtistOutMessage::PlaySong(id);
                 } else {
-                    self.selected_id = Some(id);
+                    let ids = self.song_ids(catalog);
+                    self.selection.click(&id, self.modifiers, &ids);
                 }
             }
             ArtistMessage::SongRightClicked(id) => {
-                self.selected_id = Some(id.clone());
+                let ids = self.song_ids(catalog);
+                self.selection.right_click(&id, &ids);
                 out = ArtistOutMessage::TrackRightClicked(id);
+            }
+            ArtistMessage::SongHovered(id) => self.hovered_song_id = Some(id),
+            ArtistMessage::SongUnhovered(id) => {
+                if self.hovered_song_id.as_deref() == Some(id.as_str()) {
+                    self.hovered_song_id = None;
+                }
             }
             ArtistMessage::SongArtistPressed(id) => out = ArtistOutMessage::OpenTrackArtist(id),
             ArtistMessage::SongAlbumPressed(id) => out = ArtistOutMessage::OpenAlbum(id),
@@ -199,7 +219,7 @@ impl ArtistView {
             ArtistMessage::SongIconHover(hovered) => self.icon_hovered = hovered,
             ArtistMessage::SongsModeToggled(mode) => {
                 self.songs_mode = if self.songs_mode == mode { ArtistSongsMode::Top } else { mode };
-                self.selected_id = None;
+                self.selection.clear();
             }
             ArtistMessage::FollowPressed => {
                 self.is_followed = !self.is_followed;
@@ -223,8 +243,7 @@ impl ArtistView {
             ArtistViewData::Loaded(artist) => {
                 let (albums, singles_and_eps) = partition_albums(artist);
 
-                let mut children: Vec<Element<'a, ArtistMessage>> =
-                    vec![self.view_header(artist), self.view_songs(catalog, now_playing_id, is_playing)];
+                let mut children: Vec<Element<'a, ArtistMessage>> = vec![self.view_songs(catalog, now_playing_id, is_playing)];
 
                 if !albums.is_empty() {
                     children.push(self.view_album_section(
@@ -257,10 +276,15 @@ impl ArtistView {
                     ));
                 }
 
+                // El banner va de borde a borde; el resto, con margen.
                 scrollable(
-                    column(children)
-                        .spacing(SECTION_SPACING)
-                        .padding(Padding { top: spacing::SP_0, right: CONTENT_PADDING_X, bottom: spacing::SP_32, left: CONTENT_PADDING_X }),
+                    column![
+                        self.view_header(artist),
+                        column(children)
+                            .spacing(SECTION_SPACING)
+                            .padding(Padding { top: spacing::SP_0, right: CONTENT_PADDING_X, bottom: spacing::SP_32, left: CONTENT_PADDING_X }),
+                    ]
+                        .spacing(SECTION_SPACING),
                 )
                 .width(Length::Fill)
                 .style(scrollable_style::discreet)
@@ -302,7 +326,21 @@ impl ArtistView {
                 .align_y(Alignment::End)
                 .padding(spacing::SP_24);
 
-            container(stack![background, name])
+            // Abajo la foto se funde con la página, como el header de las playlists.
+            let fade = container(space())
+                .width(Length::Fill)
+                .height(Length::Fixed(banner_height))
+                .style(|_theme: &Theme| container::Style {
+                    background: Some(
+                        iced::gradient::Linear::new(std::f32::consts::PI)
+                            .add_stop(BANNER_FADE_START, iced::Color::TRANSPARENT)
+                            .add_stop(1.0, theme().surface.panel)
+                            .into(),
+                    ),
+                    ..Default::default()
+                });
+
+            container(stack![background, fade, name])
                 .width(Length::Fill)
                 .height(Length::Fixed(banner_height))
                 .clip(true)
@@ -344,19 +382,25 @@ impl ArtistView {
             ));
         }
 
-        let rows: Vec<Element<'a, ArtistMessage>> = self
-            .songs_for(mode, catalog)
-            .into_iter()
+        let songs = self.songs_for(mode, catalog);
+        let is_selected_at = |index: Option<usize>| index.and_then(|i| songs.get(i)).is_some_and(|t| self.selection.is_selected(&t.id));
+        let rows: Vec<Element<'a, ArtistMessage>> = songs
+            .iter()
+            .copied()
             .enumerate()
             .map(|(index, track)| {
                 let thumbnail = self.thumbnails.get(&thumb_key(track)).cloned();
                 let is_playing_row = now_playing_id.as_deref() == Some(track.id.as_str());
-                let is_selected = self.selected_id.as_deref() == Some(track.id.as_str());
-                track_row_with_thumbnail(
+                let selection = RowSelectionShape::from_neighbors(
+                    is_selected_at(Some(index)),
+                    is_selected_at(index.checked_sub(1)),
+                    is_selected_at(Some(index + 1)),
+                );
+                let row = track_row_with_thumbnail(
                     index + 1,
                     track,
                     thumbnail,
-                    is_selected,
+                    selection,
                     ArtistMessage::SongClicked(track.id.clone()),
                     ArtistMessage::SongRightClicked(track.id.clone()),
                     ArtistMessage::SongArtistPressed,
@@ -367,7 +411,11 @@ impl ArtistView {
                     ArtistMessage::SongTogglePlayback,
                     ArtistMessage::SongIconHover(true),
                     ArtistMessage::SongIconHover(false),
-                )
+                );
+                mouse_area(row)
+                    .on_enter(ArtistMessage::SongHovered(track.id.clone()))
+                    .on_exit(ArtistMessage::SongUnhovered(track.id.clone()))
+                    .into()
             })
             .collect();
 
@@ -603,24 +651,27 @@ impl ArtistView {
     }
 
     /// Busca una canción de la lista visible por id (para armar el menú contextual).
+    /// Canciones que arrastra apretar sobre la fila bajo el mouse (la selección si está seleccionada).
+    pub fn drag_candidate<'a>(&'a self, catalog: &'a CatalogStore) -> Option<Vec<&'a Track>> {
+        Some(self.selected_or(self.hovered_song_id.as_deref()?, catalog)).filter(|tracks| !tracks.is_empty())
+    }
+
     pub(crate) fn find_song<'a>(&'a self, id: &str, catalog: &'a CatalogStore) -> Option<&'a Track> {
         self.songs_for(self.effective_mode(catalog), catalog).into_iter().find(|t| t.id == id)
     }
 
     /// Mueve la selección (filas o páginas) y scrollea para mantenerla a la vista.
-    pub(crate) fn move_selection(&mut self, step: SelectionStep, catalog: &CatalogStore) -> Task<ArtistMessage> {
-        let songs = self.songs_for(self.effective_mode(catalog), catalog);
-        if songs.is_empty() {
-            return Task::none();
-        }
-
+    pub(crate) fn move_selection(&mut self, step: SelectionStep, extend: bool, catalog: &CatalogStore) -> Task<ArtistMessage> {
+        let ids = self.song_ids(catalog);
         let row_pitch = THUMBNAIL_ROW_HEIGHT + SONG_ROW_SPACING;
-        let current = self.selected_id.as_deref().and_then(|id| songs.iter().position(|t| t.id == id));
-        let index = stepped_index(current, step.rows(self.scroll.rows_per_page(row_pitch)), songs.len());
-        let song_count = songs.len();
-        self.selected_id = Some(songs[index].id.clone());
+        let current = self.selection.cursor_index.or(self.selection.anchor_index);
+        let visible: Vec<&String> = ids.iter().collect();
+        let Some(index) = self.selection.move_cursor(step.rows(self.scroll.rows_per_page(row_pitch)), extend, &visible) else {
+            return Task::none();
+        };
+        let song_count = ids.len();
 
-        let banner_height = (self.scroll.viewport_width - 2.0 * CONTENT_PADDING_X).max(0.0) * BANNER_ASPECT_RATIO;
+        let banner_height = self.scroll.viewport_width.max(0.0) * BANNER_ASPECT_RATIO;
         let list_top = banner_height + SECTION_SPACING + SONGS_HEADER_HEIGHT + SONGS_HEADER_SPACING;
         let row_top = list_top + index as f32 * row_pitch;
 
@@ -633,10 +684,25 @@ impl ArtistView {
         }
     }
 
-    /// Id de la canción seleccionada, si sigue en la lista visible.
-    pub(crate) fn selected_song_id(&self, catalog: &CatalogStore) -> Option<&str> {
-        let id = self.selected_id.as_deref()?;
-        self.find_song(id, catalog).map(|_| id)
+    /// Id de la canción bajo el cursor de selección, si sigue en la lista visible.
+    pub(crate) fn selected_song_id<'a>(&'a self, catalog: &'a CatalogStore) -> Option<&'a str> {
+        let songs = self.songs_for(self.effective_mode(catalog), catalog);
+        let song = songs.get(self.selection.cursor_index?)?;
+        self.selection.is_selected(&song.id).then_some(song.id.as_str())
+    }
+
+    /// Canciones a las que aplica una acción sobre `anchor_id`: toda la selección
+    /// (en orden) si lo incluye, si no solo esa.
+    pub(crate) fn selected_or<'a>(&'a self, anchor_id: &str, catalog: &'a CatalogStore) -> Vec<&'a Track> {
+        selected_or(self.songs_for(self.effective_mode(catalog), catalog), &self.selection, anchor_id)
+    }
+
+    pub(crate) fn set_modifiers(&mut self, modifiers: iced::keyboard::Modifiers) {
+        self.modifiers = modifiers;
+    }
+
+    fn song_ids(&self, catalog: &CatalogStore) -> Vec<String> {
+        self.songs_for(self.effective_mode(catalog), catalog).iter().map(|t| t.id.clone()).collect()
     }
 
     /// Reemplaza en el lugar el track cuyo id matchea, en el top de
@@ -732,7 +798,7 @@ fn banner_image<'a, Message: 'a>(handle: Handle, height: f32) -> Element<'a, Mes
     .height(Length::Fixed(height))
     .clip(true)
     .style(|_theme: &Theme| container::Style {
-        background: Some(theme().content.on_accent.into()),
+        background: Some(iced::Color::BLACK.into()),
         ..Default::default()
     })
     .into()

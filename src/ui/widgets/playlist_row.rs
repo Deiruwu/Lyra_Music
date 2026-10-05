@@ -12,11 +12,12 @@
 //! Option<Handle>`.
 
 use iced::alignment::Horizontal;
-use iced::widget::{button, column, container, mouse_area, row, space, stack, text};
+use iced::widget::{button, column, container, mouse_area, pin, row, space, stack, text};
 use iced::widget::image::Handle;
 use iced::{Alignment, Color, Element, Length, Padding, Theme};
 
 use crate::ui::assets::fonts::SF_PRO;
+use crate::ui::assets::icons;
 use crate::ui::styles::button as button_style;
 use crate::ui::utils::playlist_metadata::{format_track_count, format_total_duration};
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
@@ -33,6 +34,8 @@ const ROW_COVER_SIZE: f32 = 40.0;
 pub struct PlaylistRowData<'a> {
     pub name: &'a str,
     pub is_active: bool,
+    /// `Some(está_sonando)` si la reproducción viene de esta playlist (sonando o en pausa).
+    pub playback: Option<bool>,
     /// Cantidad de canciones de la playlist. Solo se muestra en la
     /// variante expandida; la colapsada lo ignora.
     pub track_count: usize,
@@ -124,14 +127,28 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
             .font(SF_PRO)
             .color(row_color);
 
-        let metadata = text(format!(
-            "{} · {}",
-            format_track_count(data.track_count),
-            format_total_duration(data.total_duration_seconds),
-        ))
-            .size(typography::TEXT_11)
-            .font(SF_PRO)
-            .color(theme().content.muted);
+        let metadata: Element<'a, Message> = match data.playback {
+            // La que suena: ecualizador (animado o quieto en pausa) y el estado en vez de la duración.
+            Some(is_playing) => {
+                let (label, color) = if is_playing { ("Sonando", theme().accent.primary) } else { ("En pausa", theme().content.muted) };
+                row![
+                    equalizer(is_playing),
+                    text(format!("{label} · {}", format_track_count(data.track_count))).size(typography::TEXT_11).font(SF_PRO).color(color),
+                ]
+                    .spacing(spacing::SP_6)
+                    .align_y(Alignment::Center)
+                    .into()
+            }
+            None => text(format!(
+                "{} · {}",
+                format_track_count(data.track_count),
+                format_total_duration(data.total_duration_seconds),
+            ))
+                .size(typography::TEXT_11)
+                .font(SF_PRO)
+                .color(theme().content.muted)
+                .into(),
+        };
 
         let text_column = column![name, metadata].spacing(spacing::SP_2).align_x(Alignment::Start);
 
@@ -143,6 +160,14 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
             .align_y(Alignment::Center)
             .into()
     } else {
+        // Colapsada no hay texto: la que suena lleva un punto de acento en la esquina de la portada.
+        let cover_element: Element<'a, Message> = match data.playback {
+            Some(_) => stack![cover_element, pin(playing_badge()).x(ROW_COVER_SIZE - PLAYING_BADGE_SIZE + 2.0).y(ROW_COVER_SIZE - PLAYING_BADGE_SIZE + 2.0)]
+                .width(Length::Fixed(ROW_COVER_SIZE + 2.0))
+                .height(Length::Fixed(ROW_COVER_SIZE + 2.0))
+                .into(),
+            None => cover_element,
+        };
         container(cover_element)
             .width(Length::Fill)
             .align_x(Horizontal::Center)
@@ -175,4 +200,26 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
             .on_right_press(on_right_click)
             .into()
     }
+}
+
+const PLAYING_BADGE_SIZE: f32 = 12.0;
+
+/// Ecualizador de la fila que suena: animado si suena, barras bajas quietas en pausa.
+fn equalizer<'a, Message: 'a>(is_playing: bool) -> Element<'a, Message> {
+    let bars = if is_playing { icons::Icon::equalizer_frame() } else { icons::Icon::EqualizerLow.as_str().repeat(5) };
+    let color = if is_playing { theme().accent.primary } else { theme().content.muted };
+    icons::glyph(bars, typography::TEXT_11).color(color).into()
+}
+
+/// Punto de acento con borde del color del sidebar, para la portada colapsada.
+fn playing_badge<'a, Message: 'a>() -> Element<'a, Message> {
+    container(space())
+        .width(Length::Fixed(PLAYING_BADGE_SIZE))
+        .height(Length::Fixed(PLAYING_BADGE_SIZE))
+        .style(|_theme: &Theme| container::Style {
+            background: Some(theme().accent.primary.into()),
+            border: iced::border::rounded(PLAYING_BADGE_SIZE / 2.0).color(theme().surface.base).width(2.0),
+            ..Default::default()
+        })
+        .into()
 }

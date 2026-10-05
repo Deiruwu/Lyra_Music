@@ -10,7 +10,6 @@ use crate::db::playlist_manager::PlaylistManager;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::db::artist_tag_manager::ArtistTagManager;
-use crate::db::playlist_color_manager::PlaylistColorManager; // [playlist-color]
 use crate::microservices::client::MicroserviceClient;
 use crate::model::Mix;
 use crate::ui::assets::fonts::SF_PRO;
@@ -51,8 +50,8 @@ const PRIMARY_VIEWS: &[ViewData] = &[
     home_view::VIEW_DATA,
     explorer_view_v2::VIEW_DATA,
     favorite_view::VIEW_DATA,
-    artists_view::VIEW_DATA,
     remix_view::VIEW_DATA,
+    artists_view::VIEW_DATA,
 ];
 
 // ─── MENSAJES ────────────────────────────────────────────────────────
@@ -159,7 +158,6 @@ impl SidebarFeatureV2 {
         play_history_manager: Arc<PlayHistoryManager>,
         followed_artist_manager: Arc<FollowedArtistManager>,
         artist_tag_manager: Arc<ArtistTagManager>,
-        playlist_colors: Arc<PlaylistColorManager>,
     ) -> (Self, Task<SidebarMessage>) {
         let (coordinator, coordinator_task) = ViewCoordinator::new(
             client,
@@ -168,7 +166,6 @@ impl SidebarFeatureV2 {
             play_history_manager,
             followed_artist_manager,
             artist_tag_manager,
-            playlist_colors,
         );
 
         let sidebar = Self {
@@ -429,12 +426,17 @@ impl SidebarFeatureV2 {
                     let index = self.coordinator.playlists_metadata().iter().position(|(id, _, _)| id == hovered)?;
                     Some(PlaylistDrag { source_index: index, target_index: index, start_y: self.cursor.y, active: false })
                 });
+                self.coordinator.begin_track_press();
                 let (playlist_task, out) = from_coordinator(self.coordinator.update(CoordinatorMessage::PlaylistDetail(PlaylistMessage::GlobalMousePress)));
                 let (artists_task, _) = from_coordinator(self.coordinator.update(CoordinatorMessage::Artists(ArtistsMessage::GlobalPressed)));
                 (Task::batch([playlist_task, artists_task]), out)
             }
             SidebarMessage::PlaylistAnimationFrame => (Task::none(), SidebarOutMessage::Idle),
             SidebarMessage::GlobalLeftReleased => {
+                // Antes que el soltar de la playlist abierta: soltar canciones sobre el sidebar no la reordena.
+                let drop_task = self.coordinator
+                    .end_track_drag(self.hovered_playlist.as_deref())
+                    .map(SidebarMessage::Content);
                 let reorder_task = match self.playlist_drag.take() {
                     Some(drag) if drag.active => {
                         self.playlist_drag_ended_at = Some(Instant::now());
@@ -456,7 +458,7 @@ impl SidebarFeatureV2 {
                     self.coordinator.update(CoordinatorMessage::PlaylistDetail(PlaylistMessage::GlobalMouseRelease)),
                 );
                 let (artists_task, _) = from_coordinator(self.coordinator.update(CoordinatorMessage::Artists(ArtistsMessage::GlobalReleased)));
-                (Task::batch([reorder_task, task, artists_task]), out)
+                (Task::batch([drop_task, reorder_task, task, artists_task]), out)
             }
             SidebarMessage::GlobalWindowResized(size) => {
                 self.playlist_context_menu.handle(ContextMenuEvent::ViewportResized(size));
@@ -621,6 +623,11 @@ impl SidebarFeatureV2 {
             layers.push(dialog.map(SidebarMessage::Content));
         }
 
+        // ─── Canciones arrastradas hacia una playlist ──────────────────
+        if let Some(ghost) = self.coordinator.view_track_drag_ghost() {
+            layers.push(ghost.map(SidebarMessage::Content));
+        }
+
         // ─── NUEVO: Extraemos el menú de Pistas del Coordinador ─────────
         if let Some(track_menu) = self.coordinator.view_track_context_menu() {
             layers.push(track_menu.map(SidebarMessage::Content));
@@ -637,6 +644,11 @@ impl SidebarFeatureV2 {
     /// `mouse_area` que capturó el `Point` original — ver el docstring
     /// de `ViewCoordinator::view_content`/`view_track_context_menu` para
     /// el porqué de las coordenadas relativas.
+    /// Panel lateral de la vista activa (ocupa la columna de la cola).
+    pub fn view_side_panel(&self) -> Option<Element<'_, SidebarMessage>> {
+        self.coordinator.view_side_panel().map(|panel| panel.map(SidebarMessage::Content))
+    }
+
     pub fn view_content(&self) -> Element<'_, SidebarMessage> {
         self.coordinator.view_content().map(SidebarMessage::Content)
     }
@@ -684,6 +696,15 @@ impl SidebarFeatureV2 {
 
     /// Envuelve una fila de playlist para seguir el hover (inicio de arrastre).
     fn draggable_playlist_row<'a>(&self, playlist_id: &str, row: Element<'a, SidebarMessage>) -> Element<'a, SidebarMessage> {
+        // Destino de canciones arrastradas desde la lista: se marca con el acento.
+        let is_drop_target = self.coordinator.is_dragging_tracks() && self.hovered_playlist.as_deref() == Some(playlist_id);
+        let row = container(row).style(move |_theme: &iced::Theme| container::Style {
+            background: is_drop_target.then(|| theme().overlay.hover.into()),
+            border: iced::border::rounded(radii::R_8)
+                .color(if is_drop_target { theme().accent.primary } else { iced::Color::TRANSPARENT })
+                .width(1.0),
+            ..Default::default()
+        });
         mouse_area(row)
             .on_enter(SidebarMessage::PlaylistRowHovered(playlist_id.to_string()))
             .on_exit(SidebarMessage::PlaylistRowUnhovered(playlist_id.to_string()))
@@ -711,6 +732,7 @@ impl SidebarFeatureV2 {
             PlaylistRowData {
                 name: playlist_name,
                 is_active: is_row_active,
+                playback: self.coordinator.playing_playlist().filter(|(id, _)| id == playlist_id).map(|(_, is_playing)| is_playing),
                 track_count,
                 total_duration_seconds,
             },

@@ -186,6 +186,16 @@ impl ScrollTracker {
         self.scroll_to(target_offset, scrollable_id)
     }
 
+    /// Desplaza `shift` px sin pasarse de `content_height` (RePág/AvPág sin selección).
+    pub fn scroll_by_clamped<Message>(&mut self, shift: f32, content_height: f32, scrollable_id: &'static str) -> iced::Task<Message> {
+        if self.viewport_height <= 0.0 {
+            return iced::Task::none();
+        }
+        let max_offset = (content_height - self.viewport_height).max(0.0);
+        let target_offset = (self.offset_y + shift).clamp(0.0, max_offset);
+        self.scroll_to(target_offset, scrollable_id)
+    }
+
     /// Offset necesario para ver la fila, o `None` si ya está visible.
     fn offset_to_reveal(&self, row_top: f32, row_height: f32) -> Option<f32> {
         let row_bottom = row_top + row_height;
@@ -223,8 +233,14 @@ impl ScrollTracker {
     }
 
     pub fn window(&self, row_height: f32, total_items: usize, buffer_rows: usize) -> VirtualWindow {
+        self.window_after(0.0, row_height, total_items, buffer_rows)
+    }
+
+    /// Como `window`, cuando las filas empiezan `prefix` px más abajo dentro
+    /// del mismo scroll (p. ej. un header que se desplaza junto con la lista).
+    pub fn window_after(&self, prefix: f32, row_height: f32, total_items: usize, buffer_rows: usize) -> VirtualWindow {
         VirtualWindow::compute(
-            self.offset_y,
+            (self.offset_y - prefix).max(0.0),
             self.viewport_height,
             row_height,
             total_items,

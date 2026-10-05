@@ -74,6 +74,8 @@ pub fn artist_thumb_key(artist_id: &str) -> String {
 #[derive(Debug, Clone)]
 pub enum SearchMessage {
     ToggleOpen,
+    /// Ctrl+F: abre la isla (si estaba cerrada) y le da foco al input.
+    Open,
     /// Clic fuera de la isla: la oculta sin limpiar texto ni resultados.
     Dismiss,
     /// Cierra la isla vía ESC (`main.rs`) — a diferencia de `ToggleOpen`,
@@ -82,6 +84,7 @@ pub enum SearchMessage {
     InputChanged(String),
     Submit,
     TrackClicked(Track),
+    TrackRightClicked(Track),
     AlbumClicked(String),
     ArtistClicked(String),
     FilterChanged(SearchFilter),
@@ -92,6 +95,7 @@ pub enum SearchOutMessage {
     Idle,
     RequestSearch(String, SearchFilter),
     RequestDownloadAndPlay(Track),
+    RequestContextMenu(Track),
     RequestOpenAlbum(String),
     RequestOpenArtist(String),
 }
@@ -116,6 +120,16 @@ impl SearchInput {
                     return (Task::none(), SearchOutMessage::Idle);
                 }
                 // Al abrir, el input queda listo para escribir (con lo anterior seleccionado).
+                let id = Id::new(SEARCH_INPUT_ID);
+                let task = Task::batch([
+                    iced::widget::operation::focus(id.clone()),
+                    iced::widget::operation::select_all(id),
+                ]);
+                (task, SearchOutMessage::Idle)
+            }
+
+            SearchMessage::Open => {
+                self.is_open = true;
                 let id = Id::new(SEARCH_INPUT_ID);
                 let task = Task::batch([
                     iced::widget::operation::focus(id.clone()),
@@ -164,6 +178,8 @@ impl SearchInput {
                 self.input_value.clear();
                 (Task::none(), SearchOutMessage::RequestDownloadAndPlay(track))
             }
+
+            SearchMessage::TrackRightClicked(track) => (Task::none(), SearchOutMessage::RequestContextMenu(track)),
 
             SearchMessage::AlbumClicked(album_id) => {
                 self.is_open = false;
@@ -242,11 +258,13 @@ impl SearchInput {
                 body = body.push(text("Buscando...").size(typography::TEXT_14).color(theme().content.muted));
             } else {
                 let results_column = column(results.iter().map(|item| match item {
-                    SearchItem::Track(track) => track_row(
+                    SearchItem::Track(track) => mouse_area(track_row(
                         track,
                         thumbnails.peek_for_render(track),
                         SearchMessage::TrackClicked(track.clone()),
-                    ),
+                    ))
+                        .on_right_press(SearchMessage::TrackRightClicked(track.clone()))
+                        .into(),
                     SearchItem::Album(album) => album_result_row(album, thumbnails),
                     SearchItem::Artist(artist) => artist_result_row(artist, thumbnails),
                 }))

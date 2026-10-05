@@ -36,3 +36,7 @@ rand = "0.10.2"
 uuid = { version = "1.24.1", features = ["v4"] }
 rfd = "0.17.2"
 strum_macros = "0.28.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

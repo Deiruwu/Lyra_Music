@@ -113,3 +113,36 @@ fn status_tokens_match_palette() {
     assert_eq!(t.status.cached, Color::from_rgb(0.42, 0.66, 0.46));
     assert_eq!(t.status.error, Color::from_rgb(0.73, 0.49, 0.49));
 }
+
+#[test]
+fn hex_round_trips_and_rejects_garbage() {
+    let color = Color::from_rgb8(0x92, 0x83, 0x74);
+    assert_eq!(super::to_hex(color), "#928374");
+    assert_eq!(super::from_hex("#928374"), Some(color));
+    assert_eq!(super::from_hex("928374"), Some(color));
+    assert_eq!(super::from_hex("#92837"), None);
+    assert_eq!(super::from_hex("#zz8374"), None);
+}
+
+/// Del acento elegido salen tonos con la misma relación que los del violeta de fábrica.
+#[test]
+fn derived_accent_keeps_its_ladder() {
+    let accent = Color::from_rgb8(0x6f, 0xb8, 0xb0);
+    let derived = super::derive(accent);
+    let luma = |c: Color| 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+
+    assert_eq!(derived.accent.primary, accent);
+    assert!(luma(derived.accent.hover) > luma(accent));
+    assert!(luma(derived.accent.strong) < luma(derived.accent.strong_hover));
+    assert!(luma(derived.accent.strong_hover) < luma(accent));
+    assert_eq!(derived.overlay.selected.a, 0.20);
+    assert!(luma(derived.surface.gradient_start) < luma(derived.accent.strong));
+    // Las superficies neutras no cambian con el acento.
+    assert_eq!(derived.surface.panel, theme().surface.panel);
+}
+
+#[test]
+fn dark_accent_gets_light_text() {
+    assert_eq!(super::derive(Color::from_rgb8(0x2a, 0x2f, 0x6b)).content.on_accent, Color::WHITE);
+    assert_eq!(super::derive(Color::from_rgb8(0xd8, 0xa6, 0x57)).content.on_accent, Color::BLACK);
+}

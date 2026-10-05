@@ -48,6 +48,8 @@ pub enum PlaybackFeatureMessage {
     QueueThumbnailLoaded { key: String, bytes: Vec<u8> },
     SmallThumbnailLoaded { track_id: String, bytes: Vec<u8> },
     LargeThumbnailLoaded { track_id: String, bytes: Vec<u8> },
+    /// Portada desenfocada y color predominante del track actual para el modo teatro.
+    TheaterBackdropReady { track_id: String, backdrop: Option<Handle>, color: Option<iced::Color> },
     Play(PlayableTrack),
     ToggleTheaterMode,
     Tick,
@@ -61,7 +63,7 @@ pub enum PlaybackOutMessage {
     ToggleTheaterMode,
     RequestToggleLike(Track),
     RequestOpenTrackLink(TrackLink),
-    RequestAddToPlaylist { playlist_id: String, track_id: String },
+    RequestAddToPlaylist { playlist_id: String, track: Track },
     RequestDeleteFromCatalog(String),
     RequestTrackTool(TrackTool, String),
     TrackNowPlaying(Track),
@@ -215,8 +217,27 @@ impl PlaybackFeature {
             }
 
             PlaybackFeatureMessage::SmallThumbnailLoaded { track_id, bytes } => {
-                if self.current_track_id.as_deref() == Some(track_id.as_str()) && !bytes.is_empty() {
-                    self.current_small_thumbnail = Some((track_id, Handle::from_bytes(bytes)));
+                if self.current_track_id.as_deref() != Some(track_id.as_str()) {
+                    return (Task::none(), PlaybackOutMessage::Idle);
+                }
+                if !bytes.is_empty() {
+                    self.current_small_thumbnail = Some((track_id.clone(), Handle::from_bytes(bytes.clone())));
+                }
+                // La miniatura chica alcanza para el fondo desenfocado y el color del modo teatro.
+                let task = Task::perform(
+                    async move {
+                        let backdrop = crate::ui::playback_feature::theater::theater_backdrop::blurred_backdrop(&bytes);
+                        let color = crate::ui::cover_palette::dominant_color(&bytes);
+                        (backdrop, color)
+                    },
+                    move |(backdrop, color)| PlaybackFeatureMessage::TheaterBackdropReady { track_id: track_id.clone(), backdrop, color },
+                );
+                (task, PlaybackOutMessage::Idle)
+            }
+
+            PlaybackFeatureMessage::TheaterBackdropReady { track_id, backdrop, color } => {
+                if self.current_track_id.as_deref() == Some(track_id.as_str()) {
+                    self.theater.set_backdrop(backdrop, color);
                 }
                 (Task::none(), PlaybackOutMessage::Idle)
             }
@@ -352,6 +373,9 @@ impl PlaybackFeature {
                     // small): se descarga directo y se guarda como tupla
                     // `(track_id, Handle)` para evitar condiciones de carrera
                     // si el track cambia mientras la imagen llega.
+                    if playable.track.thumbnail_small.is_none() {
+                        self.theater.set_backdrop(None, None);
+                    }
                     if let Some(url) = playable.track.thumbnail_small.clone() {
                         let track_id = playable.track.id.clone();
                         extra_tasks.push(Task::perform(
@@ -510,7 +534,7 @@ impl PlaybackFeature {
                 (Task::none(), PlaybackOutMessage::RequestToggleLike(track))
             }
             TrackContextAction::AddToPlaylist(playlist_id) => {
-                (Task::none(), PlaybackOutMessage::RequestAddToPlaylist { playlist_id, track_id: track.id })
+                (Task::none(), PlaybackOutMessage::RequestAddToPlaylist { playlist_id, track })
             }
             TrackContextAction::DeleteFromCatalog => {
                 (Task::none(), PlaybackOutMessage::RequestDeleteFromCatalog(track.id))
@@ -629,6 +653,23 @@ impl PlaybackFeature {
                 ..Default::default()
             })
             .into()
+    }
+
+    pub fn is_queue_shown(&self) -> bool {
+        self.queue.show
+    }
+
+    pub fn hide_queue(&mut self) {
+        self.queue.hide();
+    }
+
+    /// Expande la columna de la cola para el panel de agregar canciones (o la libera).
+    pub fn set_queue_forced_open(&mut self, forced: bool) {
+        self.queue.set_forced_open(forced);
+    }
+
+    pub fn queue_width(&self) -> f32 {
+        self.queue.width()
     }
 
     pub fn view_queue(&self) -> Element<'_, PlaybackFeatureMessage> {

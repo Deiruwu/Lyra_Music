@@ -15,6 +15,19 @@ pub struct AudioProperties {
     pub duration_secs: Option<u64>,
 }
 
+/// Ruta local del audio: el `file_path` del servidor con `MUSIC_SERVER_PATH`
+/// cambiado por `MUSIC_LOCAL_PATH` (la carpeta montada), si están definidas.
+pub fn local_audio_path(server_path: &str) -> PathBuf {
+    let original_path = Path::new(server_path);
+    match (std::env::var("MUSIC_SERVER_PATH").ok(), std::env::var("MUSIC_LOCAL_PATH").ok()) {
+        (Some(server), Some(local)) if !server.is_empty() && !local.is_empty() => match original_path.strip_prefix(&server) {
+            Ok(tail) => Path::new(&local).join(tail),
+            Err(_) => original_path.to_path_buf(),
+        },
+        _ => original_path.to_path_buf(),
+    }
+}
+
 // --- DOMINIO DE INTEGRACIÓN --------------------------------------------------
 
 /// La unión entre la Base de Datos y el Archivo Físico.
@@ -34,20 +47,7 @@ impl PlayableTrack {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| DecodeError::MissingFilePath(track.id.clone()))?;
 
-        let original_path = Path::new(&raw_path_str);
-
-        let resolved_path: PathBuf = match (
-            std::env::var("MUSIC_SERVER_PATH").ok(),
-            std::env::var("MUSIC_LOCAL_PATH").ok(),
-        ) {
-            (Some(server), Some(local)) if !server.is_empty() && !local.is_empty() => {
-                match original_path.strip_prefix(&server) {
-                    Ok(tail) => Path::new(&local).join(tail),
-                    Err(_) => original_path.to_path_buf(),
-                }
-            }
-            _ => original_path.to_path_buf(),
-        };
+        let resolved_path = local_audio_path(&raw_path_str);
 
         if !resolved_path.exists() {
             return Err(DecodeError::FileNotFound(resolved_path));

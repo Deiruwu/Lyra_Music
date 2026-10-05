@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use iced::border::rounded;
 use iced::widget::scrollable::Viewport;
-use iced::widget::{button, column, container, image, row, scrollable, space, text, Id};
+use iced::widget::{button, column, container, image, mouse_area, row, scrollable, space, text, Id};
 use iced::{Alignment, ContentFit, Element, Length, Padding, Task, Theme};
 
 use crate::microservices::client::MicroserviceClient;
@@ -13,10 +13,14 @@ use crate::ui::utils::gallery_thumbnail::{GalleryThumbnail, Treatment};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::utils::playlist_metadata::{format_total_duration, format_track_count, track_stats};
 use crate::ui::widgets::artist_links::artist_links;
-use crate::ui::widgets::selection_state::{stepped_index, DoubleClickDetector, SelectionStep};
+use crate::ui::widgets::selection_state::selected_or;
+use crate::ui::widgets::selection_state::{DoubleClickDetector, SelectionState, SelectionStep};
 use crate::ui::widgets::track_row_simple::{track_row_numbered, NUMBERED_ROW_HEIGHT};
 use crate::ui::assets::{spacing, typography};
 use crate::ui::theme::theme;
+use crate::ui::cover_palette;
+use crate::ui::styles::RowSelectionShape;
+use crate::ui::widgets::track_list_builder::BAND_FADE_HEIGHT;
 use crate::ui::styles::scrollable as scrollable_style;
 
 const COVER_SIZE: f32 = 220.0;
@@ -25,8 +29,11 @@ const GALLERY_MAX_SIDE: u32 = 500;
 const PLAY_BUTTON_SIZE: f32 = 52.0;
 const HEADER_PADDING_TOP: f32 = spacing::SP_32;
 const HEADER_PADDING_BOTTOM: f32 = spacing::SP_28;
+/// Margen lateral del header de borde a borde (el mismo que el de las playlists).
+const HEADER_PADDING_X: f32 = spacing::SP_28;
 const SECTION_SPACING: f32 = spacing::SP_24;
-const TRACK_ROW_SPACING: f32 = spacing::SP_4;
+/// Sin espacio entre filas: varias seleccionadas seguidas forman un solo bloque.
+const TRACK_ROW_SPACING: f32 = spacing::SP_0;
 
 enum AlbumViewData {
     Loading,
@@ -43,7 +50,13 @@ pub struct AlbumView {
     /// `stash_active_route_scroll`).
     pub scroll: ScrollTracker,
     icon_hovered: bool,
-    selected_id: Option<String>,
+    selection: SelectionState,
+    /// Ctrl/Shift sostenidos (selección múltiple con el mouse).
+    modifiers: iced::keyboard::Modifiers,
+    /// Fila bajo el mouse (desde ahí se arrastra la canción a una playlist).
+    hovered_track_id: Option<String>,
+    /// Color predominante de la portada (tiñe el header y la banda, como en las playlists).
+    cover_color: Option<iced::Color>,
     clicks: DoubleClickDetector,
 }
 
@@ -55,6 +68,8 @@ pub enum AlbumMessage {
     /// Click en una fila: selecciona; doble click reproduce.
     TrackRowPressed(String),
     TrackRowRightClicked(String),
+    TrackRowHovered(String),
+    TrackRowUnhovered(String),
     TrackArtistPressed(String),
     TogglePlayback,
     TrackIconHover(bool),
@@ -81,7 +96,10 @@ impl AlbumView {
             gallery: GalleryThumbnail::new(),
             scroll: ScrollTracker::default(),
             icon_hovered: false,
-            selected_id: None,
+            selection: SelectionState::new(),
+            modifiers: iced::keyboard::Modifiers::default(),
+            hovered_track_id: None,
+            cover_color: None,
             clicks: DoubleClickDetector::default(),
         };
 
@@ -99,22 +117,35 @@ impl AlbumView {
         match message {
             AlbumMessage::Loaded(Ok(dto)) => self.data = AlbumViewData::Loaded(dto),
             AlbumMessage::Loaded(Err(error)) => self.data = AlbumViewData::Error(error),
-            AlbumMessage::ThumbnailLoaded(key, bytes) => self.gallery.on_loaded(key, bytes),
+            AlbumMessage::ThumbnailLoaded(key, bytes) => {
+                if matches!(&self.data, AlbumViewData::Loaded(album) if album.id == key) {
+                    self.cover_color = cover_palette::dominant_color(&bytes);
+                }
+                self.gallery.on_loaded(key, bytes)
+            }
             AlbumMessage::ArtistPressed(id) => out = AlbumOutMessage::OpenArtist(id),
             AlbumMessage::TrackRowPressed(id) => {
                 if self.clicks.register(&id) {
                     out = AlbumOutMessage::PlayTrack(id);
                 } else {
-                    self.selected_id = Some(id);
+                    let ids = self.track_ids();
+                    self.selection.click(&id, self.modifiers, &ids);
                 }
             }
             AlbumMessage::TrackRowRightClicked(id) => {
-                self.selected_id = Some(id.clone());
+                let ids = self.track_ids();
+                self.selection.right_click(&id, &ids);
                 out = AlbumOutMessage::TrackRightClicked(id);
             }
             AlbumMessage::TrackArtistPressed(id) => out = AlbumOutMessage::OpenTrackArtist(id),
             AlbumMessage::TogglePlayback => out = AlbumOutMessage::RequestTogglePlayback,
             AlbumMessage::TrackIconHover(hovered) => self.icon_hovered = hovered,
+            AlbumMessage::TrackRowHovered(id) => self.hovered_track_id = Some(id),
+            AlbumMessage::TrackRowUnhovered(id) => {
+                if self.hovered_track_id.as_deref() == Some(id.as_str()) {
+                    self.hovered_track_id = None;
+                }
+            }
             AlbumMessage::PlayAlbumPressed => out = AlbumOutMessage::PlayAlbum,
             AlbumMessage::Scrolled(viewport) => self.scroll.update(viewport),
         }
@@ -135,14 +166,26 @@ impl AlbumView {
                     .is_some_and(|id| album.tracks.iter().any(|t| t.id == id));
                 let header_is_playing = this_album_is_current && is_playing;
 
-                scrollable(
-                    column![
-                        self.view_header(album, this_album_is_current, header_is_playing),
-                        self.view_track_list(&album.tracks, now_playing_id, is_playing),
-                    ]
-                        .spacing(SECTION_SPACING)
-                        .padding(Padding { top: spacing::SP_0, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
-                )
+                // Header de borde a borde y, debajo, la lista sobre la banda del mismo color.
+                let color = self.base_color();
+                let list = container(self.view_track_list(&album.tracks, now_playing_id, is_playing))
+                    .width(Length::Fill)
+                    .padding(Padding { top: SECTION_SPACING, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 });
+                let list_height = SECTION_SPACING
+                    + album.tracks.len() as f32 * (NUMBERED_ROW_HEIGHT + TRACK_ROW_SPACING)
+                    + spacing::SP_32;
+                let band_end = (BAND_FADE_HEIGHT / list_height.max(1.0)).min(1.0);
+                let list = list.style(move |_theme: &Theme| container::Style {
+                    background: Some(
+                        iced::gradient::Linear::new(std::f32::consts::PI)
+                            .add_stop(0.0, cover_palette::band_tint(color))
+                            .add_stop(band_end, theme().surface.panel)
+                            .into(),
+                    ),
+                    ..Default::default()
+                });
+
+                scrollable(column![self.view_header(album, this_album_is_current, header_is_playing), list])
                 .width(Length::Fill)
                 .style(scrollable_style::discreet)
                 .id(Id::new("album_view_scroll"))
@@ -234,15 +277,16 @@ impl AlbumView {
         let content = row![cover, info]
             .spacing(spacing::SP_24)
             .align_y(Alignment::End)
-            .padding(Padding { top: HEADER_PADDING_TOP, bottom: HEADER_PADDING_BOTTOM, left: spacing::SP_8, right: spacing::SP_8 });
+            .padding(Padding { top: HEADER_PADDING_TOP, bottom: HEADER_PADDING_BOTTOM, left: HEADER_PADDING_X, right: HEADER_PADDING_X });
 
+        let color = self.base_color();
         container(content)
             .width(Length::Fill)
-            .style(|_theme: &Theme| container::Style {
+            .style(move |_theme: &Theme| container::Style {
                 background: Some(
-                    iced::gradient::Linear::new(std::f32::consts::PI * 1.5)
-                        .add_stop(0.0, theme().surface.gradient_start)
-                        .add_stop(1.0, theme().surface.base)
+                    iced::gradient::Linear::new(std::f32::consts::PI)
+                        .add_stop(0.0, cover_palette::header_tint(color))
+                        .add_stop(1.0, cover_palette::header_tint_end(color))
                         .into(),
                 ),
                 ..Default::default()
@@ -283,16 +327,21 @@ impl AlbumView {
 
     /// Lista completa de tracks del álbum: fila numerada, título/artista apilados, caché y duración.
     fn view_track_list<'a>(&'a self, tracks: &'a [Track], now_playing_id: Option<String>, is_playing: bool) -> Element<'a, AlbumMessage> {
+        let is_selected_at = |index: Option<usize>| index.and_then(|i| tracks.get(i)).is_some_and(|t| self.selection.is_selected(&t.id));
         let rows: Vec<Element<'a, AlbumMessage>> = tracks
             .iter()
             .enumerate()
             .map(|(index, track)| {
                 let is_playing_row = now_playing_id.as_deref() == Some(track.id.as_str());
-                let is_selected = self.selected_id.as_deref() == Some(track.id.as_str());
-                track_row_numbered(
+                let selection = RowSelectionShape::from_neighbors(
+                    is_selected_at(Some(index)),
+                    is_selected_at(index.checked_sub(1)),
+                    is_selected_at(Some(index + 1)),
+                );
+                let row = track_row_numbered(
                     index + 1,
                     track,
-                    is_selected,
+                    selection,
                     AlbumMessage::TrackRowPressed(track.id.clone()),
                     AlbumMessage::TrackRowRightClicked(track.id.clone()),
                     AlbumMessage::TrackArtistPressed,
@@ -302,25 +351,32 @@ impl AlbumView {
                     AlbumMessage::TogglePlayback,
                     AlbumMessage::TrackIconHover(true),
                     AlbumMessage::TrackIconHover(false),
-                )
+                );
+                mouse_area(row)
+                    .on_enter(AlbumMessage::TrackRowHovered(track.id.clone()))
+                    .on_exit(AlbumMessage::TrackRowUnhovered(track.id.clone()))
+                    .into()
             })
             .collect();
 
         column(rows).spacing(TRACK_ROW_SPACING).into()
     }
 
-    /// Mueve la selección (filas o páginas) y scrollea para mantenerla a la vista.
-    pub(crate) fn move_selection(&mut self, step: SelectionStep) -> Task<AlbumMessage> {
-        let tracks = self.tracks();
-        if tracks.is_empty() {
-            return Task::none();
-        }
+    /// Canciones que arrastra apretar sobre la fila bajo el mouse (la selección si está seleccionada).
+    pub fn drag_candidate(&self) -> Option<Vec<&Track>> {
+        Some(self.selected_or(self.hovered_track_id.as_deref()?)).filter(|tracks| !tracks.is_empty())
+    }
 
+    /// Mueve la selección (filas o páginas) y scrollea para mantenerla a la vista.
+    pub(crate) fn move_selection(&mut self, step: SelectionStep, extend: bool) -> Task<AlbumMessage> {
+        let ids = self.track_ids();
         let row_pitch = NUMBERED_ROW_HEIGHT + TRACK_ROW_SPACING;
-        let current = self.selected_id.as_deref().and_then(|id| tracks.iter().position(|t| t.id == id));
-        let index = stepped_index(current, step.rows(self.scroll.rows_per_page(row_pitch)), tracks.len());
-        let track_count = tracks.len();
-        self.selected_id = Some(tracks[index].id.clone());
+        let current = self.selection.cursor_index.or(self.selection.anchor_index);
+        let visible: Vec<&String> = ids.iter().collect();
+        let Some(index) = self.selection.move_cursor(step.rows(self.scroll.rows_per_page(row_pitch)), extend, &visible) else {
+            return Task::none();
+        };
+        let track_count = ids.len();
 
         let list_top = HEADER_PADDING_TOP + COVER_SIZE + HEADER_PADDING_BOTTOM + SECTION_SPACING;
         let row_top = list_top + index as f32 * row_pitch;
@@ -334,10 +390,29 @@ impl AlbumView {
         }
     }
 
-    /// Id del track seleccionado, si sigue estando en el álbum.
+    /// Id del track bajo el cursor de selección, si sigue estando en el álbum.
     pub(crate) fn selected_track_id(&self) -> Option<&str> {
-        let id = self.selected_id.as_deref()?;
-        self.tracks().iter().any(|t| t.id == id).then_some(id)
+        let track = self.tracks().get(self.selection.cursor_index?)?;
+        self.selection.is_selected(&track.id).then_some(track.id.as_str())
+    }
+
+    /// Color de la portada, o uno derivado del id mientras carga.
+    fn base_color(&self) -> iced::Color {
+        self.cover_color.unwrap_or_else(|| cover_palette::fallback_color(&self.album_id))
+    }
+
+    /// Canciones a las que aplica una acción sobre `anchor_id`: toda la selección
+    /// (en orden) si lo incluye, si no solo esa.
+    pub(crate) fn selected_or<'a>(&'a self, anchor_id: &str) -> Vec<&'a Track> {
+        selected_or(self.tracks().iter().collect(), &self.selection, anchor_id)
+    }
+
+    pub(crate) fn set_modifiers(&mut self, modifiers: iced::keyboard::Modifiers) {
+        self.modifiers = modifiers;
+    }
+
+    fn track_ids(&self) -> Vec<String> {
+        self.tracks().iter().map(|t| t.id.clone()).collect()
     }
 
     /// Id del álbum mostrado — para cachear/restaurar el scroll por id

@@ -1,3 +1,5 @@
+pub mod accent_picker;
+pub mod settings_view;
 pub mod styles;
 pub mod theme;
 pub mod utils;
@@ -9,4 +11,4 @@ pub mod download_feature;
 pub mod sidebar_feature;
 pub mod views;
 pub mod assets;
-pub mod playlist_color; // [playlist-color]
+pub mod cover_palette;

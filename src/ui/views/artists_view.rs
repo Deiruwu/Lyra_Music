@@ -3,7 +3,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iced::border::rounded;
-use iced::widget::{button, column, container, image, mouse_area, pin, responsive, row, scrollable, space, text, text_input, Id};
+use iced::widget::{button, column, container, image, mouse_area, pin, responsive, row, rule, scrollable, space, text, text_input, Id};
 use iced::{Alignment, ContentFit, Element, Length, Padding, Point, Task, Theme};
 
 use crate::db::artist_tag_manager::ArtistTagManager;
@@ -21,6 +21,7 @@ use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
+use crate::ui::widgets::drag_pill::drag_pill;
 use crate::ui::widgets::track_row::truncate;
 
 pub const VIEW_DATA: ViewData = ViewData::new(NavId::Artists, Icon::Artists, "Artistas");
@@ -43,6 +44,8 @@ const GHOST_PHOTO_SIZE: f32 = 84.0;
 const DRAG_THRESHOLD_PX: f32 = 5.0;
 /// Opacidad de la tarjeta original mientras se arrastra su fantasma.
 const DRAGGED_CARD_OPACITY: f32 = 0.35;
+/// Cuánto hay que moverse hacia una sección vecina para que la etiqueta arrastrada cambie de lugar.
+const TAG_SWAP_HYSTERESIS_PX: f32 = 16.0;
 const ARROW_SIZE: f32 = 30.0;
 const ADD_TO_TAG_SUBMENU_ID: usize = 0;
 const MOVE_TO_TAG_SUBMENU_ID: usize = 1;
@@ -104,6 +107,9 @@ pub enum ArtistsMessage {
     ToggleSection(Option<String>),
     SectionPrevPage(Option<String>),
     SectionNextPage(Option<String>),
+    /// Cursor sobre el título de una etiqueta (desde ahí se arrastra para reordenar).
+    TagTitleHovered(String),
+    TagTitleUnhovered(String),
 }
 
 pub enum ArtistsOutMessage {
@@ -120,6 +126,17 @@ struct ArtistDrag {
     active: bool,
     /// Posición donde caería dentro de su propia etiqueta (vista previa del reordenamiento).
     target: Option<usize>,
+}
+
+/// Etiqueta arrastrada por su título para reordenar las secciones.
+struct TagDrag {
+    tag_id: String,
+    start: Point,
+    active: bool,
+    /// Orden de vista previa (ids de etiqueta).
+    order: Vec<String>,
+    /// Altura del cursor en el último cambio de lugar; evita que dos secciones de distinto alto se intercambien sin parar.
+    anchor_y: f32,
 }
 
 /// Nombre en edición de una etiqueta nueva; `artist_id` se agrega al crearla.
@@ -144,6 +161,8 @@ pub struct ArtistsView {
     hovered_card: Option<(String, Option<String>)>,
     hovered_section: Option<Option<String>>,
     drag: Option<ArtistDrag>,
+    hovered_tag_title: Option<String>,
+    tag_drag: Option<TagDrag>,
     /// Secciones expandidas a grilla (por defecto se ven como carrusel); `None` = "Artistas seguidos".
     expanded: HashSet<Option<String>>,
     /// Página del carrusel de cada sección contraída.
@@ -166,6 +185,8 @@ impl ArtistsView {
             hovered_card: None,
             hovered_section: None,
             drag: None,
+            hovered_tag_title: None,
+            tag_drag: None,
             expanded: HashSet::new(),
             pages: HashMap::new(),
         };
@@ -279,6 +300,7 @@ impl ArtistsView {
                     drag.target = None;
                 }
                 self.hovered_section = Some(section);
+                self.update_tag_drag();
                 Task::none()
             }
             ArtistsMessage::SectionUnhovered(section) => {
@@ -295,15 +317,43 @@ impl ArtistsView {
                     active: false,
                     target: None,
                 });
+                let is_renaming = |tag_id: &str| self.rename.as_ref().is_some_and(|(id, _)| id == tag_id);
+                self.tag_drag = self.hovered_tag_title
+                    .clone()
+                    .filter(|tag_id| self.drag.is_none() && !is_renaming(tag_id))
+                    .map(|tag_id| TagDrag {
+                        tag_id,
+                        start: self.cursor,
+                        active: false,
+                        order: self.tags.iter().map(|t| t.id.clone()).collect(),
+                        anchor_y: self.cursor.y,
+                    });
                 Task::none()
             }
-            ArtistsMessage::GlobalReleased => match self.drag.take() {
-                Some(drag) if drag.active => match self.hovered_section.clone() {
-                    Some(to) => self.drop_artist(drag, to),
-                    None => Task::none(),
-                },
-                _ => Task::none(),
-            },
+            ArtistsMessage::GlobalReleased => {
+                let tag_task = match self.tag_drag.take() {
+                    Some(drag) if drag.active => self.commit_tag_order(drag.order),
+                    _ => Task::none(),
+                };
+                let artist_task = match self.drag.take() {
+                    Some(drag) if drag.active => match self.hovered_section.clone() {
+                        Some(to) => self.drop_artist(drag, to),
+                        None => Task::none(),
+                    },
+                    _ => Task::none(),
+                };
+                Task::batch([tag_task, artist_task])
+            }
+            ArtistsMessage::TagTitleHovered(tag_id) => {
+                self.hovered_tag_title = Some(tag_id);
+                Task::none()
+            }
+            ArtistsMessage::TagTitleUnhovered(tag_id) => {
+                if self.hovered_tag_title.as_deref() == Some(tag_id.as_str()) {
+                    self.hovered_tag_title = None;
+                }
+                Task::none()
+            }
             ArtistsMessage::ToggleSection(section) => {
                 if !self.expanded.remove(&section) {
                     self.expanded.insert(section);
@@ -345,6 +395,46 @@ impl ArtistsView {
         {
             drag.active = true;
         }
+        if let Some(drag) = &mut self.tag_drag
+            && !drag.active
+            && position.distance(drag.start) > DRAG_THRESHOLD_PX
+        {
+            drag.active = true;
+        }
+        self.update_tag_drag();
+    }
+
+    /// Mueve la etiqueta arrastrada al lugar de la sección bajo el cursor, si el cursor avanzó hacia ella.
+    fn update_tag_drag(&mut self) {
+        let cursor_y = self.cursor.y;
+        let Some(Some(hovered)) = self.hovered_section.clone() else { return };
+        let Some(drag) = self.tag_drag.as_mut().filter(|drag| drag.active && drag.tag_id != hovered) else { return };
+        let (Some(from), Some(to)) = (
+            drag.order.iter().position(|id| id == &drag.tag_id),
+            drag.order.iter().position(|id| id == &hovered),
+        ) else {
+            return;
+        };
+
+        let moved = cursor_y - drag.anchor_y;
+        let toward_target = if to > from { moved > TAG_SWAP_HYSTERESIS_PX } else { moved < -TAG_SWAP_HYSTERESIS_PX };
+        if toward_target {
+            let id = drag.order.remove(from);
+            drag.order.insert(to, id);
+            drag.anchor_y = cursor_y;
+        }
+    }
+
+    fn active_tag_drag(&self) -> Option<&TagDrag> {
+        self.tag_drag.as_ref().filter(|drag| drag.active)
+    }
+
+    /// Etiquetas en el orden a pintar: con la vista previa si se está arrastrando una.
+    fn display_tags(&self) -> Vec<&ArtistTag> {
+        match self.active_tag_drag() {
+            Some(drag) => drag.order.iter().filter_map(|id| self.tags.iter().find(|t| &t.id == id)).collect(),
+            None => self.tags.iter().collect(),
+        }
     }
 
     /// Olvida qué tarjeta/sección está bajo el cursor (al dejar de mostrarse la vista).
@@ -352,6 +442,8 @@ impl ArtistsView {
         self.hovered_card = None;
         self.hovered_section = None;
         self.drag = None;
+        self.hovered_tag_title = None;
+        self.tag_drag = None;
     }
 
     fn active_drag(&self) -> Option<&ArtistDrag> {
@@ -434,11 +526,16 @@ impl ArtistsView {
 
     /// Cierra lo que esté abierto (input, renombre, diálogo, arrastre); `true` si había algo.
     pub fn cancel_edit(&mut self) -> bool {
-        let was_open = self.new_tag.is_some() || self.rename.is_some() || self.delete_dialog.is_open() || self.active_drag().is_some();
+        let was_open = self.new_tag.is_some()
+            || self.rename.is_some()
+            || self.delete_dialog.is_open()
+            || self.active_drag().is_some()
+            || self.active_tag_drag().is_some();
         self.new_tag = None;
         self.rename = None;
         self.delete_dialog.cancel();
         self.drag = None;
+        self.tag_drag = None;
         was_open
     }
 
@@ -451,7 +548,7 @@ impl ArtistsView {
         if followed.is_empty() {
             children.push(muted_text("Todavía no sigues a ningún artista. Abre la página de un artista y pulsa «Seguir» para organizarlo aquí."));
         } else {
-            for tag in &self.tags {
+            for tag in self.display_tags() {
                 let artists: Vec<&FollowedArtist> = self
                     .display_members(&tag.id)
                     .iter()
@@ -484,6 +581,9 @@ impl ArtistsView {
         let mut layers = Vec::new();
 
         if let Some(ghost) = self.active_drag().and_then(|drag| self.view_drag_ghost(drag, catalog)) {
+            layers.push(ghost);
+        }
+        if let Some(ghost) = self.active_tag_drag().and_then(|drag| self.view_tag_ghost(drag)) {
             layers.push(ghost);
         }
 
@@ -554,7 +654,19 @@ impl ArtistsView {
             let total_pages = count.div_ceil(per_page).max(1);
             let page = page.min(total_pages - 1);
 
-            let mut header = row![self.section_name(key.as_deref()), section_count(count), space().width(Length::Fill)]
+            let title = row![self.section_name(key.as_deref()), section_count(count), section_divider()]
+                .spacing(spacing::SP_10)
+                .align_y(Alignment::Center)
+                .width(Length::Fill);
+            let title: Element<'a, ArtistsMessage> = match &key {
+                Some(tag_id) => mouse_area(title)
+                    .interaction(iced::mouse::Interaction::Grab)
+                    .on_enter(ArtistsMessage::TagTitleHovered(tag_id.clone()))
+                    .on_exit(ArtistsMessage::TagTitleUnhovered(tag_id.clone()))
+                    .into(),
+                None => title.into(),
+            };
+            let mut header = row![title]
                 .spacing(spacing::SP_10)
                 .align_y(Alignment::Center)
                 .height(Length::Fixed(SECTION_TITLE_HEIGHT));
@@ -624,8 +736,9 @@ impl ArtistsView {
 
     /// Envuelve una sección para saber si el cursor está encima y resaltarla como destino al arrastrar.
     fn drop_zone<'a>(&'a self, section: Option<String>, content: Element<'a, ArtistsMessage>) -> Element<'a, ArtistsMessage> {
-        let is_target = self.active_drag().is_some_and(|drag| drag.from != section)
-            && self.hovered_section.as_ref() == Some(&section);
+        let is_target = (self.active_drag().is_some_and(|drag| drag.from != section)
+            && self.hovered_section.as_ref() == Some(&section))
+            || self.active_tag_drag().is_some_and(|drag| section.as_deref() == Some(drag.tag_id.as_str()));
 
         let zone = container(content)
             .width(Length::Fill)
@@ -726,6 +839,12 @@ impl ArtistsView {
 
         let half = GHOST_PHOTO_SIZE / 2.0 + CARD_HOVER_PADDING;
         Some(pin(card).x(self.cursor.x - half).y(self.cursor.y - half).into())
+    }
+
+    /// Píldora con el nombre de la etiqueta que sigue al cursor mientras se reordena.
+    fn view_tag_ghost<'a>(&'a self, drag: &TagDrag) -> Option<Element<'a, ArtistsMessage>> {
+        let tag = self.tags.iter().find(|t| t.id == drag.tag_id)?;
+        Some(drag_pill(Icon::Tag, tag.name.as_str(), self.cursor))
     }
 
     fn artist_menu_items(&self, artist_id: &str, tag_id: Option<&str>) -> Vec<ContextMenuItem<ArtistMenuAction>> {
@@ -874,7 +993,17 @@ impl ArtistsView {
         let Some(index) = self.tags.iter().position(|t| t.id == tag_id) else { return Task::none() };
         let Some(other) = index.checked_add_signed(delta).filter(|&i| i < self.tags.len()) else { return Task::none() };
 
-        self.tags.swap(index, other);
+        let mut order: Vec<String> = self.tags.iter().map(|t| t.id.clone()).collect();
+        order.swap(index, other);
+        self.commit_tag_order(order)
+    }
+
+    /// Aplica y guarda un nuevo orden de etiquetas (no hace nada si no cambió).
+    fn commit_tag_order(&mut self, order: Vec<String>) -> Task<ArtistsMessage> {
+        if self.tags.iter().map(|t| &t.id).eq(order.iter()) {
+            return Task::none();
+        }
+        self.tags.sort_by_key(|tag| order.iter().position(|id| id == &tag.id).unwrap_or(usize::MAX));
         for (position, tag) in self.tags.iter_mut().enumerate() {
             tag.position = position as f64;
         }
@@ -923,6 +1052,18 @@ fn carousel_arrow<'a>(icon: Icon, on_press: Option<ArtistsMessage>) -> Element<'
         Some(message) => arrow.on_press(message).into(),
         None => arrow.into(),
     }
+}
+
+/// Línea tenue que ocupa el espacio libre del título de la sección.
+fn section_divider<'a>() -> Element<'a, ArtistsMessage> {
+    rule::horizontal(1.0)
+        .style(|_theme: &Theme| rule::Style {
+            color: theme().border.subtle,
+            radius: radii::R_NONE.into(),
+            fill_mode: rule::FillMode::Full,
+            snap: false,
+        })
+        .into()
 }
 
 /// Expande la sección a grilla o la vuelve a contraer a carrusel.

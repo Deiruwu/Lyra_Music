@@ -109,6 +109,23 @@ impl PlaybackState {
         };
     }
 
+    /// La que sonaría después, si se puede fundir con la actual: no en "repetir una" ni si
+    /// todavía no está descargada.
+    pub(super) fn next_for_crossfade(&self) -> Option<Arc<Track>> {
+        if self.repeat_mode == RepeatMode::Track {
+            return None;
+        }
+        self.queue.front().filter(|slot| slot.track.file_path.is_some()).map(|slot| Arc::clone(&slot.track))
+    }
+
+    /// Saca de la cola el primer slot de `track_id` (la canción a la que ya pasó la transición).
+    pub(super) fn take_queued(&mut self, track_id: &str) -> Option<QueueSlot> {
+        let index = self.queue.iter().position(|slot| slot.track.id == track_id)?;
+        let slot = self.queue.remove(index)?;
+        self.original_order.retain(|id| *id != slot.id);
+        Some(slot)
+    }
+
     /// Saca el slot al frente de la cola y lo desvincula del orden canónico.
     pub(super) fn pop_front_tracked(&mut self) -> Option<QueueSlot> {
         let slot = self.queue.pop_front()?;
@@ -213,6 +230,9 @@ fn signal_download_required(
     let _ = queue_tx.send(QueueEvent::DownloadRequired(track));
 }
 
+/// Cada cuánto revisa el supervisor el final de canción y la transición.
+const SUPERVISOR_TICK: Duration = Duration::from_millis(200);
+
 // ── TrackManager ──────────────────────────────────────────────────────────────
 
 pub struct TrackManager {
@@ -250,10 +270,48 @@ impl TrackManager {
         thread::Builder::new()
             .name("trackmanager_supervisor".into())
             .spawn(move || {
+                // Siguiente canción ya abierta en el motor para la transición.
+                let mut prepared: Option<Arc<PlayableTrack>> = None;
+
                 loop {
-                    thread::sleep(Duration::from_millis(500));
+                    thread::sleep(SUPERVISOR_TICK);
+
+                    // El motor ya pasó fundiendo a la preparada: poner al día cola, historial y
+                    // la posición (desde que empezó a sonar), todo junto con el aviso de cambio.
+                    if let Some(position_ms) = supervisor_state.take_crossfade() {
+                        if let Some(playable) = prepared.take() {
+                            {
+                                let mut ps = supervisor_playback.lock().unwrap();
+                                ps.take_queued(&playable.track.id);
+                                ps.advance_to(Arc::clone(&playable));
+                            }
+                            if let Some(position_ms) = position_ms {
+                                supervisor_state.set_position_anchor(position_ms);
+                            }
+                            let _ = event_tx_supervisor.send(TrackEvent::TrackChanged(playable));
+                            let _ = queue_tx_supervisor.send(QueueEvent::QueueChanged);
+                        }
+                        continue;
+                    }
 
                     let status = supervisor_state.status.load(Ordering::Relaxed);
+
+                    // Sonando: mantener preparada la que sigue (o nada, si la transición está apagada).
+                    if status == 1 {
+                        let wanted = if supervisor_state.crossfade_ms.load(Ordering::Relaxed) > 0 {
+                            supervisor_playback.lock().unwrap().next_for_crossfade()
+                        } else {
+                            None
+                        };
+                        let prepared_id = prepared.as_ref().map(|p| p.track.id.as_str());
+                        // También si el motor la descartó (un `Play` o `Stop` limpia la preparada).
+                        let engine_lost_it = wanted.is_some() && !supervisor_state.next_prepared.load(Ordering::Acquire);
+                        if wanted.as_ref().map(|t| t.id.as_str()) != prepared_id || engine_lost_it {
+                            prepared = wanted.and_then(|track| probe_track(&track, "SUPERVISOR:transición").ok());
+                            let _ = supervisor_tx.send(AudioCommand::PrepareNext(prepared.clone()));
+                        }
+                        continue;
+                    }
 
                     // Estado 4 = esperando descarga; el DownloadWorker reactivará
                     // el ciclo cuando termine (vuelve al estado 3).
