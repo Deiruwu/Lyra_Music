@@ -20,7 +20,7 @@ use crate::ui::styles::button as button_style;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
-use crate::ui::widgets::track_context_builder::{TrackContextAction, TrackContextMenuBuilder};
+use crate::ui::widgets::track_context_builder::{youtube_link, TrackContextAction, TrackContextMenuBuilder, TrackTool};
 use crate::ui::assets::{spacing, typography};
 use crate::ui::theme::theme;
 
@@ -59,10 +59,11 @@ pub enum PlaybackFeatureMessage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlaybackOutMessage {
     ToggleTheaterMode,
-    RequestToggleLike(String),
+    RequestToggleLike(Track),
     RequestOpenTrackLink(TrackLink),
     RequestAddToPlaylist { playlist_id: String, track_id: String },
     RequestDeleteFromCatalog(String),
+    RequestTrackTool(TrackTool, String),
     TrackNowPlaying(Track),
     /// Igual que `TrackNowPlaying`, pero para un track que la cola
     /// descargó en segundo plano (pre-descarga/emergencia) sin que
@@ -98,17 +99,23 @@ impl PlaybackFeature {
             current_track_id: None,
             current_small_thumbnail: None,
             current_large_thumbnail: None,
-            queue_thumbnails: AsyncThumbnail::new(),
+            queue_thumbnails: AsyncThumbnail::new(128),
             track_context_menu: ContextMenu::new(),
             track_context_menu_items: Vec::new(),
         }
     }
 
     pub fn subscription(&self, is_theater_visible: bool) -> Subscription<PlaybackFeatureMessage> {
-        // El tick de 40ms sigue vivo: es el que provoca el re-render
-        // periódico que mantiene al día la barra de progreso del seek bar.
-        let tick_sub = iced::time::every(Duration::from_millis(40))
-            .map(|_| PlaybackFeatureMessage::Tick);
+        // El tick de 40ms es el que provoca el re-render periódico que
+        // mantiene al día la barra de progreso del seek bar. Solo hace falta
+        // mientras la posición se mueve sola: en pausa la barra está quieta,
+        // y un seek manual emite su propia actualización de posición.
+        let tick_sub = if self.manager.state.is_playing() {
+            iced::time::every(Duration::from_millis(40))
+                .map(|_| PlaybackFeatureMessage::Tick)
+        } else {
+            Subscription::none()
+        };
 
         // La cola arranca su drag desde cualquier punto de la fila (sin
         // handle dedicado, ver QueueMessage::GlobalPressed): necesita el
@@ -124,26 +131,11 @@ impl PlaybackFeature {
             _ => None,
         });
 
-        // El anclaje del menú contextual de track (`ContextMenu::toggle`)
-        // usa `last_mouse_in_viewport`, que solo se mantiene al día
-        // escuchando estos dos eventos globales (mismo patrón que
-        // sidebar_feature_v2 usa para su propio ContextMenu).
-        let context_menu_sub = iced::event::listen_with(|event, _status, _id| match event {
-            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-                Some(PlaybackFeatureMessage::TrackContextMenuEvent(ContextMenuEvent::MouseMoved(position)))
-            }
-            iced::Event::Window(iced::window::Event::Resized(size)) => {
-                Some(PlaybackFeatureMessage::TrackContextMenuEvent(ContextMenuEvent::ViewportResized(size)))
-            }
-            _ => None,
-        });
-
         let mut subs = vec![
             Subscription::run(queue_events),
             Subscription::run(backend_events).map(PlaybackFeatureMessage::Player),
             tick_sub,
             global_mouse,
-            context_menu_sub,
         ];
 
         // AQUÍ ESTÁ EL CAMBIO CLAVE: Agregamos la condición de la animación de ancho
@@ -263,8 +255,9 @@ impl PlaybackFeature {
                     QueueOutMessage::RequestContextMenu(slot_id) => {
                         if let Some(track) = self.queue.find_slot_track(slot_id) {
                             let member_of = catalog_store.playlists_containing_track(&track.id);
-                            let items = TrackContextMenuBuilder::new(track.liked)
+                            let items = TrackContextMenuBuilder::new(catalog_store.is_liked(&track.id))
                                 .with_playlists(playlists, None, &member_of)
+                                .with_tools(track.file_path.is_some())
                                 .with_delete()
                                 .build();
                             self.track_context_menu.handle(ContextMenuEvent::RightClicked(PlaybackContextTarget::QueueSlot(slot_id)));
@@ -274,8 +267,9 @@ impl PlaybackFeature {
                     QueueOutMessage::RequestHistoryContextMenu(steps_back) => {
                         if let Some(track) = self.queue.history_track(steps_back) {
                             let member_of = catalog_store.playlists_containing_track(&track.id);
-                            let items = TrackContextMenuBuilder::new(track.liked)
+                            let items = TrackContextMenuBuilder::new(catalog_store.is_liked(&track.id))
                                 .with_playlists(playlists, None, &member_of)
+                                .with_tools(track.file_path.is_some())
                                 .with_delete()
                                 .build();
                             self.track_context_menu.handle(ContextMenuEvent::RightClicked(PlaybackContextTarget::HistorySlot(steps_back)));
@@ -285,8 +279,9 @@ impl PlaybackFeature {
                     QueueOutMessage::RequestCurrentContextMenu => {
                         if let Some(track) = self.queue.current_track() {
                             let member_of = catalog_store.playlists_containing_track(&track.id);
-                            let items = TrackContextMenuBuilder::new(track.liked)
+                            let items = TrackContextMenuBuilder::new(catalog_store.is_liked(&track.id))
                                 .with_playlists(playlists, None, &member_of)
+                                .with_tools(track.file_path.is_some())
                                 .with_delete()
                                 .build();
                             self.track_context_menu.handle(ContextMenuEvent::RightClicked(PlaybackContextTarget::CurrentTrack));
@@ -360,7 +355,7 @@ impl PlaybackFeature {
                     if let Some(url) = playable.track.thumbnail_small.clone() {
                         let track_id = playable.track.id.clone();
                         extra_tasks.push(Task::perform(
-                            crate::ui::utils::image::download_thumbnail(url),
+                            crate::ui::utils::image::download_thumbnail(url, 128),
                             move |result| {
                                 let bytes = result.unwrap_or_default();
                                 PlaybackFeatureMessage::SmallThumbnailLoaded { track_id: track_id.clone(), bytes }
@@ -376,7 +371,7 @@ impl PlaybackFeature {
                     if let Some(url) = playable.track.thumbnail_large.clone() {
                         let track_id = playable.track.id.clone();
                         extra_tasks.push(Task::perform(
-                            crate::ui::utils::image::download_thumbnail(url),
+                            crate::ui::utils::image::download_thumbnail(url, 640),
                             move |result| {
                                 let bytes = result.unwrap_or_default();
                                 PlaybackFeatureMessage::LargeThumbnailLoaded { track_id: track_id.clone(), bytes }
@@ -403,18 +398,22 @@ impl PlaybackFeature {
                         self.manager.seek(position);
                     }
                     PlayerOutMessage::RequestToggleLike(track_id) => {
-                        feature_out = PlaybackOutMessage::RequestToggleLike(track_id);
+                        if let Some(playable) = self.player.current_track.as_ref().filter(|p| p.track.id == track_id) {
+                            feature_out = PlaybackOutMessage::RequestToggleLike(playable.track.clone());
+                        }
                     }
                     PlayerOutMessage::RequestToggleShuffle => self.manager.toggle_shuffle(),
                     PlayerOutMessage::RequestCycleRepeat   => self.manager.cycle_repeat_mode(),
+                    PlayerOutMessage::RequestToggleRadio   => self.manager.set_radio_enabled(!self.manager.is_radio_enabled()),
                     PlayerOutMessage::RequestOpenTrackLink(link) => {
                         feature_out = PlaybackOutMessage::RequestOpenTrackLink(link);
                     }
                     PlayerOutMessage::RequestContextMenu => {
                         if let Some(playable) = &self.player.current_track {
                             let member_of = catalog_store.playlists_containing_track(&playable.track.id);
-                            let items = TrackContextMenuBuilder::new(playable.track.liked)
+                            let items = TrackContextMenuBuilder::new(catalog_store.is_liked(&playable.track.id))
                                 .with_playlists(playlists, None, &member_of)
+                                .with_tools(playable.track.file_path.is_some())
                                 .with_delete()
                                 .build();
                             self.track_context_menu.handle(ContextMenuEvent::RightClicked(PlaybackContextTarget::CurrentTrack));
@@ -494,11 +493,21 @@ impl PlaybackFeature {
                 self.manager.enqueue_front(track);
                 (Task::none(), PlaybackOutMessage::Idle)
             }
+            TrackContextAction::StartRadio => {
+                self.manager.start_radio(track);
+                (Task::none(), PlaybackOutMessage::Idle)
+            }
             TrackContextAction::CopyId => {
                 (iced::clipboard::write(track.id), PlaybackOutMessage::Idle)
             }
+            TrackContextAction::CopyYoutubeLink => {
+                (iced::clipboard::write(youtube_link(&track.id)), PlaybackOutMessage::Idle)
+            }
+            TrackContextAction::Tool(tool) => {
+                (Task::none(), PlaybackOutMessage::RequestTrackTool(tool, track.id))
+            }
             TrackContextAction::ToggleLike => {
-                (Task::none(), PlaybackOutMessage::RequestToggleLike(track.id))
+                (Task::none(), PlaybackOutMessage::RequestToggleLike(track))
             }
             TrackContextAction::AddToPlaylist(playlist_id) => {
                 (Task::none(), PlaybackOutMessage::RequestAddToPlaylist { playlist_id, track_id: track.id })
@@ -524,7 +533,7 @@ impl PlaybackFeature {
             anchor,
             self.track_context_menu_items.clone(),
             target,
-            |action, target| PlaybackFeatureMessage::TrackContextAction(action, target),
+            PlaybackFeatureMessage::TrackContextAction,
             PlaybackFeatureMessage::TrackContextMenuEvent(ContextMenuEvent::Dismissed),
             |sub| PlaybackFeatureMessage::TrackContextMenuEvent(ContextMenuEvent::SubmenuHovered(sub)),
         ))
@@ -535,6 +544,22 @@ impl PlaybackFeature {
     /// está likeado antes de llamar a `view()`.
     pub fn current_track_id(&self) -> Option<&str> {
         self.current_track_id.as_deref()
+    }
+
+    /// Ver `ViewCoordinator::set_cursor`: ruta barata para el movimiento de
+    /// cursor, sin pasar por `update()`.
+    pub fn set_cursor(&mut self, position: iced::Point) {
+        self.track_context_menu.handle(ContextMenuEvent::MouseMoved(position));
+    }
+
+    /// Vuelve a leer el `.lrc` si `track_id` es el que está sonando.
+    pub fn lyrics_updated(&mut self, track_id: &str) -> Task<PlaybackFeatureMessage> {
+        match &self.player.current_track {
+            Some(playable) if playable.track.id == track_id => {
+                self.theater.track_changed(playable).map(PlaybackFeatureMessage::Theater)
+            }
+            _ => Task::none(),
+        }
     }
 
     pub fn position_updated(&mut self, position: Duration) -> Task<PlaybackFeatureMessage> {
@@ -559,6 +584,7 @@ impl PlaybackFeature {
             has_history,
             self.manager.is_shuffled(),
             self.manager.repeat_mode(),
+            self.manager.is_radio_enabled(),
         ).map(PlaybackFeatureMessage::Player);
         let seek_bar     = self.player.view_seek_bar(current_position).map(PlaybackFeatureMessage::Player);
         let vol_view     = self.volume.view(vol).map(PlaybackFeatureMessage::Volume);

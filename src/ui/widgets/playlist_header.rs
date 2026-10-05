@@ -39,9 +39,10 @@
 //! track) — este widget no descarga nada, solo pinta lo que le pasan.
 
 use iced::widget::image::Handle;
-use iced::widget::{button, column, container, row, space, stack, text};
-use iced::{Alignment, Color, Element, Length, Padding, Theme};
-use iced::border::rounded;
+use iced::widget::{button, column, container, image, mouse_area, row, space, stack, text, text_input, Id};
+use iced::{Alignment, Border, Color, ContentFit, Element, Length, Padding, Theme};
+use iced::border::{rounded, Radius};
+use crate::model::Track;
 use crate::ui::assets::icons::{self, Icon};
 use crate::ui::utils::playlist_metadata::{format_track_count, format_total_duration};
 use crate::ui::widgets::async_thumbnail::{async_thumbnail, ThumbnailState};
@@ -50,9 +51,18 @@ use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::{spacing, typography};
 use crate::ui::theme::theme;
 use crate::ui::assets::radii;
+use crate::ui::styles::text_input as text_input_style;
 
 const COVER_SIZE: f32 = 176.0;
+const COVER_RADIUS: f32 = 16.0;
 const PLAY_BUTTON_SIZE: f32 = 52.0;
+
+/// Portada del banner: una imagen, o un mosaico 2×2 de carátulas (Explorar / Me gusta).
+pub enum HeaderCover {
+    Single(Option<Handle>),
+    /// Cuatro carátulas en orden de lectura; con menos de cuatro se usa la primera sola.
+    Mosaic(Vec<Option<Handle>>),
+}
 
 /// Datos puramente informativos del banner. No incluye el `Handle` de
 /// la portada porque resolverlo (pedirlo a `ThumbnailCache`, manejar el
@@ -63,8 +73,22 @@ pub struct PlaylistHeaderData<'a> {
     /// Subtítulo pequeño encima del nombre, p. ej. "PLAYLIST" o
     /// "ME GUSTA". `None` para omitirlo.
     pub kicker: Option<&'a str>,
+    /// Línea descriptiva bajo el nombre (p. ej. el origen de una mezcla). `None` para omitirla.
+    pub description: Option<&'a str>,
     pub track_count: usize,
     pub total_duration_seconds: i64,
+    /// [playlist-color] Color de arranque del degradado; `None` usa el del tema.
+    pub tint: Option<Color>,
+}
+
+/// Id del input de renombre, para darle foco al abrirlo.
+pub const RENAME_INPUT_ID: &str = "playlist_rename_input";
+
+/// Edición del nombre: doble click sobre el título para empezar, input
+/// mientras se edita (Enter confirma).
+pub enum TitleEdit<'a, Message> {
+    Idle { on_double_click: Message },
+    Editing { value: &'a str, on_input: fn(String) -> Message, on_submit: Message },
 }
 
 /// Construye el banner completo. `on_play` es el mensaje disparado al
@@ -78,16 +102,19 @@ pub struct PlaylistHeaderData<'a> {
 /// comportamiento es idéntico a no tener overlay.
 pub fn playlist_header<'a, Message: Clone + 'a>(
     data: PlaylistHeaderData<'a>,
-    cover: Option<Handle>,
+    cover: HeaderCover,
     on_play: Message,
     on_cover_click: Option<Message>,
+    title_edit: Option<TitleEdit<'a, Message>>,
     is_playing: bool,
+    corner: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    let cover_state = match cover {
-        Some(handle) => ThumbnailState::Loaded(handle),
-        None => ThumbnailState::Loading,
+    let tint = data.tint.unwrap_or(theme().surface.gradient_start);
+    let cover_element = match cover {
+        HeaderCover::Single(handle) => single_cover(handle),
+        HeaderCover::Mosaic(handles) if handles.len() >= 4 => cover_mosaic(handles),
+        HeaderCover::Mosaic(handles) => single_cover(handles.into_iter().next().flatten()),
     };
-    let cover_element = async_thumbnail(cover_state, COVER_SIZE, 16.0);
 
     let cover_element: Element<'a, Message> = if let Some(on_click) = on_cover_click {
         let hover_button = button(
@@ -148,10 +175,29 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         None => space().height(0).into(),
     };
 
-    let title = text(data.name)
+    let title_text = text(data.name)
         .font(SF_PRO)
         .size(typography::TEXT_40)
         .color(theme().content.primary);
+
+    let title: Element<'a, Message> = match title_edit {
+        None => title_text.into(),
+        Some(TitleEdit::Idle { on_double_click }) => mouse_area(title_text).on_double_click(on_double_click).into(),
+        Some(TitleEdit::Editing { value, on_input, on_submit }) => text_input("Nombre de la playlist", value)
+            .id(Id::new(RENAME_INPUT_ID))
+            .on_input(on_input)
+            .on_submit(on_submit)
+            .font(SF_PRO)
+            .size(typography::TEXT_40)
+            .padding(Padding { top: spacing::SP_0, bottom: spacing::SP_0, left: spacing::SP_8, right: spacing::SP_8 })
+            .style(text_input_style::field)
+            .into(),
+    };
+
+    let description: Element<'a, Message> = match data.description {
+        Some(d) => text(d).font(SF_PRO).size(typography::TEXT_14).color(theme().content.secondary).into(),
+        None => space().height(0).into(),
+    };
 
     let metadata = text(format!(
         "{} · {}",
@@ -189,6 +235,7 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
     let info_column = column![
         kicker,
         title,
+        description,
         space().height(8),
         metadata,
         space().height(16),
@@ -205,16 +252,115 @@ pub fn playlist_header<'a, Message: Clone + 'a>(
         .align_y(Alignment::End)
         .padding(Padding { top: spacing::SP_32, bottom: spacing::SP_28, left: spacing::SP_8, right: spacing::SP_8 });
 
+    // Control opcional en la esquina superior derecha (p. ej. el selector de color).
+    let content: Element<'a, Message> = match corner {
+        Some(corner) => stack![
+            content,
+            container(corner)
+                .width(Length::Fill)
+                .align_x(Alignment::End)
+                .padding(Padding { top: spacing::SP_16, right: spacing::SP_16, ..Default::default() }),
+        ]
+            .into(),
+        None => content.into(),
+    };
+
     container(content)
         .width(Length::Fill)
-        .style(|_theme: &Theme| container::Style {
+        .style(move |_theme: &Theme| container::Style {
             background: Some(
                 iced::gradient::Linear::new(std::f32::consts::PI * 1.5)
-                    .add_stop(0.0, theme().surface.gradient_start)
+                    .add_stop(0.0, tint)
                     .add_stop(1.0, theme().surface.base)
                     .into(),
             ),
             ..Default::default()
         })
         .into()
+}
+
+/// Banner de una colección sin portada propia (Explorar, Me gusta): mosaico de
+/// carátulas, conteo/duración de `tracks` y botón que reproduce todo o, si ya
+/// suena algo de esta colección, pausa/reanuda.
+pub fn collection_header<'a, Message: Clone + 'a>(
+    kicker: &'a str,
+    name: &'a str,
+    tracks: &[&Track],
+    mosaic: Vec<Option<Handle>>,
+    is_current: bool,
+    is_playing: bool,
+    on_play_all: Message,
+    on_toggle: Message,
+) -> Element<'a, Message> {
+    playlist_header(
+        PlaylistHeaderData {
+            name,
+            kicker: Some(kicker),
+            description: None,
+            track_count: tracks.len(),
+            total_duration_seconds: tracks.iter().map(|t| t.duration_seconds as i64).sum(),
+            tint: None,
+        },
+        HeaderCover::Mosaic(mosaic),
+        if is_current { on_toggle } else { on_play_all },
+        None,
+        None,
+        is_current && is_playing,
+        None,
+    )
+}
+
+fn single_cover<'a, Message: Clone + 'a>(handle: Option<Handle>) -> Element<'a, Message> {
+    let state = match handle {
+        Some(handle) => ThumbnailState::Loaded(handle),
+        None => ThumbnailState::Loading,
+    };
+    async_thumbnail(state, COVER_SIZE, COVER_RADIUS)
+}
+
+/// Mosaico 2×2 con las esquinas exteriores redondeadas como una portada normal.
+fn cover_mosaic<'a, Message: 'a>(handles: Vec<Option<Handle>>) -> Element<'a, Message> {
+    let half = COVER_SIZE / 2.0;
+    let corners = [
+        Radius::new(0.0).top_left(COVER_RADIUS),
+        Radius::new(0.0).top_right(COVER_RADIUS),
+        Radius::new(0.0).bottom_left(COVER_RADIUS),
+        Radius::new(0.0).bottom_right(COVER_RADIUS),
+    ];
+
+    let mut tiles = handles.into_iter().zip(corners).map(|(handle, corner)| -> Element<'a, Message> {
+        match handle {
+            Some(handle) => image(handle)
+                .width(Length::Fixed(half))
+                .height(Length::Fixed(half))
+                .content_fit(ContentFit::Cover)
+                .border_radius(mirrored_for_image(corner))
+                .into(),
+            None => container(space())
+                .width(Length::Fixed(half))
+                .height(Length::Fixed(half))
+                .style(move |_theme: &Theme| container::Style {
+                    background: Some(theme().surface.sunken.into()),
+                    border: Border { radius: corner, ..Default::default() },
+                    ..Default::default()
+                })
+                .into(),
+        }
+    });
+
+    let mut next = || tiles.next().unwrap_or_else(|| space().into());
+    column![row![next(), next()], row![next(), next()]].into()
+}
+
+/// El shader de imágenes de iced 0.14 (wgpu) aplica los radios por esquina en
+/// espejo (el de arriba a la izquierda redondea abajo a la derecha, etc.); los
+/// contenedores no tienen ese problema. Se invierte para que la esquina pedida
+/// sea la que se redondea.
+fn mirrored_for_image(radius: Radius) -> Radius {
+    Radius {
+        top_left: radius.bottom_right,
+        top_right: radius.bottom_left,
+        bottom_right: radius.top_left,
+        bottom_left: radius.top_right,
+    }
 }

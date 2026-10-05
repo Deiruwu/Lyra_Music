@@ -10,6 +10,12 @@ pub enum AudioCommand {
         track: Arc<PlayableTrack>,
         mode: ChannelMode,
     },
+    /// Carga la pista en `position` y la deja en pausa (restaurar sesión).
+    Load {
+        track: Arc<PlayableTrack>,
+        mode: ChannelMode,
+        position: Duration,
+    },
     Pause,
     Resume,
     Stop,

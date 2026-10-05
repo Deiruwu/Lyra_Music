@@ -19,7 +19,7 @@ use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::widgets::artist_links::{album_link, artist_links, artist_names_text};
 use crate::ui::widgets::single_line_text::single_line_text;
 use crate::ui::widgets::track_row::track_thumbnail_sized;
-use crate::utils::formatting::{format_added_at, format_duration};
+use crate::utils::formatting::{format_added_at, format_duration, format_last_played};
 use crate::ui::assets::{spacing, typography};
 use crate::ui::assets::radii;
 use crate::ui::styles::scrollable as scrollable_style;
@@ -43,7 +43,7 @@ fn row_grid_padding(vertical: f32) -> Padding {
 
 #[derive(Debug, Clone)]
 pub enum TrackEvent {
-    Clicked(Track, usize),
+    Clicked(String, usize),
     Scrolled(Viewport),
     Sorted(usize),
     MouseMoved(Point),
@@ -81,6 +81,10 @@ pub enum TrackColumn {
     Key = 6,
     #[strum(serialize = "AGREGADO")]
     AddedAt = 7,
+    #[strum(serialize = "REPR.")]
+    PlayCount = 8,
+    #[strum(serialize = "ÚLTIMA VEZ")]
+    LastPlayed = 9,
 }
 
 impl TrackColumn {
@@ -97,6 +101,8 @@ impl TrackColumn {
             TrackColumn::Bpm => Length::Fixed(60.0),
             TrackColumn::Key => Length::Fixed(60.0),
             TrackColumn::AddedAt => Length::Fixed(100.0),
+            TrackColumn::PlayCount => Length::Fixed(60.0),
+            TrackColumn::LastPlayed => Length::Fixed(140.0),
         }
     }
 
@@ -113,6 +119,8 @@ impl TrackColumn {
                 theme().accent.primary,
             ),
             TrackColumn::AddedAt => DisplayValue::Text(format_added_at(track.added_at)),
+            TrackColumn::PlayCount => DisplayValue::Text(track.play_count.map(|c| c.to_string()).unwrap_or_else(|| "-".to_string())),
+            TrackColumn::LastPlayed => DisplayValue::Text(format_last_played(track.last_played_at)),
         }
     }
 }
@@ -126,7 +134,7 @@ enum DisplayValue {
     AlbumLink(Option<Album>),
 }
 
-fn active_columns(show_added_at: bool) -> Vec<TrackColumn> {
+fn active_columns(show_added_at: bool, show_play_stats: bool) -> Vec<TrackColumn> {
     let mut columns = vec![
         TrackColumn::Title,
         TrackColumn::Artist,
@@ -137,6 +145,10 @@ fn active_columns(show_added_at: bool) -> Vec<TrackColumn> {
     ];
     if show_added_at {
         columns.push(TrackColumn::AddedAt);
+    }
+    if show_play_stats {
+        columns.push(TrackColumn::PlayCount);
+        columns.push(TrackColumn::LastPlayed);
     }
     columns
 }
@@ -159,10 +171,30 @@ pub fn sort_tracks(tracks: &mut [&Track], sort_key: Option<usize>, ascending: bo
         return;
     }
 
+    // La columna Artista se ordena aparte (decorate-sort-undecorate):
+    // `format_artists()` alloca un String, y dentro del comparador eso son
+    // 2 allocaciones por comparación — O(n log n) Strings por click en la
+    // cabecera. Materializando la clave una vez por track queda en N.
+    // Se compara exactamente el mismo String que antes, así que el orden
+    // resultante (empates incluidos: ambos sorts son estables) no cambia.
+    if key == TrackColumn::Artist.as_usize() {
+        let mut decorated: Vec<(String, &Track)> =
+            tracks.iter().map(|t| (t.format_artists(), *t)).collect();
+
+        decorated.sort_by(|a, b| {
+            let ordering = a.0.cmp(&b.0);
+            if ascending { ordering } else { ordering.reverse() }
+        });
+
+        for (slot, (_, track)) in tracks.iter_mut().zip(decorated) {
+            *slot = track;
+        }
+        return;
+    }
+
     tracks.sort_by(|a, b| {
         let ordering = match key {
             k if k == TrackColumn::Title.as_usize() => a.title.cmp(&b.title),
-            k if k == TrackColumn::Artist.as_usize() => a.format_artists().cmp(&b.format_artists()),
             k if k == TrackColumn::Album.as_usize() => {
                 let album_a = a.album.as_ref().map(|al| al.name.as_str()).unwrap_or("");
                 let album_b = b.album.as_ref().map(|al| al.name.as_str()).unwrap_or("");
@@ -177,6 +209,8 @@ pub fn sort_tracks(tracks: &mut [&Track], sort_key: Option<usize>, ascending: bo
                 (Some(ka), Some(kb)) => camelot_key_order(ka).cmp(&camelot_key_order(kb)),
             },
             k if k == TrackColumn::AddedAt.as_usize() => a.added_at.cmp(&b.added_at),
+            k if k == TrackColumn::PlayCount.as_usize() => a.play_count.cmp(&b.play_count),
+            k if k == TrackColumn::LastPlayed.as_usize() => a.last_played_at.cmp(&b.last_played_at),
             _ => std::cmp::Ordering::Equal,
         };
         if ascending { ordering } else { ordering.reverse() }
@@ -229,6 +263,7 @@ pub struct TrackBuilder<'a, Message> {
     buffer_rows: usize,
 
     show_added_at: bool,
+    show_play_stats: bool,
     index_sortable: bool,
 
     active_sort_key: Option<usize>,
@@ -238,8 +273,6 @@ pub struct TrackBuilder<'a, Message> {
     animator: Option<&'a RowAnimator>,
 
     on_event: Option<Rc<dyn Fn(TrackEvent) -> Message + 'a>>,
-
-    overlay: Option<Element<'a, Message>>,
 }
 
 impl<'a, Message> TrackBuilder<'a, Message>
@@ -265,13 +298,13 @@ where
             row_height: DEFAULT_ROW_HEIGHT,
             buffer_rows: DEFAULT_BUFFER_ROWS,
             show_added_at: false,
+            show_play_stats: false,
             index_sortable: false,
             active_sort_key: Some(TrackColumn::Index.as_usize()),
             sort_direction_asc: true,
             drag: None,
             animator: None,
             on_event: None,
-            overlay: None,
         }
     }
 
@@ -280,6 +313,12 @@ where
     /// Agrega la columna "AGREGADO" (fecha) al final de la fila.
     pub fn with_added_at(mut self) -> Self {
         self.show_added_at = true;
+        self
+    }
+
+    /// Agrega las columnas de depuración "REPR." y "ÚLTIMA VEZ" si `show` es `true`.
+    pub fn with_play_stats(mut self, show: bool) -> Self {
+        self.show_play_stats = show;
         self
     }
 
@@ -310,16 +349,6 @@ where
         self
     }
 
-    pub fn row_height(mut self, height: f32) -> Self {
-        self.row_height = height;
-        self
-    }
-
-    pub fn buffer_rows(mut self, rows: usize) -> Self {
-        self.buffer_rows = rows;
-        self
-    }
-
     /// Activa el pintado del ghost row de reordenamiento.
     /// `hole_index` es la fila (dentro del vector visual ya
     /// reordenado que se pasó al builder) que se está arrastrando.
@@ -341,11 +370,6 @@ where
 
     pub fn on_event(mut self, f: impl Fn(TrackEvent) -> Message + 'a) -> Self {
         self.on_event = Some(Rc::new(f));
-        self
-    }
-
-    pub fn overlay(mut self, overlay: Option<Element<'a, Message>>) -> Self {
-        self.overlay = overlay;
         self
     }
 
@@ -508,7 +532,7 @@ where
         // display_index es 1-based (para mostrar "#1, #2..."); el índice
         // real dentro del vector visible es display_index - 1.
         let visible_idx = display_index - 1;
-        let click_track = track.clone();
+        let click_id = track.id.clone();
         let right_click_id = track.id.clone();
 
         let centered_content = container(row_content)
@@ -519,15 +543,20 @@ where
         let on_press = if is_current_row {
             emit(TrackEvent::TogglePlayback)
         } else {
-            emit(TrackEvent::Clicked(click_track, visible_idx))
+            emit(TrackEvent::Clicked(click_id, visible_idx))
         };
 
+        // Durante un arrastre las filas no se resaltan ni reciben el clic al
+        // soltar (igual que en la cola): el único resaltado es el fantasma.
         let btn = button(centered_content)
             .width(Length::Fill)
             .height(Length::Fixed(self.row_height))
-            .padding(spacing::SP_0)
-            .style(button_style::transparent)
-            .on_press(on_press);
+            .padding(spacing::SP_0);
+        let btn = if self.drag.is_some() {
+            btn.style(button_style::inert)
+        } else {
+            btn.style(button_style::transparent).on_press(on_press)
+        };
 
         let styled = container(btn)
             .width(Length::Fill)
@@ -620,7 +649,7 @@ where
     /// una tabla sin conexión de eventos no tiene sentido en ninguna
     /// vista real.
     pub fn build(self) -> Element<'a, Message> {
-        let fields = active_columns(self.show_added_at);
+        let fields = active_columns(self.show_added_at, self.show_play_stats);
         let emit = self.on_event.clone().expect("TrackBuilder: falta .on_event(...)");
 
         let header = self.render_header(&fields, &emit);
@@ -697,14 +726,7 @@ where
             .on_exit(emit_exit(TrackEvent::ViewportExited));
         let scroll_area: Element<'a, Message> = area.into();
 
-        let ghost = self.ghost_overlay(&fields);
-        let combined_overlay = match (self.overlay, ghost) {
-            (Some(a), Some(b)) => Some(stack![a, b].into()),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        };
-        let overlay_layer: Element<'a, Message> = combined_overlay.unwrap_or_else(|| space().into());
+        let overlay_layer: Element<'a, Message> = self.ghost_overlay(&fields).unwrap_or_else(|| space().into());
 
         let body: Element<'a, Message> = stack![scroll_area, overlay_layer].into();
 

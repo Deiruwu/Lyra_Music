@@ -7,17 +7,20 @@ use iced::{Element, Task};
 use crate::audio::manager::manager::{PlaybackOrigin, TrackManager};
 use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
-use crate::model::Track;
+use crate::model::{Mix, Track};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::album_view::{AlbumMessage, AlbumOutMessage, AlbumView};
 use crate::ui::views::artist_view::{ArtistMessage, ArtistOutMessage, ArtistView};
+use crate::ui::views::mix_view::{MixMessage, MixOutMessage, MixView};
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
-use crate::ui::widgets::track_context_builder::{TrackContextAction, TrackContextMenuBuilder};
+use crate::ui::widgets::selection_state::SelectionStep;
+use crate::ui::widgets::track_context_builder::{youtube_link, TrackContextAction, TrackContextMenuBuilder, TrackTool};
 
 enum LibraryBrowserRoute {
     Artist(ArtistView),
     Album(AlbumView),
+    Mix(MixView),
 }
 
 pub struct LibraryBrowserFeature {
@@ -37,6 +40,7 @@ pub struct LibraryBrowserFeature {
 pub enum LibraryBrowserLocation {
     Artist(String),
     Album(String),
+    Mix(Mix),
 }
 
 /// `Task<T>` genérico: estas operaciones de scroll no producen ningún
@@ -53,8 +57,10 @@ fn scroll_to_offset<T>(scrollable_id: &'static str, offset_y: f32) -> Task<T> {
 pub enum LibraryBrowserMessage {
     Artist(ArtistMessage),
     Album(AlbumMessage),
+    Mix(MixMessage),
     OpenArtist(String),
     OpenAlbum(String),
+    OpenMix(Mix),
     ContextMenuEvent(ContextMenuEvent<String>),
     TrackContextAction(TrackContextAction, String),
 }
@@ -62,9 +68,10 @@ pub enum LibraryBrowserMessage {
 #[derive(Debug, Clone)]
 pub enum LibraryBrowserOutMessage {
     Idle,
-    RequestToggleLike(String),
+    RequestToggleLike(Track),
     RequestAddToPlaylist { playlist_id: String, track_id: String },
     RequestToggleFollowArtist(String, String, Option<String>),
+    RequestTrackTool(TrackTool, String),
 }
 
 impl LibraryBrowserFeature {
@@ -96,6 +103,7 @@ impl LibraryBrowserFeature {
         match &self.active {
             Some(LibraryBrowserRoute::Artist(view)) => Some(LibraryBrowserLocation::Artist(view.artist_id().to_string())),
             Some(LibraryBrowserRoute::Album(view)) => Some(LibraryBrowserLocation::Album(view.album_id().to_string())),
+            Some(LibraryBrowserRoute::Mix(view)) => Some(LibraryBrowserLocation::Mix(view.mix().clone())),
             None => None,
         }
     }
@@ -113,16 +121,79 @@ impl LibraryBrowserFeature {
             Some(LibraryBrowserRoute::Album(view)) => {
                 self.album_scroll_cache.insert(view.album_id().to_string(), view.scroll);
             }
+            Some(LibraryBrowserRoute::Mix(view)) => {
+                self.album_scroll_cache.insert(view.mix().id.clone(), view.list.scroll);
+            }
             None => {}
         }
     }
 
-    /// Busca un track por id en la ruta actualmente activa (top 5 del artista o tracks del álbum).
-    fn find_track(&self, id: &str) -> Option<&Track> {
+    /// Busca un track por id en la ruta actualmente activa (canciones del artista o tracks del álbum).
+    fn find_track<'a>(&'a self, id: &str, catalog_store: &'a CatalogStore) -> Option<&'a Track> {
         match &self.active {
-            Some(LibraryBrowserRoute::Artist(view)) => view.find_song(id),
+            Some(LibraryBrowserRoute::Artist(view)) => view.find_song(id, catalog_store),
             Some(LibraryBrowserRoute::Album(view)) => view.find_track(id),
+            Some(LibraryBrowserRoute::Mix(view)) => view.find_track(id),
             None => None,
+        }
+    }
+
+    /// Mueve la selección de la lista abierta (flechas, RePág/AvPág).
+    pub fn move_selection(&mut self, step: SelectionStep, catalog_store: &CatalogStore) -> Task<LibraryBrowserMessage> {
+        match &mut self.active {
+            Some(LibraryBrowserRoute::Artist(view)) => view.move_selection(step, catalog_store).map(LibraryBrowserMessage::Artist),
+            Some(LibraryBrowserRoute::Album(view)) => view.move_selection(step).map(LibraryBrowserMessage::Album),
+            Some(LibraryBrowserRoute::Mix(view)) => view.move_selection(step).map(LibraryBrowserMessage::Mix),
+            None => Task::none(),
+        }
+    }
+
+    /// Reproduce la lista abierta desde la canción seleccionada (Enter).
+    pub fn play_selection(&self, catalog_store: &CatalogStore) {
+        match &self.active {
+            Some(LibraryBrowserRoute::Artist(view)) => {
+                if let Some(id) = view.selected_song_id(catalog_store) {
+                    self.play_artist_songs(view, id, catalog_store);
+                }
+            }
+            Some(LibraryBrowserRoute::Album(view)) => {
+                if let Some(id) = view.selected_track_id() {
+                    self.play_album_tracks(view, id);
+                }
+            }
+            Some(LibraryBrowserRoute::Mix(view)) => {
+                if let Some(id) = view.selected_track_id() {
+                    self.play_mix_tracks(view, id);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Reproduce las canciones visibles del artista empezando por `start_id`.
+    fn play_artist_songs(&self, view: &ArtistView, start_id: &str, catalog_store: &CatalogStore) {
+        let songs = view.shown_songs(catalog_store);
+        if let Some(index) = songs.iter().position(|t| t.id == start_id) {
+            self.manager.set_playback_origin(PlaybackOrigin::Artist(view.artist_id().to_string()));
+            self.manager.play_context(songs, index);
+        }
+    }
+
+    /// Reproduce el álbum empezando por `start_id`.
+    fn play_album_tracks(&self, view: &AlbumView, start_id: &str) {
+        let tracks = view.tracks();
+        if let Some(index) = tracks.iter().position(|t| t.id == start_id) {
+            self.manager.set_playback_origin(PlaybackOrigin::Album(view.album_id().to_string()));
+            self.manager.play_context(tracks.to_vec(), index);
+        }
+    }
+
+    /// Reproduce la mezcla (en el orden de la tabla) empezando por `start_id`.
+    fn play_mix_tracks(&self, view: &MixView, start_id: &str) {
+        let tracks = view.tracks_in_order();
+        if let Some(index) = tracks.iter().position(|t| t.id == start_id) {
+            self.manager.set_playback_origin(PlaybackOrigin::Mix(view.mix().id.clone()));
+            self.manager.play_context(tracks, index);
         }
     }
 
@@ -135,8 +206,19 @@ impl LibraryBrowserFeature {
         match &mut self.active {
             Some(LibraryBrowserRoute::Artist(view)) => view.patch_track(track),
             Some(LibraryBrowserRoute::Album(view)) => view.patch_track(track),
+            Some(LibraryBrowserRoute::Mix(view)) => view.patch_track(track),
             None => {}
         }
+    }
+
+    /// Ver `ViewCoordinator::set_cursor`.
+    pub fn set_cursor(&mut self, position: iced::Point) {
+        self.context_menu.handle(ContextMenuEvent::MouseMoved(position));
+    }
+
+    /// Tamaño de la ventana, para encajar el menú contextual.
+    pub fn set_viewport(&mut self, size: iced::Size) {
+        self.context_menu.handle(ContextMenuEvent::ViewportResized(size));
     }
 
     pub fn update(
@@ -170,6 +252,64 @@ impl LibraryBrowserFeature {
                 (out_task, LibraryBrowserOutMessage::Idle)
             }
 
+            LibraryBrowserMessage::OpenMix(mix) => {
+                self.stash_active_route_scroll();
+                let id = mix.id.clone();
+                let (mut view, task) = MixView::new(mix);
+                let mut out_task = task.map(LibraryBrowserMessage::Mix);
+                if let Some(scroll) = self.album_scroll_cache.remove(&id) {
+                    view.list.scroll = scroll;
+                    out_task = Task::batch([out_task, scroll_to_offset(MixView::scroll_id(), scroll.offset_y)]);
+                }
+                self.active = Some(LibraryBrowserRoute::Mix(view));
+                (out_task, LibraryBrowserOutMessage::Idle)
+            }
+
+            LibraryBrowserMessage::Mix(msg) => match &mut self.active {
+                Some(LibraryBrowserRoute::Mix(view)) => {
+                    let (task, out) = view.update(msg);
+                    let task = task.map(LibraryBrowserMessage::Mix);
+
+                    let follow_up = match out {
+                        MixOutMessage::Idle => Task::none(),
+                        MixOutMessage::PlayTrack(id) => {
+                            let tracks = view.tracks_in_order();
+                            if let Some(index) = tracks.iter().position(|t| t.id == id) {
+                                self.manager.set_playback_origin(PlaybackOrigin::Mix(view.mix().id.clone()));
+                                self.manager.play_context(tracks, index);
+                            }
+                            Task::none()
+                        }
+                        MixOutMessage::PlayAll => {
+                            self.manager.set_playback_origin(PlaybackOrigin::Mix(view.mix().id.clone()));
+                            self.manager.play_context_shuffled(view.tracks_in_order());
+                            Task::none()
+                        }
+                        MixOutMessage::TrackRightClicked(id) => {
+                            if let Some(track) = view.find_track(&id) {
+                                let member_of = catalog_store.playlists_containing_track(&id);
+                                let items = TrackContextMenuBuilder::new(catalog_store.is_liked(&track.id))
+                                    .with_playlists(playlists, None, &member_of)
+                                    .with_tools(track.file_path.is_some())
+                                    .build();
+                                self.context_menu.handle(ContextMenuEvent::RightClicked(id));
+                                self.context_menu_items = items;
+                            }
+                            Task::none()
+                        }
+                        MixOutMessage::OpenArtist(id) => Task::done(LibraryBrowserMessage::OpenArtist(id)),
+                        MixOutMessage::OpenAlbum(id) => Task::done(LibraryBrowserMessage::OpenAlbum(id)),
+                        MixOutMessage::RequestTogglePlayback => {
+                            if self.manager.state.is_playing() { self.manager.pause(); } else { self.manager.resume(); }
+                            Task::none()
+                        }
+                    };
+
+                    (Task::batch([task, follow_up]), LibraryBrowserOutMessage::Idle)
+                }
+                _ => (Task::none(), LibraryBrowserOutMessage::Idle),
+            },
+
             LibraryBrowserMessage::ContextMenuEvent(event) => {
                 if matches!(event, ContextMenuEvent::Dismissed) {
                     self.context_menu_items.clear();
@@ -182,7 +322,7 @@ impl LibraryBrowserFeature {
                 self.context_menu.handle(ContextMenuEvent::Dismissed);
                 self.context_menu_items.clear();
 
-                let Some(track) = self.find_track(&track_id) else {
+                let Some(track) = self.find_track(&track_id, catalog_store) else {
                     return (Task::none(), LibraryBrowserOutMessage::Idle);
                 };
 
@@ -195,6 +335,10 @@ impl LibraryBrowserFeature {
                         self.manager.enqueue(track.clone());
                         (Task::none(), LibraryBrowserOutMessage::Idle)
                     }
+                    TrackContextAction::StartRadio => {
+                        self.manager.start_radio(track.clone());
+                        (Task::none(), LibraryBrowserOutMessage::Idle)
+                    }
                     TrackContextAction::FrontEnqueue => {
                         self.manager.enqueue_front(track.clone());
                         (Task::none(), LibraryBrowserOutMessage::Idle)
@@ -202,8 +346,14 @@ impl LibraryBrowserFeature {
                     TrackContextAction::CopyId => {
                         (iced::clipboard::write(track_id), LibraryBrowserOutMessage::Idle)
                     }
+                    TrackContextAction::CopyYoutubeLink => {
+                        (iced::clipboard::write(youtube_link(&track_id)), LibraryBrowserOutMessage::Idle)
+                    }
+                    TrackContextAction::Tool(tool) => {
+                        (Task::none(), LibraryBrowserOutMessage::RequestTrackTool(tool, track_id))
+                    }
                     TrackContextAction::ToggleLike => {
-                        (Task::none(), LibraryBrowserOutMessage::RequestToggleLike(track_id))
+                        (Task::none(), LibraryBrowserOutMessage::RequestToggleLike(track.clone()))
                     }
                     TrackContextAction::AddToPlaylist(playlist_id) => {
                         (Task::none(), LibraryBrowserOutMessage::RequestAddToPlaylist { playlist_id, track_id })
@@ -216,7 +366,7 @@ impl LibraryBrowserFeature {
 
             LibraryBrowserMessage::Artist(msg) => match &mut self.active {
                 Some(LibraryBrowserRoute::Artist(view)) => {
-                    let (task, out) = view.update(msg);
+                    let (task, out) = view.update(msg, catalog_store);
                     let task = task.map(LibraryBrowserMessage::Artist);
 
                     match out {
@@ -231,8 +381,8 @@ impl LibraryBrowserFeature {
                             self.active = Some(LibraryBrowserRoute::Album(album_view));
                             (out_task, LibraryBrowserOutMessage::Idle)
                         }
-                        ArtistOutMessage::PlayTopSong(id) => {
-                            let songs = view.top_songs();
+                        ArtistOutMessage::PlaySong(id) => {
+                            let songs = view.shown_songs(catalog_store);
                             if let Some(index) = songs.iter().position(|t| t.id == id) {
                                 self.manager.set_playback_origin(PlaybackOrigin::Artist(view.artist_id().to_string()));
                                 self.manager.play_context(songs, index);
@@ -240,10 +390,11 @@ impl LibraryBrowserFeature {
                             (task, LibraryBrowserOutMessage::Idle)
                         }
                         ArtistOutMessage::TrackRightClicked(id) => {
-                            if let Some(track) = view.find_song(&id) {
+                            if let Some(track) = view.find_song(&id, catalog_store) {
                                 let member_of = catalog_store.playlists_containing_track(&id);
-                                let items = TrackContextMenuBuilder::new(track.liked)
+                                let items = TrackContextMenuBuilder::new(catalog_store.is_liked(&track.id))
                                     .with_playlists(playlists, None, &member_of)
+                                    .with_tools(track.file_path.is_some())
                                     .build();
                                 self.context_menu.handle(ContextMenuEvent::RightClicked(id));
                                 self.context_menu_items = items;
@@ -307,8 +458,9 @@ impl LibraryBrowserFeature {
                         AlbumOutMessage::TrackRightClicked(id) => {
                             if let Some(track) = view.find_track(&id) {
                                 let member_of = catalog_store.playlists_containing_track(&id);
-                                let items = TrackContextMenuBuilder::new(track.liked)
+                                let items = TrackContextMenuBuilder::new(catalog_store.is_liked(&track.id))
                                     .with_playlists(playlists, None, &member_of)
+                                    .with_tools(track.file_path.is_some())
                                     .build();
                                 self.context_menu.handle(ContextMenuEvent::RightClicked(id));
                                 self.context_menu_items = items;
@@ -338,7 +490,7 @@ impl LibraryBrowserFeature {
         }
     }
 
-    pub fn view(&self) -> Element<'_, LibraryBrowserMessage> {
+    pub fn view<'a>(&'a self, catalog_store: &'a CatalogStore) -> Element<'a, LibraryBrowserMessage> {
         let is_playing = self.manager.state.is_playing();
 
         let origin_matches_active_route = match &self.active {
@@ -347,6 +499,9 @@ impl LibraryBrowserFeature {
             }
             Some(LibraryBrowserRoute::Album(view)) => {
                 self.manager.get_playback_origin() == Some(PlaybackOrigin::Album(view.album_id().to_string()))
+            }
+            Some(LibraryBrowserRoute::Mix(view)) => {
+                self.manager.get_playback_origin() == Some(PlaybackOrigin::Mix(view.mix().id.clone()))
             }
             None => false,
         };
@@ -358,10 +513,13 @@ impl LibraryBrowserFeature {
 
         match &self.active {
             Some(LibraryBrowserRoute::Artist(view)) => {
-                view.view(now_playing_id, is_playing).map(LibraryBrowserMessage::Artist)
+                view.view(now_playing_id, is_playing, catalog_store).map(LibraryBrowserMessage::Artist)
             }
             Some(LibraryBrowserRoute::Album(view)) => {
                 view.view(now_playing_id, is_playing).map(LibraryBrowserMessage::Album)
+            }
+            Some(LibraryBrowserRoute::Mix(view)) => {
+                view.view(now_playing_id, is_playing).map(LibraryBrowserMessage::Mix)
             }
             None => space().into(),
         }
@@ -376,7 +534,7 @@ impl LibraryBrowserFeature {
             anchor,
             self.context_menu_items.clone(),
             track_id,
-            |action, id| LibraryBrowserMessage::TrackContextAction(action, id),
+            LibraryBrowserMessage::TrackContextAction,
             LibraryBrowserMessage::ContextMenuEvent(ContextMenuEvent::Dismissed),
             |sub| LibraryBrowserMessage::ContextMenuEvent(ContextMenuEvent::SubmenuHovered(sub)),
         ))

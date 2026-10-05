@@ -22,6 +22,14 @@ pub fn transparent(_theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// Como `transparent`, pero sin hover ni estado deshabilitado: para filas que momentáneamente no son clicables.
+pub fn inert(_theme: &Theme, _status: button::Status) -> button::Style {
+    button::Style {
+        text_color: theme().content.primary,
+        ..Default::default()
+    }
+}
+
 pub fn sidebar_item(_theme: &Theme, status: button::Status) -> button::Style {
     let t = theme();
 
@@ -119,6 +127,29 @@ pub fn carousel_arrow(enabled: bool, size: f32) -> impl Fn(&Theme, button::Statu
                 t.content.on_control_disabled
             },
             border: rounded(size / 2.0),
+            ..Default::default()
+        }
+    }
+}
+
+/// Píldora de texto con estado activo/inactivo (seguir artista, filtros).
+pub fn pill(is_active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme: &Theme, status: button::Status| {
+        let t = theme();
+
+        let (idle, hovered) = if is_active {
+            (t.overlay.toggle_on_idle, t.overlay.toggle_on_hover)
+        } else {
+            (t.overlay.control_idle, t.overlay.control_hover)
+        };
+
+        button::Style {
+            background: Some(match status {
+                button::Status::Hovered => hovered,
+                _ => idle,
+            }.into()),
+            text_color: t.content.primary,
+            border: rounded(radii::R_14),
             ..Default::default()
         }
     }

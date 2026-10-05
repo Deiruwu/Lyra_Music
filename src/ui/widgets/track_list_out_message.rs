@@ -17,14 +17,7 @@ pub enum TrackListOutMessage<Extra> {
     /// lista completa antes de decidir cuál va primero (ver
     /// `TrackManager::play_context_shuffled`).
     RequestPlayAll,
-    RequestEnqueue(Vec<String>),
-    RequestFrontEnqueue(Vec<String>),
-    RequestPlayRadio(String),
     RequestTogglePlayback,
-
-    // ─── Mutación de BD (Dominio) común ─────────────────────────
-    RequestToggleLike(Vec<String>),
-    RequestAddToPlaylist { target_playlist_id: String, track_ids: Vec<String> },
 
     // ─── Mutación de Estado Global (Filtros y Ordenamiento) ─────
     RequestSearch(String),

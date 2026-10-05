@@ -25,6 +25,8 @@ const RECONNECT_DELAY_SECS: u64 = 2;
 /// lista que la píldora de descarga (que usa el id de track tal cual) sin
 /// pisarla si todavía no terminó de desvanecerse.
 const ANALYZED_KEY_SUFFIX: &str = "::analyzed";
+const LYRICS_KEY_SUFFIX: &str = "::lyrics";
+const METADATA_KEY_SUFFIX: &str = "::metadata";
 
 /// Las píldoras no pertenecen a ninguna vista paginada — el epoch de
 /// `ThumbnailCache` no aplica acá, se pasa constante.
@@ -45,6 +47,8 @@ pub enum DownloadFeatureMessage {
 pub enum DownloadFeatureOutMessage {
     Idle,
     TrackReady(Track),
+    /// Se guardó una letra nueva para este track (id).
+    LyricsUpdated(String),
 }
 
 pub struct DownloadFeature {
@@ -128,27 +132,71 @@ impl DownloadFeature {
             // descarga (que ya se desvanece por su cuenta desde `Finished`),
             // se inserta como una entry nueva con una `key` propia.
             DownloadFeatureMessage::Event(DownloadEvent::AnalyzeFinished { track }) => {
-                let fetch_task = Self::request_thumbnail(thumbnails, &track.id, &track.thumbnail_small);
+                let task = self.push_notice(
+                    thumbnails,
+                    NoticeTrack::from(&track),
+                    ANALYZED_KEY_SUFFIX,
+                    PillPhase::Analyzed,
+                    HOLD_AFTER_TERMINAL_MS + SUCCESS_EXTRA_HOLD_MS,
+                );
+                (task, DownloadFeatureOutMessage::TrackReady(track))
+            }
 
-                let key = format!("{}{}", track.id, ANALYZED_KEY_SUFFIX);
-                self.active.push(DownloadPillEntry {
-                    key: key.clone(),
-                    id: track.id.clone(),
-                    title: track.title.clone(),
-                    thumbnail_url: track.thumbnail_small.clone(),
-                    downloaded_bytes: None,
-                    total_bytes: None,
-                    speed_bytes_per_sec: None,
-                    bpm: track.bpm,
-                    phase: PillPhase::Analyzed,
-                });
+            DownloadFeatureMessage::Event(DownloadEvent::AnalyzeFailed { id, title, thumbnail_small, message }) => {
+                eprintln!("[DOWNLOAD] Análisis de {} ({}) falló: {}", id, title, message);
+                let task = self.push_notice(
+                    thumbnails,
+                    notice_track(id, title, thumbnail_small),
+                    ANALYZED_KEY_SUFFIX,
+                    PillPhase::AnalyzeFailed,
+                    HOLD_AFTER_TERMINAL_MS,
+                );
+                (task, DownloadFeatureOutMessage::Idle)
+            }
 
-                let dismiss_task = self.schedule_dismiss(key, HOLD_AFTER_TERMINAL_MS + SUCCESS_EXTRA_HOLD_MS);
+            DownloadFeatureMessage::Event(DownloadEvent::LyricsFound { id, title, thumbnail_small }) => {
+                let task = self.push_notice(
+                    thumbnails,
+                    notice_track(id.clone(), title, thumbnail_small),
+                    LYRICS_KEY_SUFFIX,
+                    PillPhase::LyricsFound,
+                    HOLD_AFTER_TERMINAL_MS + SUCCESS_EXTRA_HOLD_MS,
+                );
+                (task, DownloadFeatureOutMessage::LyricsUpdated(id))
+            }
 
-                (
-                    Task::batch(vec![fetch_task, dismiss_task]),
-                    DownloadFeatureOutMessage::TrackReady(track),
-                )
+            DownloadFeatureMessage::Event(DownloadEvent::LyricsNotFound { id, title, thumbnail_small }) => {
+                let task = self.push_notice(
+                    thumbnails,
+                    notice_track(id, title, thumbnail_small),
+                    LYRICS_KEY_SUFFIX,
+                    PillPhase::LyricsNotFound,
+                    HOLD_AFTER_TERMINAL_MS,
+                );
+                (task, DownloadFeatureOutMessage::Idle)
+            }
+
+            DownloadFeatureMessage::Event(DownloadEvent::MetadataUpdated { track }) => {
+                let task = self.push_notice(
+                    thumbnails,
+                    NoticeTrack::from(&track),
+                    METADATA_KEY_SUFFIX,
+                    PillPhase::MetadataUpdated,
+                    HOLD_AFTER_TERMINAL_MS + SUCCESS_EXTRA_HOLD_MS,
+                );
+                (task, DownloadFeatureOutMessage::TrackReady(track))
+            }
+
+            DownloadFeatureMessage::Event(DownloadEvent::MetadataFailed { id, title, thumbnail_small, message }) => {
+                eprintln!("[DOWNLOAD] Metadatos de {} ({}) fallaron: {}", id, title, message);
+                let task = self.push_notice(
+                    thumbnails,
+                    notice_track(id, title, thumbnail_small),
+                    METADATA_KEY_SUFFIX,
+                    PillPhase::MetadataFailed,
+                    HOLD_AFTER_TERMINAL_MS,
+                );
+                (task, DownloadFeatureOutMessage::Idle)
             }
 
             DownloadFeatureMessage::Dismiss(key) => {
@@ -213,6 +261,35 @@ impl DownloadFeature {
         }
     }
 
+    /// Pop-up aparte (análisis, letra, metadatos) con su propia `key`, que
+    /// reemplaza a uno anterior del mismo tipo y se desvanece tras `hold_ms`.
+    fn push_notice(
+        &mut self,
+        thumbnails: &mut ThumbnailCache,
+        track: NoticeTrack,
+        key_suffix: &str,
+        phase: PillPhase,
+        hold_ms: u64,
+    ) -> Task<DownloadFeatureMessage> {
+        let fetch_task = Self::request_thumbnail(thumbnails, &track.id, &track.thumbnail_small);
+
+        let key = format!("{}{}", track.id, key_suffix);
+        self.active.retain(|e| e.key != key);
+        self.active.push(DownloadPillEntry {
+            key: key.clone(),
+            id: track.id,
+            title: track.title,
+            thumbnail_url: track.thumbnail_small,
+            downloaded_bytes: None,
+            total_bytes: None,
+            speed_bytes_per_sec: None,
+            bpm: track.bpm,
+            phase,
+        });
+
+        Task::batch(vec![fetch_task, self.schedule_dismiss(key, hold_ms)])
+    }
+
     fn schedule_dismiss(&self, key: String, hold_ms: u64) -> Task<DownloadFeatureMessage> {
         Task::perform(
             tokio::time::sleep(Duration::from_millis(hold_ms)),
@@ -237,6 +314,29 @@ impl DownloadFeature {
             .width(Length::Fill)
             .into()
     }
+}
+
+/// Lo mínimo de un track que necesita un pop-up.
+struct NoticeTrack {
+    id: String,
+    title: String,
+    thumbnail_small: Option<String>,
+    bpm: Option<i32>,
+}
+
+impl From<&Track> for NoticeTrack {
+    fn from(track: &Track) -> Self {
+        Self {
+            id: track.id.clone(),
+            title: track.title.clone(),
+            thumbnail_small: track.thumbnail_small.clone(),
+            bpm: track.bpm,
+        }
+    }
+}
+
+fn notice_track(id: String, title: String, thumbnail_small: Option<String>) -> NoticeTrack {
+    NoticeTrack { id, title, thumbnail_small, bpm: None }
 }
 
 fn download_events() -> impl futures::Stream<Item = DownloadFeatureMessage> {

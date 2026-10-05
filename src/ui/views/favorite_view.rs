@@ -1,7 +1,7 @@
 use iced::{Element, Length, Task};
-use iced::widget::{column, space, text};
+use iced::widget::image::Handle;
+use iced::widget::{column, space};
 use crate::model::Track;
-use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::Icon;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::views::catalog_store::CatalogStore;
@@ -12,8 +12,7 @@ use crate::ui::widgets::catalog_status_message::{catalog_status_message, StatusT
 use crate::ui::widgets::track_list_builder::{TrackBuilder, TrackEvent};
 use crate::ui::widgets::track_list_out_message::TrackListOutMessage;
 use crate::ui::widgets::track_context_builder::TrackContextMenuBuilder;
-use crate::ui::assets::typography;
-use crate::ui::theme::theme;
+use crate::ui::widgets::playlist_header::collection_header;
 
 pub const VIEW_DATA: ViewData = ViewData::new(
     NavId::Favorites,
@@ -27,6 +26,8 @@ pub const VIEW_DATA: ViewData = ViewData::new(
 pub enum FavoritesMessage {
     SearchInputChanged(String),
     Table(TrackEvent),
+    PlayAll,
+    TogglePlayback,
 }
 
 #[derive(Debug, Clone)]
@@ -56,14 +57,12 @@ impl FavoritesView {
         playlists: &[(String, String)],
         catalog_store: &CatalogStore,
     ) -> (Task<FavoritesMessage>, FavoritesOutMessage) {
-        let mut out = FavoritesOutMessage::Idle;
-
-        match &msg {
+        let out = match &msg {
             // ─── EVENTOS DE LA TABLA (TrackBuilder) ────────────────────────
             FavoritesMessage::Table(event) => {
                 let action = self.list.process_event(event.clone(), rendered_tracks);
 
-                out = match action {
+                match action {
                     ListAction::PlayContext(id) => FavoritesOutMessage::RequestPlayContext { start_track_id: id },
                     ListAction::SortChanged(key) => FavoritesOutMessage::RequestChangeSort(key),
                     ListAction::OpenArtist(id) => FavoritesOutMessage::RequestOpenArtist(id),
@@ -75,8 +74,10 @@ impl FavoritesView {
                         let is_liked = true;
                         let member_of = catalog_store.playlists_containing_track(&anchor_id);
 
+                        let is_downloaded = catalog_store.track_by_id(&anchor_id).is_some_and(|t| t.file_path.is_some());
                         let items = TrackContextMenuBuilder::new(is_liked)
                             .with_playlists(playlists, None, &member_of)
+                            .with_tools(is_downloaded)
                             .build();
 
                         FavoritesOutMessage::ContextMenuRightClicked {
@@ -85,17 +86,18 @@ impl FavoritesView {
                             selected_ids,
                         }
                     }
-                };
+                }
             }
 
             // ─── EVENTOS INTERNOS ───────────────────────────────
             FavoritesMessage::SearchInputChanged(query) => {
                 self.list.apply_search_filter(query.clone());
-                out = FavoritesOutMessage::RequestSearch(query.clone());
+                FavoritesOutMessage::RequestSearch(query.clone())
             }
+            FavoritesMessage::PlayAll => FavoritesOutMessage::RequestPlayAll,
+            FavoritesMessage::TogglePlayback => FavoritesOutMessage::RequestTogglePlayback,
         };
 
-        let _ = rendered_tracks;
         (Task::none(), out)
     }
 
@@ -103,13 +105,20 @@ impl FavoritesView {
         &'a self,
         rendered_tracks: Vec<&'a Track>,
         thumbnails: &'a AsyncThumbnail,
+        mosaic: Vec<Option<Handle>>,
         now_playing_id: Option<String>,
         is_playing: bool,
     ) -> Element<'a, FavoritesMessage> {
-        let title = text("Me gusta")
-            .size(typography::TEXT_28)
-            .font(SF_PRO)
-            .style(|_| text::Style { color: Some(theme().content.primary) });
+        let header = collection_header(
+            "PLAYLIST",
+            "Me gusta",
+            &rendered_tracks,
+            mosaic,
+            now_playing_id.is_some(),
+            is_playing,
+            FavoritesMessage::PlayAll,
+            FavoritesMessage::TogglePlayback,
+        );
 
         let search_bar = catalog_search_input(
             "Buscar en tus favoritos...",
@@ -118,8 +127,8 @@ impl FavoritesView {
         );
 
         let fixed_header = column![
-            title,
-            space().height(Length::Fixed(12.0)),
+            header,
+            space().height(Length::Fixed(16.0)),
             search_bar,
         ];
 

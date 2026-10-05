@@ -6,8 +6,10 @@ pub mod tray;
 pub mod db;
 pub mod utils;
 mod settings;
+mod session;
 
 use std::sync::{Arc, LazyLock, OnceLock};
+use futures::SinkExt;
 use std::sync::atomic::Ordering;
 use iced::theme::Palette;
 use iced::{border, window, Alignment, Background, Border, Element, Length, Padding, Theme};
@@ -23,9 +25,15 @@ use crate::db::db::init_db;
 use crate::db::playlist_manager::PlaylistManager;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::db::followed_artist_manager::FollowedArtistManager;
+use crate::db::artist_tag_manager::ArtistTagManager;
+use crate::db::playlist_color_manager::PlaylistColorManager; // [playlist-color]
 use crate::audio::play_history_recorder::PlayHistoryRecorder;
 use crate::microservices::client::MicroserviceClient;
 use crate::settings::AppSettings;
+use crate::session::PlaybackSession;
+use crate::model::Mix;
+use crate::audio::track_event::TrackEvent;
+use crate::ui::playback_feature::player::PlayerMessage;
 use crate::tray::TrayFlags;
 
 use crate::ui::assets::radii;
@@ -43,7 +51,9 @@ use crate::ui::sidebar_feature::sidebar_feature_v2::{
 use crate::ui::views::view_coordinator::{playlist_pairs, ActiveRoute, CoordinatorMessage};
 use crate::ui::utils::thumbnail_cache::ThumbnailCache;
 use crate::ui::views::catalog_store::CatalogStoreMessage;
+use crate::ui::widgets::track_context_builder::TrackTool;
 use crate::ui::widgets::context_menu::ContextMenuEvent;
+use crate::ui::widgets::selection_state::SelectionStep;
 use crate::ui::assets::spacing;
 use crate::ui::theme::theme;
 
@@ -63,7 +73,16 @@ pub enum AppMessage {
     NavigateBack,
     NavigateForward,
     EscapePressed,
+    /// Espacio: pausa/reanuda.
+    TogglePlayback,
+    /// Flechas / RePág / AvPág: mueve la selección de la lista visible (`extend` con Shift).
+    MoveSelection { step: SelectionStep, extend: bool },
+    /// Enter: reproduce desde la canción seleccionada.
+    PlaySelection,
     AutosaveTick,
+    TrayWake,
+    CursorMoved(iced::Point),
+    WindowResized(iced::Size),
     DownloadFeature(DownloadFeatureMessage),
 }
 
@@ -83,6 +102,8 @@ struct App {
     nav_forward_stack: Vec<NavEntry>,
     is_replaying_history: bool,
     last_saved_settings: AppSettings,
+    /// Huella de la última sesión guardada (ver `session_fingerprint`).
+    last_session_fingerprint: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +111,7 @@ enum NavEntry {
     Content(ActiveRoute),
     LibraryArtist(String),
     LibraryAlbum(String),
+    LibraryMix(Mix),
 }
 
 const MAX_NAV_HISTORY: usize = 3;
@@ -112,6 +134,18 @@ impl App {
         manager.set_volume(settings.volume);
         manager.set_repeat_mode(settings.repeat_mode);
         manager.set_shuffle_enabled(settings.shuffle_enabled);
+        manager.set_radio_enabled(settings.radio_enabled);
+
+        let session = PlaybackSession::load();
+        if let Some(origin) = session.origin {
+            manager.set_playback_origin(origin);
+        }
+        let restored_track = manager.restore_session(
+            session.current,
+            std::time::Duration::from_millis(session.position_ms),
+            session.queue,
+            session.history,
+        );
         let tray_flags = tray::spawn_tray(Arc::clone(&manager));
         TRAY_FLAGS.set(Arc::clone(&tray_flags)).ok();
 
@@ -135,7 +169,6 @@ impl App {
         let download_feature = DownloadFeature::new(Arc::clone(&client));
 
         let radio = RadioWorker::new(Arc::clone(&manager), client).spawn();
-        radio.set_enabled(false);
         radio.set_queue_target(15);
 
         let (window_id, open_task) = window::open(window::Settings {
@@ -155,11 +188,13 @@ impl App {
                 .await
                 .expect("Fallo fatal al inicializar PlaylistManager");
             let play_history_manager = PlayHistoryManager::new(pool.clone());
-            let followed_artist_manager = FollowedArtistManager::new(pool);
-            (playlist_manager, play_history_manager, followed_artist_manager)
+            let followed_artist_manager = FollowedArtistManager::new(pool.clone());
+            let artist_tag_manager = ArtistTagManager::new(pool.clone());
+            let playlist_colors = PlaylistColorManager::new(pool); // [playlist-color]
+            (playlist_manager, play_history_manager, followed_artist_manager, artist_tag_manager, playlist_colors)
         };
 
-        let (playlist_manager, play_history_manager, followed_artist_manager) =
+        let (playlist_manager, play_history_manager, followed_artist_manager, artist_tag_manager, playlist_colors) =
             match tokio::runtime::Handle::try_current() {
                 Ok(handle) => tokio::task::block_in_place(|| handle.block_on(init_local_db)),
                 Err(_) => {
@@ -171,6 +206,8 @@ impl App {
         let playlist_manager = Arc::new(playlist_manager);
         let play_history_manager = Arc::new(play_history_manager);
         let followed_artist_manager = Arc::new(followed_artist_manager);
+        let artist_tag_manager = Arc::new(artist_tag_manager);
+        let playlist_colors = Arc::new(playlist_colors); // [playlist-color]
 
         PlayHistoryRecorder::spawn(Arc::clone(&manager), Arc::clone(&play_history_manager), sidebar_client.as_ref().clone());
 
@@ -180,12 +217,19 @@ impl App {
             Arc::clone(&manager),
             Arc::clone(&play_history_manager),
             Arc::clone(&followed_artist_manager),
+            artist_tag_manager,
+            playlist_colors,
         );
         sidebar_feature.set_expanded_immediate(settings.sidebar_expanded);
+        sidebar_feature.coordinator.explorer_view.show_play_stats = settings.explorer_play_stats;
+        sidebar_feature.coordinator.remix_view.enabled = settings.remix_playlists.clone();
 
-        let app = Self {
+        let mut search_feature = SearchFeature::new();
+        search_feature.input.filter = settings.search_filter;
+
+        let mut app = Self {
             _engine: engine,
-            search_feature: SearchFeature::new(),
+            search_feature,
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
             download_feature,
             sidebar_feature,
@@ -199,11 +243,23 @@ impl App {
             nav_forward_stack: Vec::new(),
             is_replaying_history: false,
             last_saved_settings: settings,
+            last_session_fingerprint: 0,
+        };
+        app.last_session_fingerprint = session_fingerprint(&app.manager);
+
+        // La UI se suscribe a los eventos del manager después de `init`, así
+        // que la sesión restaurada se le entrega directo.
+        let restore_task = match restored_track {
+            Some(playable) => iced::Task::done(AppMessage::PlaybackFeature(PlaybackFeatureMessage::Player(
+                PlayerMessage::BackendEvent(TrackEvent::TrackChanged(playable)),
+            ))),
+            None => iced::Task::done(AppMessage::PlaybackFeature(PlaybackFeatureMessage::QueueChanged)),
         };
 
         let init_task = iced::Task::batch(vec![
             open_task.map(AppMessage::WindowOpened),
             sidebar_task.map(AppMessage::SidebarFeature),
+            restore_task,
         ]);
 
         (app, init_task)
@@ -211,7 +267,17 @@ impl App {
 
     pub fn update(&mut self, message: AppMessage) -> iced::Task<AppMessage> {
         match message {
-            AppMessage::WindowOpened(_) => iced::Task::none(),
+            AppMessage::WindowOpened(id) => window::size(id).map(AppMessage::WindowResized),
+
+            AppMessage::WindowResized(size) => {
+                self.library_browser.set_viewport(size);
+                iced::Task::batch([
+                    iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::GlobalWindowResized(size))),
+                    iced::Task::done(AppMessage::PlaybackFeature(PlaybackFeatureMessage::TrackContextMenuEvent(
+                        ContextMenuEvent::ViewportResized(size),
+                    ))),
+                ])
+            }
 
             AppMessage::CloseRequested(id) => {
                 self.main_window = None;
@@ -235,19 +301,43 @@ impl App {
 
             AppMessage::Quit => {
                 let _ = self.current_settings().save();
+                let _ = self.current_session().save();
                 iced::exit()
             }
 
             AppMessage::AutosaveTick => {
+                // SIGINT/SIGTERM solo marcan el flag (no pueden despertar a la UI).
+                if self.tray_flags.quit.load(Ordering::Relaxed) {
+                    return iced::Task::done(AppMessage::Quit);
+                }
+
                 let current = self.current_settings();
                 if current != self.last_saved_settings {
                     let _ = current.save();
                     self.last_saved_settings = current;
                 }
+
+                let fingerprint = session_fingerprint(&self.manager);
+                if fingerprint != self.last_session_fingerprint {
+                    self.last_session_fingerprint = fingerprint;
+                    let session = self.current_session();
+                    std::thread::spawn(move || {
+                        if let Err(e) = session.save() {
+                            eprintln!("[SESSION] No se pudo guardar la sesión: {e}");
+                        }
+                    });
+                }
                 iced::Task::none()
             }
 
-            AppMessage::PlaybackFeature(PlaybackFeatureMessage::Tick) => {
+            AppMessage::CursorMoved(position) => {
+                self.library_browser.set_cursor(position);
+                self.playback_feature.set_cursor(position);
+                self.sidebar_feature.set_cursor(position);
+                iced::Task::none()
+            }
+
+            AppMessage::TrayWake => {
                 if self.tray_flags.quit.load(Ordering::Relaxed) {
                     return iced::Task::done(AppMessage::Quit);
                 }
@@ -255,7 +345,10 @@ impl App {
                     self.tray_flags.show_window.store(false, Ordering::Relaxed);
                     return iced::Task::done(AppMessage::ShowWindow);
                 }
+                iced::Task::none()
+            }
 
+            AppMessage::PlaybackFeature(PlaybackFeatureMessage::Tick) => {
                 let position = self.manager.get_position();
                 let position_task = self.playback_feature.position_updated(position);
 
@@ -288,11 +381,11 @@ impl App {
                             iced::Task::none()
                         }
                     }
-                    PlaybackOutMessage::RequestToggleLike(track_id) => {
+                    PlaybackOutMessage::RequestToggleLike(track) => {
                         self.sidebar_feature
                             .coordinator
                             .catalog_store
-                            .toggle_like(&track_id)
+                            .toggle_like_track(track)
                             .map(|catalog_msg| {
                                 AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
                                     CoordinatorMessage::Catalog(catalog_msg)
@@ -317,9 +410,11 @@ impl App {
                             })
                     }
                     PlaybackOutMessage::RequestDeleteFromCatalog(track_id) => {
-                        self.sidebar_feature.coordinator.catalog_store.delete_track(&track_id);
-                        iced::Task::none()
+                        iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
+                            CoordinatorMessage::RequestDeleteTracks(vec![track_id])
+                        )))
                     }
+                    PlaybackOutMessage::RequestTrackTool(tool, track_id) => self.run_track_tool(tool, &track_id),
                     PlaybackOutMessage::TrackNowPlaying(track) => {
                         self.library_browser.patch_track(&track);
                         iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
@@ -342,6 +437,18 @@ impl App {
             }
 
             AppMessage::SidebarFeature(msg) => {
+                if matches!(msg, SidebarFeatureMessage::SelectPlaylist(_)) && self.sidebar_feature.is_playlist_drag_click() {
+                    return iced::Task::none();
+                }
+
+                // Propaga tracks actualizados a la vista de artista/álbum abierta.
+                if let SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(
+                    CatalogStoreMessage::TrackDownloadedAndCached(track)
+                    | CatalogStoreMessage::TrackToolFinished(_, _, Ok(track)),
+                )) = &msg {
+                    self.library_browser.patch_track(track);
+                }
+
                 let leaving = self.current_nav_entry();
                 let was_theater = self.is_theater_mode;
 
@@ -362,6 +469,9 @@ impl App {
                     }
                     SidebarOutMessage::RequestOpenAlbum(id) => {
                         iced::Task::done(AppMessage::LibraryBrowser(LibraryBrowserMessage::OpenAlbum(id)))
+                    }
+                    SidebarOutMessage::RequestOpenMix(mix) => {
+                        iced::Task::done(AppMessage::LibraryBrowser(LibraryBrowserMessage::OpenMix(mix)))
                     }
                     SidebarOutMessage::Idle => iced::Task::none(),
                 };
@@ -388,7 +498,7 @@ impl App {
             AppMessage::SearchFeature(msg) => {
                 let (search_task, out_msg) = self.search_feature.update(msg, &mut self.view_thumbnails);
                 let mut feature_task = iced::Task::none();
-                let mut catalog_task = iced::Task::none();
+                let mut app_task = iced::Task::none();
 
                 match out_msg {
                     SearchFeatureOutMessage::TrackReadyToPlay(playable) => {
@@ -403,11 +513,17 @@ impl App {
                         );
                         feature_task = t;
 
-                        catalog_task = iced::Task::done(AppMessage::SidebarFeature(
+                        app_task = iced::Task::done(AppMessage::SidebarFeature(
                             SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(
                                 CatalogStoreMessage::TrackDownloadedAndCached(track_metadata)
                             ))
                         ));
+                    }
+                    SearchFeatureOutMessage::OpenAlbum(album_id) => {
+                        app_task = iced::Task::done(AppMessage::LibraryBrowser(LibraryBrowserMessage::OpenAlbum(album_id)));
+                    }
+                    SearchFeatureOutMessage::OpenArtist(artist_id) => {
+                        app_task = iced::Task::done(AppMessage::LibraryBrowser(LibraryBrowserMessage::OpenArtist(artist_id)));
                     }
                     SearchFeatureOutMessage::Idle => {}
                 }
@@ -415,7 +531,7 @@ impl App {
                 iced::Task::batch(vec![
                     search_task.map(AppMessage::SearchFeature),
                     feature_task.map(AppMessage::PlaybackFeature),
-                    catalog_task,
+                    app_task,
                 ])
             }
 
@@ -428,6 +544,9 @@ impl App {
                         iced::Task::done(AppMessage::SidebarFeature(SidebarFeatureMessage::Content(
                             CoordinatorMessage::Catalog(CatalogStoreMessage::TrackDownloadedAndCached(track))
                         )))
+                    }
+                    DownloadFeatureOutMessage::LyricsUpdated(track_id) => {
+                        self.playback_feature.lyrics_updated(&track_id).map(AppMessage::PlaybackFeature)
                     }
                     DownloadFeatureOutMessage::Idle => iced::Task::none(),
                 };
@@ -457,9 +576,51 @@ impl App {
                 task
             }
 
+            AppMessage::TogglePlayback => {
+                if self.manager.state.is_playing() { self.manager.pause(); } else { self.manager.resume(); }
+                iced::Task::none()
+            }
+
+            AppMessage::MoveSelection { step, extend } => {
+                if self.is_theater_mode || self.search_feature.input.is_open {
+                    return iced::Task::none();
+                }
+                if self.library_browser.is_active() {
+                    let catalog_store = &self.sidebar_feature.coordinator.catalog_store;
+                    return self.library_browser.move_selection(step, catalog_store).map(AppMessage::LibraryBrowser);
+                }
+                self.sidebar_feature
+                    .coordinator
+                    .move_selection(step, extend)
+                    .map(|m| AppMessage::SidebarFeature(SidebarFeatureMessage::Content(m)))
+            }
+
+            AppMessage::PlaySelection => {
+                if self.is_theater_mode || self.search_feature.input.is_open {
+                    return iced::Task::none();
+                }
+                if self.library_browser.is_active() {
+                    self.library_browser.play_selection(&self.sidebar_feature.coordinator.catalog_store);
+                } else {
+                    self.sidebar_feature.coordinator.play_selection();
+                }
+                iced::Task::none()
+            }
+
             AppMessage::EscapePressed => {
+                if self.sidebar_feature.coordinator.cancel_delete_dialog()
+                    || self.sidebar_feature.coordinator.cancel_cover_crop()
+                    || self.sidebar_feature.coordinator.cancel_artists_edit()
+                {
+                    return iced::Task::none();
+                }
+
                 if self.search_feature.input.is_open {
                     return iced::Task::done(AppMessage::SearchFeature(SearchFeatureMessage::Ui(SearchMessage::Close)));
+                }
+
+                if !self.is_theater_mode && !self.library_browser.is_active() && self.sidebar_feature.coordinator.cancel_rename() {
+                    return iced::Task::none();
                 }
 
                 if self.is_theater_mode {
@@ -493,6 +654,22 @@ impl App {
             shuffle_enabled: self.manager.is_shuffled(),
             repeat_mode: self.manager.repeat_mode(),
             volume: self.manager.get_volume(),
+            radio_enabled: self.manager.is_radio_enabled(),
+            search_filter: self.search_feature.input.filter,
+            explorer_play_stats: self.sidebar_feature.coordinator.explorer_view.show_play_stats,
+            remix_playlists: self.sidebar_feature.coordinator.remix_view.enabled.clone(),
+        }
+    }
+
+    /// Canción actual (con posición), cola, historial y origen tal como están ahora.
+    fn current_session(&self) -> PlaybackSession {
+        let current = self.manager.get_current_track().map(|p| p.track.clone());
+        PlaybackSession {
+            position_ms: if current.is_some() { self.manager.get_position().as_millis() as u64 } else { 0 },
+            current,
+            queue: self.manager.get_queue_snapshot().into_iter().map(|slot| (*slot.track).clone()).collect(),
+            history: self.manager.get_history_snapshot(),
+            origin: self.manager.get_playback_origin(),
         }
     }
 
@@ -501,6 +678,7 @@ impl App {
             match loc {
                 LibraryBrowserLocation::Artist(id) => NavEntry::LibraryArtist(id),
                 LibraryBrowserLocation::Album(id) => NavEntry::LibraryAlbum(id),
+                LibraryBrowserLocation::Mix(mix) => NavEntry::LibraryMix(mix),
             }
         } else {
             NavEntry::Content(self.sidebar_feature.coordinator.active_route.clone())
@@ -526,6 +704,7 @@ impl App {
             }
             NavEntry::LibraryArtist(id) => self.update_library_browser(LibraryBrowserMessage::OpenArtist(id)),
             NavEntry::LibraryAlbum(id) => self.update_library_browser(LibraryBrowserMessage::OpenAlbum(id)),
+            NavEntry::LibraryMix(mix) => self.update_library_browser(LibraryBrowserMessage::OpenMix(mix)),
         };
         self.is_replaying_history = false;
         task
@@ -544,11 +723,11 @@ impl App {
         let (task, out) = self.library_browser.update(msg, &playlists, &self.sidebar_feature.coordinator.catalog_store);
 
         let bridge_task = match out {
-            LibraryBrowserOutMessage::RequestToggleLike(track_id) => self
+            LibraryBrowserOutMessage::RequestToggleLike(track) => self
                 .sidebar_feature
                 .coordinator
                 .catalog_store
-                .toggle_like(&track_id)
+                .toggle_like_track(track)
                 .map(|catalog_msg| {
                     AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)))
                 }),
@@ -568,6 +747,7 @@ impl App {
                 .map(|catalog_msg| {
                     AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)))
                 }),
+            LibraryBrowserOutMessage::RequestTrackTool(tool, track_id) => self.run_track_tool(tool, &track_id),
             LibraryBrowserOutMessage::Idle => iced::Task::none(),
         };
 
@@ -578,11 +758,22 @@ impl App {
         iced::Task::batch([task.map(AppMessage::LibraryBrowser), bridge_task])
     }
 
+    /// Corre una herramienta del track_manager vía el `CatalogStore`.
+    fn run_track_tool(&self, tool: TrackTool, track_id: &str) -> iced::Task<AppMessage> {
+        self.sidebar_feature
+            .coordinator
+            .catalog_store
+            .run_track_tool(tool, track_id)
+            .map(|catalog_msg| {
+                AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::Catalog(catalog_msg)))
+            })
+    }
+
     pub fn view(&self, _window: window::Id) -> Element<'_, AppMessage> {
         let center_content: Element<'_, AppMessage> = if self.is_theater_mode {
             self.playback_feature.view_theater().map(AppMessage::PlaybackFeature)
         } else if self.library_browser.is_active() {
-            self.library_browser.view().map(AppMessage::LibraryBrowser)
+            self.library_browser.view(&self.sidebar_feature.coordinator.catalog_store).map(AppMessage::LibraryBrowser)
         } else {
             self.sidebar_feature.view_content().map(AppMessage::SidebarFeature)
         };
@@ -698,7 +889,6 @@ impl App {
         stack(absolute_root_layers).into()
     }
     pub fn subscription(&self) -> iced::Subscription<AppMessage> {
-        let search_sub   = self.search_feature.subscription().map(AppMessage::SearchFeature);
         let playback_sub = self.playback_feature.subscription(self.is_theater_mode).map(AppMessage::PlaybackFeature);
         let download_sub = self.download_feature.subscription().map(AppMessage::DownloadFeature);
         let sidebar_sub  = self.sidebar_feature.subscription().map(AppMessage::SidebarFeature);
@@ -719,12 +909,40 @@ impl App {
             _ => None,
         });
 
-        let library_menu_mouse_sub = iced::event::listen_with(|event, _status, _window| match event {
-            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(AppMessage::LibraryBrowser(
-                LibraryBrowserMessage::ContextMenuEvent(ContextMenuEvent::MouseMoved(position)),
-            )),
+        // Única suscripción global de cursor de la app. Antes había tres
+        // (acá, playback_feature y sidebar), o sea tres mensajes -> tres
+        // rebuilds completos de UI por cada pixel de movimiento del mouse.
+        let cursor_sub = iced::event::listen_with(|event, _status, _window| match event {
+            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                Some(AppMessage::CursorMoved(position))
+            }
             _ => None,
         });
+
+        // Espacio / flechas / RePág / AvPág / Enter, salvo que un widget (p. ej. un text_input) ya consumió la tecla.
+        let shortcuts_sub = iced::event::listen_with(|event, status, _window| {
+            use iced::keyboard::key::Named;
+
+            if status == iced::event::Status::Captured {
+                return None;
+            }
+            let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
+                return None;
+            };
+            let step = match key {
+                iced::keyboard::Key::Named(Named::Space) => return Some(AppMessage::TogglePlayback),
+                iced::keyboard::Key::Named(Named::Enter) => return Some(AppMessage::PlaySelection),
+                iced::keyboard::Key::Named(Named::ArrowUp) => SelectionStep::Rows(-1),
+                iced::keyboard::Key::Named(Named::ArrowDown) => SelectionStep::Rows(1),
+                iced::keyboard::Key::Named(Named::PageUp) => SelectionStep::Pages(-1),
+                iced::keyboard::Key::Named(Named::PageDown) => SelectionStep::Pages(1),
+                _ => return None,
+            };
+            Some(AppMessage::MoveSelection { step, extend: modifiers.shift() })
+        });
+
+        // Tamaño de la ventana para que los menús contextuales no se salgan.
+        let resize_sub = window::resize_events().map(|(_id, size)| AppMessage::WindowResized(size));
 
         let escape_sub = iced::event::listen_with(|event, _status, _window| match event {
             iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -737,16 +955,22 @@ impl App {
         let autosave_sub = iced::time::every(std::time::Duration::from_secs(2))
             .map(|_| AppMessage::AutosaveTick);
 
+        // El tray corre en su propio hilo y avisa por canal; antes esto se
+        // sondeaba desde el Tick de 40ms, que por eso no podía apagarse.
+        let tray_sub = iced::Subscription::run(tray_wake_events);
+
         iced::Subscription::batch(vec![
-            search_sub,
             playback_sub,
             download_sub,
             sidebar_sub,
             close_sub,
             nav_sub,
-            library_menu_mouse_sub,
+            cursor_sub,
             escape_sub,
+            shortcuts_sub,
+            resize_sub,
             autosave_sub,
+            tray_sub,
         ])
     }
 
@@ -755,7 +979,37 @@ impl App {
     }
 }
 
+/// Huella barata de la sesión (actual, slots de la cola, historial): el
+/// autosave solo reescribe `session.json` cuando cambia.
+fn session_fingerprint(manager: &TrackManager) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    manager.get_current_track().map(|p| p.track.id.clone()).hash(&mut hasher);
+    for slot in manager.get_queue_snapshot() {
+        slot.id.hash(&mut hasher);
+    }
+    manager.history_len().hash(&mut hasher);
+    manager.get_history_snapshot().last().map(|t| t.id.clone()).hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Tema de iced derivado de los tokens: alimenta todo widget sin `.style()`.
+/// Emite un `TrayWake` cada vez que el tray marca un flag.
+fn tray_wake_events() -> impl futures::Stream<Item = AppMessage> {
+    iced::stream::channel(16, async move |mut output| {
+        let Some(flags) = TRAY_FLAGS.get() else { return };
+        let mut rx = flags.wake.subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(()) => { let _ = output.send(AppMessage::TrayWake).await; }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    })
+}
+
 static ATELIER_THEME: LazyLock<Theme> = LazyLock::new(|| {
     let t = ui::theme::theme();
 

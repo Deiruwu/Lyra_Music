@@ -12,11 +12,12 @@ use iced::{Alignment, Border, ContentFit, Element, Length, Padding, Subscription
 use crate::ui::styles::button as button_style;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::microservices::client::MicroserviceClient;
-use crate::model::Track;
+use crate::model::{Mix, Track};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::{self, Icon};
 use crate::ui::utils::async_thumbnail::{thumb_key, AsyncThumbnail};
 use crate::ui::utils::color::lerp_color;
+use crate::ui::views::recommended_mixes::{build_mixes, MixSeeds};
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::artist_links::{album_link, artist_links};
 use crate::ui::widgets::async_thumbnail::ThumbnailState;
@@ -84,6 +85,14 @@ pub struct TopAlbumCard {
     play_count: i64,
 }
 
+/// Estado de las mezclas recomendadas: se arman una vez por sesión, cuando
+/// ya cargaron el historial (Home) y los Me gusta (catálogo).
+enum MixesState {
+    Pending,
+    Loading,
+    Ready(Vec<Mix>),
+}
+
 struct HomeLoadResult {
     top_tracks: Vec<Track>,
     top_artists: Vec<TopArtistCard>,
@@ -105,6 +114,10 @@ pub enum HomeViewMessage {
     TopAlbumClicked(String),
     TopAlbumsPrevPage,
     TopAlbumsNextPage,
+    MixesLoaded(Vec<Mix>),
+    MixClicked(String),
+    MixesPrevPage,
+    MixesNextPage,
     AnimationFrame(Instant),
 }
 
@@ -114,9 +127,13 @@ pub enum HomeViewOutMessage {
     PlayTrack(String),
     OpenArtist(String),
     OpenAlbum(String),
+    OpenMix(String),
 }
 
 pub struct HomeView {
+    client: Arc<MicroserviceClient>,
+    mixes: MixesState,
+    mixes_page: usize,
     top_tracks: Vec<Track>,
     top_artists: Vec<TopArtistCard>,
     top_albums: Vec<TopAlbumCard>,
@@ -141,13 +158,16 @@ impl HomeView {
         loading_pulse.go_mut(true, Instant::now());
 
         let view = Self {
+            client: Arc::clone(&client),
+            mixes: MixesState::Pending,
+            mixes_page: 0,
             top_tracks: Vec::new(),
             top_artists: Vec::new(),
             top_albums: Vec::new(),
             top_track_play_counts: HashMap::new(),
             top_artists_page: 0,
             top_albums_page: 0,
-            thumbnails: AsyncThumbnail::new(),
+            thumbnails: AsyncThumbnail::new(320),
             is_loading: true,
             loading_pulse,
         };
@@ -167,12 +187,44 @@ impl HomeView {
         &self.top_tracks
     }
 
-    pub fn is_loading(&self) -> bool {
-        self.is_loading
+    /// Si hay algún skeleton pulsando (carga inicial o mezclas en vuelo).
+    pub fn is_animating(&self) -> bool {
+        self.is_loading || matches!(self.mixes, MixesState::Loading)
+    }
+
+    /// Si ya cargó el historial y las mezclas todavía no se pidieron.
+    pub fn needs_mixes(&self) -> bool {
+        !self.is_loading && matches!(self.mixes, MixesState::Pending)
+    }
+
+    /// Arranca el armado de las mezclas con los Me gusta y la biblioteca del catálogo.
+    pub fn load_mixes(&mut self, liked: Vec<Track>, known_ids: std::collections::HashSet<String>) -> Task<HomeViewMessage> {
+        let seeds = MixSeeds { top_tracks: self.top_tracks.clone(), liked, known_ids };
+        if seeds.is_empty() {
+            self.mixes = MixesState::Ready(Vec::new());
+            return Task::none();
+        }
+
+        self.mixes = MixesState::Loading;
+        Task::perform(build_mixes(Arc::clone(&self.client), seeds), HomeViewMessage::MixesLoaded)
+    }
+
+    pub fn mix(&self, id: &str) -> Option<&Mix> {
+        match &self.mixes {
+            MixesState::Ready(mixes) => mixes.iter().find(|m| m.id == id),
+            _ => None,
+        }
+    }
+
+    fn ready_mixes(&self) -> &[Mix] {
+        match &self.mixes {
+            MixesState::Ready(mixes) => mixes,
+            _ => &[],
+        }
     }
 
     pub fn subscription(&self) -> Subscription<HomeViewMessage> {
-        if self.is_loading {
+        if self.is_animating() {
             iced::window::frames().map(HomeViewMessage::AnimationFrame)
         } else {
             Subscription::none()
@@ -204,11 +256,19 @@ impl HomeView {
             HomeViewMessage::TopAlbumClicked(id) => out = HomeViewOutMessage::OpenAlbum(id),
             HomeViewMessage::TopAlbumsPrevPage => self.top_albums_page = self.top_albums_page.saturating_sub(1),
             HomeViewMessage::TopAlbumsNextPage => self.top_albums_page += 1,
+            HomeViewMessage::MixesLoaded(mixes) => self.mixes = MixesState::Ready(mixes),
+            HomeViewMessage::MixClicked(id) => out = HomeViewOutMessage::OpenMix(id),
+            HomeViewMessage::MixesPrevPage => self.mixes_page = self.mixes_page.saturating_sub(1),
+            HomeViewMessage::MixesNextPage => self.mixes_page += 1,
             HomeViewMessage::AnimationFrame(_) => {}
         }
 
-        let sync_task = self.thumbnails.sync(&self.thumbnail_targets(), HomeViewMessage::ThumbnailLoaded);
-        (sync_task, out)
+        (Task::none(), out)
+    }
+
+    /// Sincroniza las miniaturas de toda la vista.
+    pub fn sync(&mut self) -> Task<HomeViewMessage> {
+        self.thumbnails.sync(&self.thumbnail_targets(), HomeViewMessage::ThumbnailLoaded)
     }
 
     pub fn view(&self) -> Element<'_, HomeViewMessage> {
@@ -216,7 +276,12 @@ impl HomeView {
             return self.view_skeleton();
         }
 
-        if self.top_tracks.is_empty() && self.top_artists.is_empty() && self.top_albums.is_empty() {
+        let nothing_yet = self.top_tracks.is_empty()
+            && self.top_artists.is_empty()
+            && self.top_albums.is_empty()
+            && !matches!(self.mixes, MixesState::Loading)
+            && self.ready_mixes().is_empty();
+        if nothing_yet {
             return status_message("Todavía no hay nada por acá — arrancá escuchando algo.");
         }
 
@@ -224,6 +289,20 @@ impl HomeView {
 
         if !self.top_tracks.is_empty() {
             children.push(self.view_top_tracks());
+        }
+
+        if matches!(self.mixes, MixesState::Loading) {
+            let t = self.loading_pulse.interpolate(0.0f32, 1.0f32, Instant::now());
+            children.push(view_skeleton_carousel("Recomendados", view_skeleton_album_card, t));
+        } else if !self.ready_mixes().is_empty() {
+            children.push(view_carousel(
+                "Recomendados",
+                self.ready_mixes(),
+                self.mixes_page,
+                HomeViewMessage::MixesPrevPage,
+                HomeViewMessage::MixesNextPage,
+                |mix| self.view_mix_card(mix),
+            ));
         }
 
         if !self.top_artists.is_empty() {
@@ -258,7 +337,7 @@ impl HomeView {
         .into()
     }
 
-    /// Placeholder tipo YouTube mientras `load_home_data` está en vuelo: mismas 3
+    /// Placeholder tipo YouTube mientras `load_home_data` está en vuelo: mismas 4
     /// secciones y misma forma de card que el contenido real, pero como siluetas
     /// pulsantes en vez de datos. Reemplaza al `status_message` de "vacío", que
     /// ahora solo se ve una vez terminó la carga y realmente no hay nada.
@@ -275,11 +354,12 @@ impl HomeView {
         let banner_section = column![section_title("Escuchar ahora"), column(banner_rows).spacing(BANNER_CARD_SPACING)]
             .spacing(spacing::SP_12);
 
+        let mixes_section = view_skeleton_carousel("Recomendados", view_skeleton_album_card, t);
         let artist_section = view_skeleton_carousel("Top artistas", view_skeleton_artist_card, t);
         let album_section = view_skeleton_carousel("Top álbumes", view_skeleton_album_card, t);
 
         scrollable(
-            column![banner_section, artist_section, album_section]
+            column![banner_section, mixes_section, artist_section, album_section]
                 .spacing(spacing::SP_28)
                 .padding(Padding { top: spacing::SP_24, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
         )
@@ -394,7 +474,23 @@ impl HomeView {
     }
 
     fn view_top_artist_card<'a>(&'a self, artist: &'a TopArtistCard) -> Element<'a, HomeViewMessage> {
-        let thumbnail: Element<'a, HomeViewMessage> = match self.thumbnails.get(&top_artist_key(&artist.artist_id)) {
+        self.view_artist_card(
+            &top_artist_key(&artist.artist_id),
+            &artist.name,
+            format!("{} reproducciones", artist.play_count),
+            HomeViewMessage::TopArtistClicked(artist.artist_id.clone()),
+        )
+    }
+
+    /// Tarjeta circular de artista: foto, nombre y subtítulo centrados.
+    fn view_artist_card<'a>(
+        &'a self,
+        thumbnail_key: &str,
+        name: &str,
+        subtitle: String,
+        on_press: HomeViewMessage,
+    ) -> Element<'a, HomeViewMessage> {
+        let thumbnail: Element<'a, HomeViewMessage> = match self.thumbnails.get(thumbnail_key) {
             Some(handle) => image(handle.clone())
                 .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
                 .height(Length::Fixed(CARD_THUMBNAIL_SIZE))
@@ -412,7 +508,7 @@ impl HomeView {
                 .into(),
         };
 
-        let display_name = truncate(artist.name.as_str(), CARD_NAME_MAX_CHARS);
+        let display_name = truncate(name, CARD_NAME_MAX_CHARS);
 
         let name = text(display_name)
             .font(SF_PRO)
@@ -422,7 +518,7 @@ impl HomeView {
             .height(Length::Fixed(CARD_NAME_LINE_HEIGHT))
             .align_x(Alignment::Center);
 
-        let subtitle = text(format!("{} reproducciones", artist.play_count))
+        let subtitle = text(subtitle)
             .font(SF_PRO)
             .size(typography::TEXT_12)
             .color(theme().content.muted)
@@ -441,7 +537,7 @@ impl HomeView {
                 left: CARD_HOVER_PADDING,
             })
             .style(button_style::card_hover(radii::R_12))
-            .on_press(HomeViewMessage::TopArtistClicked(artist.artist_id.clone()))
+            .on_press(on_press)
             .into()
     }
 
@@ -493,6 +589,43 @@ impl HomeView {
             .into()
     }
 
+    /// Tarjeta cuadrada de mezcla: portada (primera canción), título y subtítulo. Clic → abre la mezcla.
+    fn view_mix_card<'a>(&'a self, mix: &'a Mix) -> Element<'a, HomeViewMessage> {
+        let thumbnail: Element<'a, HomeViewMessage> = match self.thumbnails.get(&mix_key(&mix.id)) {
+            Some(handle) => image(handle.clone())
+                .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
+                .height(Length::Fixed(CARD_THUMBNAIL_SIZE))
+                .content_fit(ContentFit::Cover)
+                .border_radius(ALBUM_CARD_RADIUS)
+                .into(),
+            None => skeleton_box(Length::Fixed(CARD_THUMBNAIL_SIZE), Length::Fixed(CARD_THUMBNAIL_SIZE), ALBUM_CARD_RADIUS, 0.0),
+        };
+
+        let name = container(text(truncate(mix.title.as_str(), CARD_NAME_MAX_CHARS)).font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary))
+            .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
+            .height(Length::Fixed(CARD_NAME_LINE_HEIGHT))
+            .clip(true);
+
+        let subtitle = container(text(truncate(mix.subtitle.as_str(), CARD_NAME_MAX_CHARS + 4)).font(SF_PRO).size(typography::TEXT_12).color(theme().content.muted))
+            .width(Length::Fixed(CARD_THUMBNAIL_SIZE))
+            .height(Length::Fixed(CARD_SUBTITLE_LINE_HEIGHT))
+            .clip(true);
+
+        let text_block = column![name, subtitle].spacing(spacing::SP_4).width(Length::Fixed(CARD_THUMBNAIL_SIZE));
+        let content = column![thumbnail, text_block].spacing(spacing::SP_8);
+
+        button(content)
+            .padding(Padding {
+                top: CARD_HOVER_PADDING,
+                right: CARD_HOVER_PADDING,
+                bottom: CARD_HOVER_PADDING_BOTTOM,
+                left: CARD_HOVER_PADDING,
+            })
+            .style(button_style::card_hover(radii::R_12))
+            .on_press(HomeViewMessage::MixClicked(mix.id.clone()))
+            .into()
+    }
+
     fn thumbnail_targets(&self) -> Vec<(String, String)> {
         let mut targets: Vec<(String, String)> = self.top_tracks
             .iter()
@@ -506,6 +639,11 @@ impl HomeView {
 
         targets.extend(self.top_albums.iter().filter_map(|album| {
             album.thumbnail_url.clone().map(|url| (top_album_key(&album.album_id), url))
+        }));
+
+
+        targets.extend(self.ready_mixes().iter().filter_map(|mix| {
+            mix.cover_url.clone().map(|url| (mix_key(&mix.id), url))
         }));
 
         targets
@@ -552,14 +690,14 @@ async fn load_home_data(
     }
 
     let mut top_albums: Vec<TopAlbumCard> = albums.into_values().collect();
-    top_albums.sort_by(|a, b| b.play_count.cmp(&a.play_count));
+    top_albums.sort_by_key(|album| std::cmp::Reverse(album.play_count));
     top_albums.truncate(TOP_ALBUMS_LIMIT);
 
     let mut ranked_artists: Vec<(String, String, i64)> = artists
         .into_iter()
         .map(|(id, (name, count))| (id, name, count))
         .collect();
-    ranked_artists.sort_by(|a, b| b.2.cmp(&a.2));
+    ranked_artists.sort_by_key(|artist| std::cmp::Reverse(artist.2));
     ranked_artists.truncate(ARTIST_CANDIDATE_LIMIT);
 
     // Algunos ids no tienen perfil de artista musical en YT Music y
@@ -786,6 +924,10 @@ fn top_artist_key(artist_id: &str) -> String {
 
 fn top_album_key(album_id: &str) -> String {
     format!("top_album:{album_id}")
+}
+
+fn mix_key(mix_id: &str) -> String {
+    format!("mix:{mix_id}")
 }
 
 fn section_title<'a, Message: 'a>(title: &'a str) -> Element<'a, Message> {

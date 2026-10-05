@@ -13,7 +13,8 @@ use crate::ui::utils::gallery_thumbnail::{GalleryThumbnail, Treatment};
 use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::utils::playlist_metadata::{format_total_duration, format_track_count, track_stats};
 use crate::ui::widgets::artist_links::artist_links;
-use crate::ui::widgets::track_row_simple::track_row_numbered;
+use crate::ui::widgets::selection_state::{stepped_index, DoubleClickDetector, SelectionStep};
+use crate::ui::widgets::track_row_simple::{track_row_numbered, NUMBERED_ROW_HEIGHT};
 use crate::ui::assets::{spacing, typography};
 use crate::ui::theme::theme;
 use crate::ui::styles::scrollable as scrollable_style;
@@ -22,6 +23,10 @@ const COVER_SIZE: f32 = 220.0;
 const COVER_RADIUS: f32 = 12.0;
 const GALLERY_MAX_SIDE: u32 = 500;
 const PLAY_BUTTON_SIZE: f32 = 52.0;
+const HEADER_PADDING_TOP: f32 = spacing::SP_32;
+const HEADER_PADDING_BOTTOM: f32 = spacing::SP_28;
+const SECTION_SPACING: f32 = spacing::SP_24;
+const TRACK_ROW_SPACING: f32 = spacing::SP_4;
 
 enum AlbumViewData {
     Loading,
@@ -31,7 +36,6 @@ enum AlbumViewData {
 
 pub struct AlbumView {
     album_id: String,
-    client: MicroserviceClient,
     data: AlbumViewData,
     gallery: GalleryThumbnail,
     /// Scroll de esta vista — `pub` para que `LibraryBrowserFeature` lo
@@ -39,6 +43,8 @@ pub struct AlbumView {
     /// `stash_active_route_scroll`).
     pub scroll: ScrollTracker,
     icon_hovered: bool,
+    selected_id: Option<String>,
+    clicks: DoubleClickDetector,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +52,7 @@ pub enum AlbumMessage {
     Loaded(Result<AlbumDto, String>),
     ThumbnailLoaded(String, Vec<u8>),
     ArtistPressed(String),
+    /// Click en una fila: selecciona; doble click reproduce.
     TrackRowPressed(String),
     TrackRowRightClicked(String),
     TrackArtistPressed(String),
@@ -70,11 +77,12 @@ impl AlbumView {
     pub fn new(client: MicroserviceClient, album_id: String) -> (Self, Task<AlbumMessage>) {
         let view = Self {
             album_id: album_id.clone(),
-            client: client.clone(),
             data: AlbumViewData::Loading,
             gallery: GalleryThumbnail::new(),
             scroll: ScrollTracker::default(),
             icon_hovered: false,
+            selected_id: None,
+            clicks: DoubleClickDetector::default(),
         };
 
         let task = Task::perform(
@@ -93,8 +101,17 @@ impl AlbumView {
             AlbumMessage::Loaded(Err(error)) => self.data = AlbumViewData::Error(error),
             AlbumMessage::ThumbnailLoaded(key, bytes) => self.gallery.on_loaded(key, bytes),
             AlbumMessage::ArtistPressed(id) => out = AlbumOutMessage::OpenArtist(id),
-            AlbumMessage::TrackRowPressed(id) => out = AlbumOutMessage::PlayTrack(id),
-            AlbumMessage::TrackRowRightClicked(id) => out = AlbumOutMessage::TrackRightClicked(id),
+            AlbumMessage::TrackRowPressed(id) => {
+                if self.clicks.register(&id) {
+                    out = AlbumOutMessage::PlayTrack(id);
+                } else {
+                    self.selected_id = Some(id);
+                }
+            }
+            AlbumMessage::TrackRowRightClicked(id) => {
+                self.selected_id = Some(id.clone());
+                out = AlbumOutMessage::TrackRightClicked(id);
+            }
             AlbumMessage::TrackArtistPressed(id) => out = AlbumOutMessage::OpenTrackArtist(id),
             AlbumMessage::TogglePlayback => out = AlbumOutMessage::RequestTogglePlayback,
             AlbumMessage::TrackIconHover(hovered) => self.icon_hovered = hovered,
@@ -123,7 +140,7 @@ impl AlbumView {
                         self.view_header(album, this_album_is_current, header_is_playing),
                         self.view_track_list(&album.tracks, now_playing_id, is_playing),
                     ]
-                        .spacing(spacing::SP_24)
+                        .spacing(SECTION_SPACING)
                         .padding(Padding { top: spacing::SP_0, right: spacing::SP_24, bottom: spacing::SP_32, left: spacing::SP_24 }),
                 )
                 .width(Length::Fill)
@@ -171,10 +188,7 @@ impl AlbumView {
         .size(typography::TEXT_13)
         .color(theme().content.muted);
 
-        let release_date = text(format!(
-            "Fecha de salida: {}",
-            album.year.as_deref().unwrap_or("—"),
-        ))
+        let release_date = text(format!("Fecha de salida: {}", album.year.as_deref().unwrap_or("—")))
         .font(SF_PRO)
         .size(typography::TEXT_13)
         .color(theme().content.muted);
@@ -220,7 +234,7 @@ impl AlbumView {
         let content = row![cover, info]
             .spacing(spacing::SP_24)
             .align_y(Alignment::End)
-            .padding(Padding { top: spacing::SP_32, bottom: spacing::SP_28, left: spacing::SP_8, right: spacing::SP_8 });
+            .padding(Padding { top: HEADER_PADDING_TOP, bottom: HEADER_PADDING_BOTTOM, left: spacing::SP_8, right: spacing::SP_8 });
 
         container(content)
             .width(Length::Fill)
@@ -274,9 +288,11 @@ impl AlbumView {
             .enumerate()
             .map(|(index, track)| {
                 let is_playing_row = now_playing_id.as_deref() == Some(track.id.as_str());
+                let is_selected = self.selected_id.as_deref() == Some(track.id.as_str());
                 track_row_numbered(
                     index + 1,
                     track,
+                    is_selected,
                     AlbumMessage::TrackRowPressed(track.id.clone()),
                     AlbumMessage::TrackRowRightClicked(track.id.clone()),
                     AlbumMessage::TrackArtistPressed,
@@ -290,7 +306,38 @@ impl AlbumView {
             })
             .collect();
 
-        column(rows).spacing(spacing::SP_4).into()
+        column(rows).spacing(TRACK_ROW_SPACING).into()
+    }
+
+    /// Mueve la selección (filas o páginas) y scrollea para mantenerla a la vista.
+    pub(crate) fn move_selection(&mut self, step: SelectionStep) -> Task<AlbumMessage> {
+        let tracks = self.tracks();
+        if tracks.is_empty() {
+            return Task::none();
+        }
+
+        let row_pitch = NUMBERED_ROW_HEIGHT + TRACK_ROW_SPACING;
+        let current = self.selected_id.as_deref().and_then(|id| tracks.iter().position(|t| t.id == id));
+        let index = stepped_index(current, step.rows(self.scroll.rows_per_page(row_pitch)), tracks.len());
+        let track_count = tracks.len();
+        self.selected_id = Some(tracks[index].id.clone());
+
+        let list_top = HEADER_PADDING_TOP + COVER_SIZE + HEADER_PADDING_BOTTOM + SECTION_SPACING;
+        let row_top = list_top + index as f32 * row_pitch;
+
+        if step.is_page() {
+            let moved_rows = index as f32 - current.unwrap_or(index) as f32;
+            let content_height = list_top + track_count as f32 * row_pitch + spacing::SP_32;
+            self.scroll.page_and_reveal(moved_rows * row_pitch, content_height, row_top, NUMBERED_ROW_HEIGHT, "album_view_scroll")
+        } else {
+            self.scroll.reveal(row_top, NUMBERED_ROW_HEIGHT, "album_view_scroll")
+        }
+    }
+
+    /// Id del track seleccionado, si sigue estando en el álbum.
+    pub(crate) fn selected_track_id(&self) -> Option<&str> {
+        let id = self.selected_id.as_deref()?;
+        self.tracks().iter().any(|t| t.id == id).then_some(id)
     }
 
     /// Id del álbum mostrado — para cachear/restaurar el scroll por id
@@ -318,11 +365,10 @@ impl AlbumView {
     /// sigue mostrando/reproduciendo el stub congelado que trajo el fetch
     /// inicial del álbum, aunque `CatalogStore` ya tenga el dato fresco.
     pub(crate) fn patch_track(&mut self, track: &Track) {
-        if let AlbumViewData::Loaded(album) = &mut self.data {
-            if let Some(existing) = album.tracks.iter_mut().find(|t| t.id == track.id) {
+        if let AlbumViewData::Loaded(album) = &mut self.data
+            && let Some(existing) = album.tracks.iter_mut().find(|t| t.id == track.id) {
                 *existing = track.clone();
             }
-        }
     }
 
     fn thumbnail_targets(&self) -> Vec<(String, String, Treatment)> {

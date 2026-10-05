@@ -18,7 +18,7 @@
 //! - Cada item lleva un `epoch: u64`. Tu `update()` compara el epoch
 //!   recibido contra el epoch actual antes de escribir al caché — si no
 //!   coincide, lo ignoras (igual que ya haces con `page_generation`).
-//! - Un solo `reqwest::Client` compartido, con timeout real.
+//! - La red pasa por `image_fetch` (cliente compartido con timeouts y reintentos).
 //!
 //! ## Cómo se integra (importante, léelo antes de usar)
 //!
@@ -42,15 +42,21 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use iced::Task;
 
+use crate::ui::utils::image::crop_and_encode_cover;
+use crate::ui::utils::image_fetch::fetch_image_bytes;
+
+/// Lado máximo al que se reescala antes de cachear. Los dos consumidores de
+/// esta cola pintan chico — filas de resultados de búsqueda (~55px) y pills
+/// de descarga (32px) — pero las fuentes llegan a resolución completa. Sin
+/// este tope, `ThumbnailCache::insert_gray` guardaba RGBA crudo de 1080²
+/// (4.6 MB por entrada) para pintarlo a 55px.
+const THUMBNAIL_MAX_SIDE: u32 = 128;
+
 /// Cuántas descargas pueden estar en vuelo simultáneamente.
 const MAX_CONCURRENT_DOWNLOADS: usize = 5;
-
-const DOWNLOAD_TIMEOUT_SECS: u64 = 8;
-const CONNECT_TIMEOUT_SECS: u64 = 4;
 
 #[derive(Clone)]
 struct QueuedItem {
@@ -78,18 +84,10 @@ struct QueueState {
 #[derive(Clone)]
 pub struct DownloadQueue {
     state: Arc<Mutex<QueueState>>,
-    client: Arc<reqwest::Client>,
 }
 
 impl DownloadQueue {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
-            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-            .pool_max_idle_per_host(MAX_CONCURRENT_DOWNLOADS)
-            .build()
-            .expect("no se pudo construir el cliente HTTP de thumbnails");
-
         Self {
             state: Arc::new(Mutex::new(QueueState {
                 stack: Vec::new(),
@@ -97,7 +95,6 @@ impl DownloadQueue {
                 downloading: HashSet::new(),
                 active_workers: 0,
             })),
-            client: Arc::new(client),
         }
     }
 
@@ -152,64 +149,6 @@ impl DownloadQueue {
         self.spawn_next(to_message).unwrap_or(Task::none())
     }
 
-    /// Elimina de la pila cualquier item cuyo epoch no esté en el
-    /// conjunto de epochs todavía válidos. Útil cuando cambias de vista
-    /// o el usuario scrollea tan fuerte que quieres tirar lo pendiente
-    /// que ya no corresponde a lo visible, sin gastar una descarga en
-    /// algo que no vas a mostrar.
-    ///
-    /// Ejemplo: `queue.drop_stale(|e| e == self.page_generation)`.
-    pub fn drop_stale(&self, is_still_valid: impl Fn(u64) -> bool) {
-        let mut state = self.state.lock().unwrap();
-        let removed: Vec<String> = state
-            .stack
-            .iter()
-            .filter(|item| !is_still_valid(item.epoch))
-            .map(|item| item.key.clone())
-            .collect();
-
-        state.stack.retain(|item| is_still_valid(item.epoch));
-        for key in removed {
-            state.in_flight_or_queued.remove(&key);
-            // No tocamos `downloading` aquí: si una key ya tiene worker
-            // corriendo, no está en `stack` (spawn_next la sacó), así
-            // que `removed` nunca la incluye. Es un no-op seguro.
-        }
-    }
-
-    /// Poda del stack cualquier item cuya key NO esté en `still_wanted`,
-    /// PERO solo si esa key todavía no tiene un worker activo (es decir,
-    /// sigue esperando su turno en el stack). Las que ya están
-    /// descargando se dejan terminar — cancelarlas a mitad de un
-    /// `reqwest` no es seguro/sencillo y de todas formas ya casi terminan.
-    ///
-    /// Este es el fix al "scroll rápido deja huecos": sin esto, una key
-    /// que quedó fuera de la ventana visible sigue marcada en
-    /// `in_flight_or_queued` para siempre (nunca tuvo la suerte de que
-    /// le tocara worker), así que si el usuario vuelve a scrollear sobre
-    /// ella, `enqueue` la descarta creyendo que ya está en curso, y
-    /// nunca se descarga. Llama esto en cada `Scrolled`, pasando las
-    /// keys de la ventana visible actual (+buffer).
-    pub fn drop_outside_visible(&self, still_wanted: &HashSet<String>) {
-        let mut state = self.state.lock().unwrap();
-
-        let removed: Vec<String> = state
-            .stack
-            .iter()
-            .filter(|item| !still_wanted.contains(&item.key))
-            .map(|item| item.key.clone())
-            .collect();
-
-        state.stack.retain(|item| still_wanted.contains(&item.key));
-        for key in removed {
-            debug_assert!(
-                !state.downloading.contains(&key),
-                "drop_outside_visible: key '{key}' estaba en el stack Y en downloading a la vez — invariante rota"
-            );
-            state.in_flight_or_queued.remove(&key);
-        }
-    }
-
     /// Intenta tomar el siguiente item de la pila (el más reciente) y
     /// arrancar un worker para él, respetando el límite de concurrencia.
     fn spawn_next<Message: 'static + Send>(
@@ -227,10 +166,8 @@ impl DownloadQueue {
             item
         };
 
-        let client = Arc::clone(&self.client);
-
         Some(Task::perform(
-            download_bytes(client, item.url),
+            download_bytes(item.url),
             move |result| match result {
                 Ok(bytes) => to_message(item.key.clone(), bytes, item.epoch),
                 Err(_) => to_message(item.key.clone(), Vec::new(), item.epoch),
@@ -239,9 +176,6 @@ impl DownloadQueue {
     }
 
 
-    pub fn queued_len(&self) -> usize {
-        self.state.lock().unwrap().stack.len()
-    }
 }
 
 impl Default for DownloadQueue {
@@ -250,42 +184,8 @@ impl Default for DownloadQueue {
     }
 }
 
-/// Descarga y RECORTA A CUADRADO (mismo comportamiento que tenía
-/// `ui::utils::image::download_thumbnail`), pero reusando el cliente
-/// compartido en vez de crear uno por request. Si prefieres mantener
-/// `image::download_thumbnail` como está y solo cambiarle la firma para
-/// aceptar un `&reqwest::Client`, es un cambio mínimo — dímelo y te lo
-/// ajusto; aquí lo inline para que este módulo no dependa de la ruta de
-/// tu crate.
-async fn download_bytes(client: Arc<reqwest::Client>, url: String) -> Result<Vec<u8>, String> {
-    use image::ImageReader;
-    use std::io::Cursor;
-
-    let bytes = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let img = ImageReader::new(Cursor::new(&bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?
-        .decode()
-        .map_err(|e| e.to_string())?;
-
-    let (w, h) = (img.width(), img.height());
-    let size = w.min(h);
-    let x = (w - size) / 2;
-    let y = (h - size) / 2;
-    let cropped = img.crop_imm(x, y, size, size);
-
-    let mut out = Vec::new();
-    cropped
-        .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Jpeg)
-        .map_err(|e| e.to_string())?;
-
-    Ok(out)
+/// Descarga (con reintentos) y recorta a cuadrado con el mismo tope que el resto de miniaturas.
+async fn download_bytes(url: String) -> Result<Vec<u8>, String> {
+    let bytes = fetch_image_bytes(&url, None).await?;
+    crop_and_encode_cover(&bytes, THUMBNAIL_MAX_SIDE).ok_or_else(|| format!("imagen inválida: {url}"))
 }

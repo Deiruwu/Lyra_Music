@@ -1,14 +1,13 @@
 use std::collections::{HashMap, HashSet};
-use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use iced::widget::image::Handle;
 use iced::Task;
-use image::{ImageFormat, ImageReader};
-use tokio::sync::Semaphore;
 
 use crate::model::Track;
+use crate::ui::utils::image::crop_and_encode_cover;
+use crate::ui::utils::image_fetch::fetch_image_bytes;
 
 /// Genera la clave única para la miniatura de un track.
 /// Deduplica usando el ID del álbum si existe, o el ID del track como fallback.
@@ -49,12 +48,19 @@ enum Slot {
 #[derive(Default)]
 pub struct AsyncThumbnail {
     slots: HashMap<String, Slot>,
+    /// Lado máximo al que se reescala antes de cachear. Las imágenes de
+    /// origen vienen a resolución completa (hasta 1080px o más) y se
+    /// pintaban a 40-156px: cachearlas sin reescalar desperdiciaba RAM y
+    /// además, sobre ~724px, iced le da a cada imagen su propia textura
+    /// privada en vez del atlas compartido.
+    max_side: u32,
 }
 
 impl AsyncThumbnail {
-    /// Inicializa un gestor vacío.
-    pub fn new() -> Self {
-        Self { slots: HashMap::new() }
+    /// Inicializa un gestor vacío con `max_side` en el doble del tamaño de
+    /// pintado del consumidor (margen para pantallas HiDPI).
+    pub fn new(max_side: u32) -> Self {
+        Self { slots: HashMap::new(), max_side }
     }
 
     /// Recibe las claves y URLs requeridas actualmente por la vista y una función constructora de mensajes.
@@ -82,7 +88,7 @@ impl AsyncThumbnail {
             let url = url.clone();
             let to_message = to_message.clone();
 
-            tasks.push(Task::perform(download_with_abort(url, abort_flag), move |bytes| {
+            tasks.push(Task::perform(download_with_abort(url, abort_flag, self.max_side), move |bytes| {
                 to_message(key.clone(), bytes)
             }));
         }
@@ -108,42 +114,10 @@ impl AsyncThumbnail {
     }
 }
 
-/// Limita la concurrencia global de descargas a 15 hilos simultáneos para no saturar sockets TCP.
-pub(crate) fn download_limiter() -> &'static Semaphore {
-    static LIMITER: OnceLock<Semaphore> = OnceLock::new();
-    LIMITER.get_or_init(|| Semaphore::new(15))
-}
-
-/// Realiza la descarga HTTP, decodificación y recorte de la imagen a un formato cuadrado.
-/// Revisa la bandera atómica antes del I/O de red y antes del procesamiento de CPU para permitir early-return.
-async fn download_with_abort(url: String, aborted: Arc<AtomicBool>) -> Vec<u8> {
-    let Ok(_permit) = download_limiter().acquire().await else { return Vec::new() };
-
+/// Descarga (con reintentos), recorta a cuadrado y reescala a `max_side`.
+/// Revisa la bandera de aborto antes del procesamiento de CPU para permitir early-return.
+async fn download_with_abort(url: String, aborted: Arc<AtomicBool>, max_side: u32) -> Vec<u8> {
+    let Ok(bytes) = fetch_image_bytes(&url, Some(&aborted)).await else { return Vec::new() };
     if aborted.load(Ordering::Relaxed) { return Vec::new(); }
-
-    let Ok(resp) = reqwest::get(&url).await else { return Vec::new() };
-    let Ok(bytes) = resp.bytes().await else { return Vec::new() };
-
-    if aborted.load(Ordering::Relaxed) { return Vec::new(); }
-
-    let Ok(reader) = ImageReader::new(Cursor::new(&bytes)).with_guessed_format() else {
-        return Vec::new();
-    };
-
-    let Ok(img) = reader.decode() else {
-        return Vec::new();
-    };
-
-    let (w, h) = (img.width(), img.height());
-    let size = w.min(h);
-    let x = (w - size) / 2;
-    let y = (h - size) / 2;
-    let cropped = img.crop_imm(x, y, size, size);
-
-    let mut out = Vec::new();
-    if cropped.write_to(&mut Cursor::new(&mut out), ImageFormat::Jpeg).is_err() {
-        return Vec::new();
-    }
-
-    out
+    crop_and_encode_cover(&bytes, max_side).unwrap_or_default()
 }

@@ -8,22 +8,25 @@ use iced::Task;
 use image::imageops::FilterType;
 use image::{ImageFormat, ImageReader};
 
-use crate::ui::utils::async_thumbnail::{download_limiter, DropGuard};
+use crate::ui::utils::async_thumbnail::DropGuard;
+use crate::ui::utils::image_fetch::fetch_image_bytes;
 
 enum Slot {
-    Loading(DropGuard),
+    /// Nunca se lee: soltar el guard cancela la descarga si la imagen deja de hacer falta.
+    Loading(#[allow(dead_code)] DropGuard),
     Ready(Handle),
 }
 
 /// Cómo procesar una imagen al descargarla.
 #[derive(Debug, Clone, Copy)]
 pub enum Treatment {
-    /// Sin cambios.
-    Original,
     /// Reduce (preservando aspecto) si excede este lado máximo.
     MaxSide(u32),
-    /// Recorta manteniendo solo esta fracción superior de la altura (0.0-1.0).
-    TopCrop(f32),
+    /// Recorta manteniendo solo esta fracción superior de la altura (0.0-1.0),
+    /// y luego reduce si el lado mayor excede el segundo parámetro. El tope
+    /// importa: las fuentes de banner llegan a 2880x1200, y antes se
+    /// guardaban recortadas pero SIN reducir.
+    TopCrop(f32, u32),
 }
 
 /// Gestor de imágenes de tamaño variable (portadas de álbum, banner de
@@ -88,12 +91,7 @@ impl GalleryThumbnail {
 
 /// Descarga, decodifica y aplica el `Treatment` pedido.
 async fn download_with_abort(url: String, aborted: Arc<AtomicBool>, treatment: Treatment) -> Vec<u8> {
-    let Ok(_permit) = download_limiter().acquire().await else { return Vec::new() };
-
-    if aborted.load(Ordering::Relaxed) { return Vec::new(); }
-
-    let Ok(resp) = reqwest::get(&url).await else { return Vec::new() };
-    let Ok(bytes) = resp.bytes().await else { return Vec::new() };
+    let Ok(bytes) = fetch_image_bytes(&url, Some(&aborted)).await else { return Vec::new() };
 
     if aborted.load(Ordering::Relaxed) { return Vec::new(); }
 
@@ -106,14 +104,19 @@ async fn download_with_abort(url: String, aborted: Arc<AtomicBool>, treatment: T
     };
 
     let img = match treatment {
-        Treatment::Original => img,
         Treatment::MaxSide(max) if img.width() > max || img.height() > max => {
             img.resize(max, max, FilterType::Lanczos3)
         }
         Treatment::MaxSide(_) => img,
-        Treatment::TopCrop(fraction) => {
+        Treatment::TopCrop(fraction, max_side) => {
             let cropped_height = (img.height() as f32 * fraction.clamp(0.0, 1.0)) as u32;
-            img.crop_imm(0, 0, img.width(), cropped_height.max(1))
+            let cropped = img.crop_imm(0, 0, img.width(), cropped_height.max(1));
+
+            if cropped.width() > max_side || cropped.height() > max_side {
+                cropped.resize(max_side, max_side, FilterType::Lanczos3)
+            } else {
+                cropped
+            }
         }
     };
 

@@ -8,6 +8,7 @@ use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, SincInte
 use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 use std::fs::File;
 use std::path::Path;
+use std::sync::LazyLock;
 use std::time::Duration;
 use symphonia_adapter_libopus::OpusDecoder;
 use crate::audio::errors::decode_error::DecodeError;
@@ -28,18 +29,20 @@ pub const TARGET_CHANNELS: usize = 2;
 pub trait AudioDecoder: Send {
     fn decode_next(&mut self) -> Result<Option<Vec<f32>>, DecodeError>;
     fn seek(&mut self, target: Duration) -> Result<(), DecodeError>;
-    fn properties(&self) -> AudioProperties;
 }
 
 // ─── FUNCIÓN AUXILIAR: REGISTRO DE CODECS ──────────────────────────────────
 // Centraliza la inicialización para asegurar que Opus esté disponible
 // tanto para decodificar como para extraer metadata (probe).
-fn build_codec_registry() -> CodecRegistry {
+/// El registro es de solo lectura una vez construido, así que se comparte.
+/// Antes se reconstruía entero en cada `open()` y en cada `probe_file()`, o
+/// sea dos veces por cambio de canción.
+static CODEC_REGISTRY: LazyLock<CodecRegistry> = LazyLock::new(|| {
     let mut registry = CodecRegistry::new();
     symphonia::default::register_enabled_codecs(&mut registry);
     registry.register_audio_decoder::<OpusDecoder>();
     registry
-}
+});
 // ───────────────────────────────────────────────────────────────────────────
 
 pub struct SymphoniaDecoder {
@@ -83,7 +86,7 @@ impl SymphoniaDecoder {
         let source_sample_rate = audio_params.sample_rate.unwrap_or(TARGET_SAMPLE_RATE);
 
         // Usamos nuestro registro inyectado
-        let codec_registry = build_codec_registry();
+        let codec_registry = &*CODEC_REGISTRY;
 
         let decoder = codec_registry
             .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
@@ -288,9 +291,6 @@ impl AudioDecoder for SymphoniaDecoder {
         Ok(())
     }
 
-    fn properties(&self) -> AudioProperties {
-        self.properties.clone()
-    }
 }
 
 pub fn probe_file<P: AsRef<Path>>(path: P, track: Track) -> Result<PlayableTrack, DecodeError> {
@@ -320,7 +320,7 @@ pub fn probe_file<P: AsRef<Path>>(path: P, track: Track) -> Result<PlayableTrack
         .ok_or(DecodeError::NoAudioStream)?;
 
     // Usamos nuestro registro inyectado también aquí
-    let codec_registry = build_codec_registry();
+    let codec_registry = &*CODEC_REGISTRY;
 
     let audio_props = AudioProperties {
         sample_rate: audio_params.sample_rate.unwrap_or(48000),

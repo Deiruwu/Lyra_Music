@@ -1,10 +1,9 @@
 //! Píldora flotante que muestra una descarga en curso (o su desenlace).
 //!
 //! Dos "kinds" de píldora comparten el mismo widget: la de progreso de
-//! descarga (`Requested → Downloading → Finished/Failed`) y la del análisis
-//! (`Analyzed`), que aparece como un pop-up aparte cuando llega
-//! `analyzefinished` — ver `DownloadPillEntry::key` en `download_feature.rs`
-//! para cómo conviven ambas sin pisarse en la misma lista.
+//! descarga (`Requested → Downloading → Finished/Failed`) y los pop-ups
+//! aparte (análisis, letra, metadatos) — ver `DownloadPillEntry::key` en
+//! `download_feature.rs` para cómo conviven sin pisarse en la misma lista.
 
 use iced::widget::{column, container, progress_bar, row};
 use iced::{Alignment, Color, Length, Padding};
@@ -43,6 +42,16 @@ pub enum PillPhase {
     /// yt-dlp o el insert a DB fallaron. El mensaje real solo se loggea por
     /// terminal (ver `DownloadFeature::update`); acá nunca se muestra.
     Failed,
+    /// El análisis de BPM/key falló.
+    AnalyzeFailed,
+    /// Se guardó una letra nueva.
+    LyricsFound,
+    /// LRCLIB no tuvo letra para el track.
+    LyricsNotFound,
+    /// Metadatos reescritos desde YT Music.
+    MetadataUpdated,
+    /// No se pudieron actualizar los metadatos.
+    MetadataFailed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +125,11 @@ pub fn download_pill<'a, Message: Clone + 'a>(
             None => "Análisis listo".to_string(),
         },
         PillPhase::Failed => "No se pudo descargar".to_string(),
+        PillPhase::AnalyzeFailed => "No se pudo analizar".to_string(),
+        PillPhase::LyricsFound => "Letra encontrada".to_string(),
+        PillPhase::LyricsNotFound => "No se encontró letra".to_string(),
+        PillPhase::MetadataUpdated => "Metadatos actualizados".to_string(),
+        PillPhase::MetadataFailed => "Falló al actualizar metadatos".to_string(),
     };
 
     let progress: Option<f32> = match (&entry.phase, entry.downloaded_bytes, entry.total_bytes) {
@@ -150,14 +164,20 @@ pub fn download_pill<'a, Message: Clone + 'a>(
         .width(Length::Fill);
 
     let (width, height) = match entry.phase {
-        PillPhase::Analyzed => (PILL_WIDTH + SUCCESS_GROWTH, PILL_HEIGHT + SUCCESS_GROWTH),
+        PillPhase::Analyzed | PillPhase::LyricsFound | PillPhase::MetadataUpdated => {
+            (PILL_WIDTH + SUCCESS_GROWTH, PILL_HEIGHT + SUCCESS_GROWTH)
+        }
         _ => (PILL_WIDTH, PILL_HEIGHT),
     };
 
     let background = match entry.phase {
-        PillPhase::Finished | PillPhase::Analyzed => tint(t.surface.panel, t.status.cached, STATUS_TINT_AMOUNT),
-        PillPhase::Failed => tint(t.surface.panel, t.status.error, STATUS_TINT_AMOUNT),
-        PillPhase::Requested | PillPhase::Downloading => t.surface.panel,
+        PillPhase::Finished | PillPhase::Analyzed | PillPhase::LyricsFound | PillPhase::MetadataUpdated => {
+            tint(t.surface.panel, t.status.cached, STATUS_TINT_AMOUNT)
+        }
+        PillPhase::Failed | PillPhase::AnalyzeFailed | PillPhase::MetadataFailed => {
+            tint(t.surface.panel, t.status.error, STATUS_TINT_AMOUNT)
+        }
+        PillPhase::Requested | PillPhase::Downloading | PillPhase::LyricsNotFound => t.surface.panel,
     };
 
     container(content)

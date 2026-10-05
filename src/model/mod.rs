@@ -12,6 +12,9 @@ pub mod artist_profile_dto;
 pub mod play_history;
 pub mod followed_artist;
 pub mod download_event;
+pub mod search_item;
+pub mod mix;
+pub mod artist_tag;
 
 pub use track::Track;
 pub use album::Album;
@@ -25,3 +28,6 @@ pub use artist_profile_dto::ArtistProfileDto;
 pub use play_history::{TrackPlayCount, ArtistPlayCount};
 pub use followed_artist::FollowedArtist;
 pub use download_event::DownloadEvent;
+pub use search_item::{AlbumSearchResult, SearchItem};
+pub use mix::Mix;
+pub use artist_tag::ArtistTag;

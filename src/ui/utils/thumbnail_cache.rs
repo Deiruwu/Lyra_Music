@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use iced::Task;
 use iced::widget::image::Handle;
@@ -158,31 +157,4 @@ impl ThumbnailCache {
         self.gray_queue.on_finished(finished_key, to_message)
     }
 
-    /// Descarta de ambas colas (color y gris) todo lo que no pertenezca
-    /// al epoch/rango de epochs aún válido. Llama esto cuando cambias de
-    /// página, de vista, o detectas scroll brusco.
-    pub fn drop_stale(&self, is_still_valid: impl Fn(u64) -> bool + Copy) {
-        self.color_queue.drop_stale(is_still_valid);
-        self.gray_queue.drop_stale(is_still_valid);
-    }
-
-    /// Poda ambas colas (color y gris) dejando solo lo que esté en
-    /// `still_wanted_color` / `still_wanted_gray` respectivamente,
-    /// SIN tocar epoch. Pensado para llamarse en cada `Scrolled`: el
-    /// universo de tracks no cambió, solo la ventana visible, así que
-    /// no corresponde invalidar por epoch — pero sí hay que liberar las
-    /// keys que quedaron enterradas en el stack fuera de la ventana
-    /// (ver docstring de `DownloadQueue::drop_outside_visible`).
-    ///
-    /// Puedes pasar el mismo `HashSet` de keys para color y gris si tu
-    /// vista usa la misma clave para ambos; si no, calcula cada uno por
-    /// separado según qué pediste con `request_color`/`request_gray`.
-    pub fn drop_outside_visible(
-        &self,
-        still_wanted_color: &HashSet<String>,
-        still_wanted_gray: &HashSet<String>,
-    ) {
-        self.color_queue.drop_outside_visible(still_wanted_color);
-        self.gray_queue.drop_outside_visible(still_wanted_gray);
-    }
 }

@@ -71,6 +71,11 @@ impl PlayHistoryManager {
             .await
     }
 
+    /// Contador y última reproducción de todos los tracks del historial.
+    pub async fn all_plays(&self) -> Result<Vec<TrackPlayCount>, sqlx::Error> {
+        self.recent_plays(i64::MAX).await
+    }
+
     /// Tracks tocados desde `since`, ordenados por reproducciones totales (no por fecha).
     pub async fn top_tracks_recent(&self, since: chrono::NaiveDateTime, limit: i64) -> Result<Vec<TrackPlayCount>, sqlx::Error> {
         sqlx::query_as!(

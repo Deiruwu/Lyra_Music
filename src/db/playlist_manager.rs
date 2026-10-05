@@ -32,7 +32,8 @@ impl PlaylistManager {
 
         // cover_url queda como NULL por defecto al omitirlo en el INSERT
         sqlx::query!(
-            r#"INSERT INTO playlist (id, name, type) VALUES (?, ?, 'CUSTOM')"#,
+            r#"INSERT INTO playlist (id, name, type, position)
+               VALUES (?, ?, 'CUSTOM', (SELECT COALESCE(MAX(position), 0.0) + 1.0 FROM playlist))"#,
             id,
             name
         )
@@ -86,12 +87,27 @@ impl PlaylistManager {
                 created_at as "created_at!",
                 cover_url
                FROM playlist
-               ORDER BY created_at ASC"#
+               ORDER BY position IS NULL, position ASC, created_at ASC"#
         )
             .fetch_all(&self.pool)
             .await?;
 
         Ok(playlists)
+    }
+
+    /// Reescribe el orden de las playlists: `ordered_ids[i]` queda en la posición `i`.
+    pub async fn reorder_playlists(&self, ordered_ids: &[String]) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+
+        for (index, id) in ordered_ids.iter().enumerate() {
+            let position = index as f64 + 1.0;
+            sqlx::query!(r#"UPDATE playlist SET position = ? WHERE id = ?"#, position, id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
     }
 
     // ── LIKES (SYSTEM PLAYLIST) ──────────────────────────────────────────────

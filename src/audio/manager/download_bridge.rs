@@ -43,7 +43,7 @@ impl TrackManager {
     pub fn remove_queue_front_and_resume(&self, track_id: &str) {
         {
             let mut ps = self.playback.lock().unwrap();
-            if ps.queue.front().map_or(false, |slot| slot.track.id == track_id) {
+            if ps.queue.front().is_some_and(|slot| slot.track.id == track_id) {
                 ps.pop_front_tracked();
             } else {
                 return;

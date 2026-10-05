@@ -5,7 +5,7 @@ use iced::widget::image::Handle;
 use iced::Task;
 
 use crate::ui::utils::data_dir::ensure_covers_dir;
-use crate::ui::utils::image::{crop_and_encode_cover, load_local_cover};
+use crate::ui::utils::image::{crop_region_and_encode, load_local_cover, CropRegion};
 
 /// Máximo lado en px al que se redimensiona la portada GRANDE al guardarla
 /// (la del header/vista detalle), para que el archivo en disco sea liviano
@@ -143,17 +143,17 @@ impl CoverManager {
     }
 
     /// Importa una imagen elegida por el usuario como portada de una playlist:
-    /// la recorta a cuadrado, la redimensiona y re-encodea a JPEG guardando
+    /// recorta `region` (elegida en el editor), la redimensiona y re-encodea a JPEG guardando
     /// AMBAS variantes (grande 512px y pequeña 64px) en
     /// `<covers_dir>/<id>.jpg` y `<covers_dir>/<id>_small.jpg`. Devuelve el
     /// camino del archivo GRANDE resultante (el que se persiste en la DB como
     /// `cover_url`) si todo salió bien.
-    pub fn import_cover(&mut self, playlist_id: &str, src_path: &std::path::Path) -> Result<PathBuf, String> {
+    pub fn import_cover(&mut self, playlist_id: &str, src_path: &std::path::Path, region: CropRegion) -> Result<PathBuf, String> {
         let bytes = std::fs::read(src_path).map_err(|e| e.to_string())?;
 
-        let encoded_large = crop_and_encode_cover(&bytes, CoverVariant::Large.save_size())
+        let encoded_large = crop_region_and_encode(&bytes, region, CoverVariant::Large.save_size())
             .ok_or_else(|| "No se pudo codificar la portada grande".to_string())?;
-        let encoded_small = crop_and_encode_cover(&bytes, CoverVariant::Small.save_size())
+        let encoded_small = crop_region_and_encode(&bytes, region, CoverVariant::Small.save_size())
             .ok_or_else(|| "No se pudo codificar la portada miniatura".to_string())?;
 
         ensure_covers_dir().map_err(|e| e.to_string())?;

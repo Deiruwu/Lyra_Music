@@ -1,13 +1,12 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::time::Instant;
 use iced::keyboard::Modifiers;
 use iced::Point;
 use crate::model::Track;
 use crate::ui::utils::search::SearchQuery;
-use crate::ui::utils::virtual_list::{ScrollTracker, VirtualWindow};
+use crate::ui::utils::virtual_list::ScrollTracker;
 use crate::ui::views::catalog_store::CatalogStore;
-use crate::ui::widgets::selection_state::SelectionState;
+use crate::ui::widgets::selection_state::{DoubleClickDetector, SelectionState};
 use crate::ui::widgets::track_list_builder;
 use crate::ui::widgets::track_list_builder::TrackEvent;
 
@@ -31,8 +30,10 @@ struct RenderedTracksCache {
     sort_key: Option<usize>,
     sort_ascending: bool,
     catalog_version: u64,
-    /// Ids en el orden final ya filtrado+ordenado.
-    ids: Vec<String>,
+    /// Índices en `CatalogStore::all_tracks`, en el orden final ya
+    /// filtrado+ordenado. Índices y no ids: resolver la lista cacheada es
+    /// un acceso directo al vector en vez de un hash de UUID por track.
+    indices: Vec<u32>,
     /// `false` hasta el primer cálculo real. Sin esto, un cache recién
     /// creado (`catalog_version` en 0 por `Default`) podría coincidir por
     /// casualidad con un `CatalogStore` recién creado (también en 0,
@@ -46,7 +47,7 @@ struct RenderedTracksCache {
 /// álbum. Query vacía → devuelve todo sin tocar el orden
 /// (`SearchQuery::is_empty` ya hace early-return interno, pero evitamos
 /// incluso construir la query si no hace falta).
-fn filter_tracks<'a>(tracks: &[&'a Track], raw_query: &str) -> Vec<&'a Track> {
+pub(crate) fn filter_tracks<'a>(tracks: &[&'a Track], raw_query: &str) -> Vec<&'a Track> {
     if raw_query.trim().is_empty() {
         return tracks.to_vec();
     }
@@ -97,7 +98,7 @@ pub struct TrackViewState {
     pub default_sort_key: Option<usize>,
     pub default_sort_ascending: bool,
 
-    pub last_click: Option<(String, Instant)>,
+    pub clicks: DoubleClickDetector,
 
     /// `true` mientras hay un recentrado de scroll pendiente sobre la
     /// selección actual (filtro recién limpiado/cambiado con algo
@@ -127,7 +128,7 @@ impl Default for TrackViewState {
             sort_direction_asc: true,
             default_sort_key: Some(0),
             default_sort_ascending: true,
-            last_click: None,
+            clicks: DoubleClickDetector::default(),
             pending_scroll_to_selection: false,
             cache: RefCell::new(RenderedTracksCache::default()),
         }
@@ -137,10 +138,6 @@ impl Default for TrackViewState {
 impl TrackViewState {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    fn visible_index_range(&self, total_items: usize) -> VirtualWindow {
-        self.scroll.window(ROW_HEIGHT, total_items, BUFFER_ROWS)
     }
 
     /// Universo `(key, url)` de la ventana visible actual (+buffer),
@@ -185,6 +182,12 @@ impl TrackViewState {
         self.tracks_selection.selected_ids.iter().next().cloned()
     }
 
+    /// Fuerza a recalcular la lista en el próximo `rendered` (cuando cambió la
+    /// fuente sin que cambie el catálogo, p. ej. al rehacer una mezcla).
+    pub fn invalidate_cache(&self) {
+        self.cache.borrow_mut().primed = false;
+    }
+
     /// `(key, ascending)` a usar realmente para ordenar/pintar: el
     /// override explícito del usuario si hay uno, si no el default de
     /// esta vista.
@@ -217,7 +220,7 @@ impl TrackViewState {
             && cache.catalog_version == catalog_version;
 
         if hit {
-            return cache.ids.iter().filter_map(|id| catalog.track_by_id(id)).collect();
+            return cache.indices.iter().filter_map(|&i| catalog.track_at(i)).collect();
         }
 
         let (sort_key, sort_ascending) = self.effective_sort();
@@ -229,7 +232,7 @@ impl TrackViewState {
             sort_key: self.active_sort_key,
             sort_ascending: self.sort_direction_asc,
             catalog_version,
-            ids: filtered.iter().map(|t| t.id.clone()).collect(),
+            indices: filtered.iter().filter_map(|t| catalog.index_of(&t.id)).collect(),
             primed: true,
         };
 
@@ -256,18 +259,19 @@ impl TrackViewState {
         }
     }
 
-    pub fn register_click(&mut self, track_id: &str) -> bool {
-        let now = Instant::now();
-        let is_double_click = match &self.last_click {
-            Some((last_id, time)) => {
-                last_id == track_id && now.duration_since(*time).as_millis() < 500
-            }
-            None => false,
-        };
+    /// Mueve la selección con las flechas; devuelve el índice nuevo del cursor.
+    pub fn move_selection(&mut self, delta: isize, extend: bool, rendered_tracks: &[&Track]) -> Option<usize> {
+        let visible_ids: Vec<&String> = rendered_tracks.iter().map(|t| &t.id).collect();
+        self.tracks_selection.move_cursor(delta, extend, &visible_ids)
+    }
 
-        self.last_click = Some((track_id.to_string(), now));
-
-        is_double_click
+    /// Track bajo el cursor de selección (el que reproduce Enter).
+    pub fn cursor_track_id<'a>(&self, rendered_tracks: &[&'a Track]) -> Option<&'a str> {
+        let index = self.tracks_selection.cursor_index?;
+        rendered_tracks
+            .get(index)
+            .filter(|t| self.tracks_selection.is_selected(&t.id))
+            .map(|t| t.id.as_str())
     }
 
     pub fn process_event(
@@ -292,17 +296,17 @@ impl TrackViewState {
                 self.toggle_sort(sort_key);
                 ListAction::SortChanged(sort_key)
             }
-            TrackEvent::Clicked(track, index) => {
-                if self.register_click(&track.id) {
-                    ListAction::PlayContext(track.id.clone())
+            TrackEvent::Clicked(track_id, index) => {
+                if self.clicks.register(&track_id) {
+                    ListAction::PlayContext(track_id)
                 } else {
                     if self.keybinds_press.shift() {
                         let visible_ids: Vec<&String> = rendered_tracks.iter().map(|t| &t.id).collect();
                         self.tracks_selection.select_range(index, &visible_ids);
                     } else if self.keybinds_press.command() || self.keybinds_press.control() {
-                        self.tracks_selection.toggle(track.id.clone(), index);
+                        self.tracks_selection.toggle(track_id, index);
                     } else {
-                        self.tracks_selection.select_single(track.id.clone(), index);
+                        self.tracks_selection.select_single(track_id, index);
                     }
                     ListAction::None
                 }

@@ -43,6 +43,36 @@ pub enum DownloadEvent {
     AnalyzeFinished {
         track: Track,
     },
+    #[serde(rename = "analyzefailed")]
+    AnalyzeFailed {
+        id: String,
+        title: String,
+        thumbnail_small: Option<String>,
+        message: String,
+    },
+    #[serde(rename = "lyricsfound")]
+    LyricsFound {
+        id: String,
+        title: String,
+        thumbnail_small: Option<String>,
+    },
+    #[serde(rename = "lyricsnotfound")]
+    LyricsNotFound {
+        id: String,
+        title: String,
+        thumbnail_small: Option<String>,
+    },
+    #[serde(rename = "metadataupdated")]
+    MetadataUpdated {
+        track: Track,
+    },
+    #[serde(rename = "metadatafailed")]
+    MetadataFailed {
+        id: String,
+        title: String,
+        thumbnail_small: Option<String>,
+        message: String,
+    },
 }
 
 impl DownloadEvent {
@@ -54,6 +84,11 @@ impl DownloadEvent {
             DownloadEvent::Failed { id, .. } => id,
             DownloadEvent::AnalyzeStarted { id, .. } => id,
             DownloadEvent::AnalyzeFinished { track } => &track.id,
+            DownloadEvent::AnalyzeFailed { id, .. } => id,
+            DownloadEvent::LyricsFound { id, .. } => id,
+            DownloadEvent::LyricsNotFound { id, .. } => id,
+            DownloadEvent::MetadataUpdated { track } => &track.id,
+            DownloadEvent::MetadataFailed { id, .. } => id,
         }
     }
 }
@@ -111,6 +146,21 @@ mod tests {
             }
             _ => panic!("esperaba Failed"),
         }
+    }
+
+    #[test]
+    fn parses_lyrics_and_metadata_notices() {
+        let found = r#"{"status":"event","event":"download","state":"lyricsfound","id":"dQw4w9WgXcQ","title":"Never Gonna Give You Up","thumbnail_small":null}"#;
+        assert!(matches!(serde_json::from_str::<DownloadEvent>(found).unwrap(), DownloadEvent::LyricsFound { .. }));
+
+        let not_found = r#"{"status":"event","event":"download","state":"lyricsnotfound","id":"dQw4w9WgXcQ","title":"Never Gonna Give You Up","thumbnail_small":null}"#;
+        assert!(matches!(serde_json::from_str::<DownloadEvent>(not_found).unwrap(), DownloadEvent::LyricsNotFound { .. }));
+
+        let failed = r#"{"status":"event","event":"download","state":"metadatafailed","id":"dQw4w9WgXcQ","title":"dQw4w9WgXcQ","thumbnail_small":null,"message":"Metadata error: Track no encontrado"}"#;
+        assert!(matches!(serde_json::from_str::<DownloadEvent>(failed).unwrap(), DownloadEvent::MetadataFailed { .. }));
+
+        let updated = r#"{"status":"event","event":"download","state":"metadataupdated","track":{"id":"dQw4w9WgXcQ","title":"Never Gonna Give You Up","duration_seconds":213,"thumbnail_small":null,"thumbnail_large":null,"bpm":null,"camelot_key":null,"file_path":null,"added_at":null,"album":null,"artists":[]}}"#;
+        assert_eq!(serde_json::from_str::<DownloadEvent>(updated).unwrap().id(), "dQw4w9WgXcQ");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
+use tokio::sync::broadcast;
 use image::GenericImageView;
 use ksni::{MenuItem, Tray, TrayMethods};
 use crate::audio::manager::manager::TrackManager;
@@ -21,14 +22,24 @@ static ICON: LazyLock<ksni::Icon> = LazyLock::new(|| {
 pub struct TrayFlags {
     pub show_window: AtomicBool,
     pub quit:        AtomicBool,
+    /// Despierta a la UI cuando cambia un flag, para que main.rs no tenga
+    /// que sondearlos desde un tick periódico.
+    pub wake: broadcast::Sender<()>,
 }
 
 impl TrayFlags {
     pub fn new() -> Arc<Self> {
+        let (wake, _) = broadcast::channel(16);
         Arc::new(Self {
             show_window: AtomicBool::new(false),
             quit:        AtomicBool::new(false),
+            wake,
         })
+    }
+
+    /// Marca un flag y despierta a la UI.
+    fn signal(&self) {
+        let _ = self.wake.send(());
     }
 }
 
@@ -44,6 +55,7 @@ impl Tray for AppTray {
 
     fn activate(&mut self, _x: i32, _y: i32) {
         self.flags.show_window.store(true, Ordering::Relaxed);
+        self.flags.signal();
     }
 
     fn title(&self) -> String {
@@ -71,6 +83,7 @@ impl Tray for AppTray {
                 label: "Mostrar".into(),
                 activate: Box::new(|this: &mut Self| {
                     this.flags.show_window.store(true, Ordering::Relaxed);
+                    this.flags.signal();
                 }),
                 ..Default::default()
             }.into(),
@@ -99,6 +112,7 @@ impl Tray for AppTray {
                 activate: Box::new(|this: &mut Self| {
                     // Señalizar a iced para que cierre limpiamente
                     this.flags.quit.store(true, Ordering::Relaxed);
+                    this.flags.signal();
                 }),
                 ..Default::default()
             }.into(),
@@ -111,7 +125,10 @@ pub fn spawn_tray(manager: Arc<TrackManager>) -> Arc<TrayFlags> {
     let flags_tray = Arc::clone(&flags);
 
     std::thread::spawn(move || {
-        tokio::runtime::Runtime::new()
+        // Ver comentario en mpris.rs: current_thread alcanza.
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .expect("No se pudo crear runtime para el tray")
             .block_on(async move {
                 let handle = AppTray { manager, flags: flags_tray }

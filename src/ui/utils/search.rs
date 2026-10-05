@@ -44,15 +44,6 @@ impl SearchQuery {
         self.normalized.is_empty()
     }
 
-    /// Evalúa un único campo de texto contra la consulta.
-    pub fn matches(&self, haystack: &str) -> bool {
-        if self.is_empty() {
-            return true;
-        }
-        let hay = normalize(haystack);
-        self.matches_normalized(&hay)
-    }
-
     /// Evalúa varios campos (título, artista, álbum...) y retorna true si
     /// la consulta matchea contra la concatenación de todos ellos. Esto
     /// permite que una búsqueda como "radiohead ok computer" coincida aunque
@@ -62,21 +53,22 @@ impl SearchQuery {
             return true;
         }
 
+        // Se normaliza UNA vez por campo y se reusa en las dos pasadas.
+        // Antes cada campo se normalizaba dos veces (una en el `matches`
+        // del camino rápido y otra al combinar), y `normalize` son 4
+        // allocaciones por llamada — con el catálogo entero eso se paga
+        // por track y por tecla.
+        let normalized: Vec<String> = haystacks.iter().map(|h| normalize(h)).collect();
+
         // Coincidencia rápida: si algún campo individual ya contiene la
         // consulta completa, no hace falta combinar campos.
-        if haystacks.iter().any(|h| self.matches(h)) {
+        if normalized.iter().any(|h| self.matches_normalized(h)) {
             return true;
         }
 
         // Coincidencia por tokens combinando todos los campos: cada
         // palabra de la búsqueda debe aparecer en alguno de los campos.
-        let combined = haystacks
-            .iter()
-            .map(|h| normalize(h))
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        self.matches_normalized(&combined)
+        self.matches_normalized(&normalized.join(" "))
     }
 
     fn matches_normalized(&self, hay_normalized: &str) -> bool {
@@ -106,6 +98,23 @@ impl SearchQuery {
 /// compara contra el **prefijo** de la palabra del mismo largo que el
 /// token, no contra la palabra completa — si no, la diferencia de
 /// longitud infla la distancia y nunca matchea.
+/// Buffers reutilizables para el fuzzy matching. Sin esto, cada par
+/// (token, palabra) alocaba 4 `Vec` (dos de chars y las dos filas del DP),
+/// y ese par se evalúa por cada palabra de cada track en cada tecleo.
+/// Es `thread_local` porque todo esto corre en el hilo de UI de iced.
+#[derive(Default)]
+struct FuzzyScratch {
+    token: Vec<char>,
+    word: Vec<char>,
+    prev: Vec<usize>,
+    curr: Vec<usize>,
+}
+
+thread_local! {
+    static FUZZY_SCRATCH: std::cell::RefCell<FuzzyScratch> =
+        std::cell::RefCell::new(FuzzyScratch::default());
+}
+
 fn fuzzy_word_match(token: &str, word: &str) -> bool {
     // Palabras muy cortas (<=2 chars) exigen coincidencia exacta: permitir
     // errores ahí genera demasiados falsos positivos.
@@ -113,22 +122,35 @@ fn fuzzy_word_match(token: &str, word: &str) -> bool {
         return word.starts_with(token) || token == word;
     }
 
-    let token_chars: Vec<char> = token.chars().collect();
-    let word_chars: Vec<char> = word.chars().collect();
-    let threshold = fuzzy_threshold(token_chars.len());
+    FUZZY_SCRATCH.with(|scratch| {
+        let scratch = &mut *scratch.borrow_mut();
 
-    if threshold == 0 {
-        return word_chars.starts_with(&token_chars) || token == word;
-    }
+        scratch.token.clear();
+        scratch.token.extend(token.chars());
+        scratch.word.clear();
+        scratch.word.extend(word.chars());
 
-    if token_chars.len() >= word_chars.len() {
-        // Token igual o más largo que la palabra completa: comparación normal.
-        levenshtein_within(&token_chars, &word_chars, threshold)
-    } else {
-        // Token más corto (búsqueda parcial mientras se escribe): compara
-        // contra el mejor prefijo de "word" de tamaño similar al token.
-        prefix_levenshtein_within(&token_chars, &word_chars, threshold)
-    }
+        let threshold = fuzzy_threshold(scratch.token.len());
+
+        if threshold == 0 {
+            return scratch.word.starts_with(&scratch.token) || token == word;
+        }
+
+        if scratch.token.len() >= scratch.word.len() {
+            // Token igual o más largo que la palabra completa: comparación normal.
+            levenshtein_within(
+                &scratch.token, &scratch.word, threshold,
+                &mut scratch.prev, &mut scratch.curr,
+            )
+        } else {
+            // Token más corto (búsqueda parcial mientras se escribe): compara
+            // contra el mejor prefijo de "word" de tamaño similar al token.
+            prefix_levenshtein_within(
+                &scratch.token, &scratch.word, threshold,
+                &mut scratch.prev, &mut scratch.curr,
+            )
+        }
+    })
 }
 
 /// Umbral de tolerancia a errores según el largo del token de búsqueda.
@@ -143,13 +165,21 @@ fn fuzzy_threshold(token_len: usize) -> usize {
 
 /// Distancia de Levenshtein completa (ambas cadenas de principio a fin)
 /// con early-exit.
-fn levenshtein_within(a: &[char], b: &[char], max_dist: usize) -> bool {
+fn levenshtein_within(
+    a: &[char],
+    b: &[char],
+    max_dist: usize,
+    prev: &mut Vec<usize>,
+    curr: &mut Vec<usize>,
+) -> bool {
     if a.len().abs_diff(b.len()) > max_dist {
         return false;
     }
 
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut curr = vec![0usize; b.len() + 1];
+    prev.clear();
+    prev.extend(0..=b.len());
+    curr.clear();
+    curr.resize(b.len() + 1, 0);
 
     for i in 1..=a.len() {
         curr[0] = i;
@@ -167,7 +197,7 @@ fn levenshtein_within(a: &[char], b: &[char], max_dist: usize) -> bool {
             return false;
         }
 
-        std::mem::swap(&mut prev, &mut curr);
+        std::mem::swap(prev, curr);
     }
 
     prev[b.len()] <= max_dist
@@ -178,9 +208,17 @@ fn levenshtein_within(a: &[char], b: &[char], max_dist: usize) -> bool {
 /// penalizar el resto de `haystack` que sobra después. Es la variante
 /// estándar de Levenshtein donde la última fila puede terminar en
 /// cualquier columna, no solo en la última.
-fn prefix_levenshtein_within(needle: &[char], haystack: &[char], max_dist: usize) -> bool {
-    let mut prev: Vec<usize> = (0..=haystack.len()).collect();
-    let mut curr = vec![0usize; haystack.len() + 1];
+fn prefix_levenshtein_within(
+    needle: &[char],
+    haystack: &[char],
+    max_dist: usize,
+    prev: &mut Vec<usize>,
+    curr: &mut Vec<usize>,
+) -> bool {
+    prev.clear();
+    prev.extend(0..=haystack.len());
+    curr.clear();
+    curr.resize(haystack.len() + 1, 0);
 
     for i in 1..=needle.len() {
         curr[0] = i;
@@ -190,7 +228,7 @@ fn prefix_levenshtein_within(needle: &[char], haystack: &[char], max_dist: usize
                 .min(curr[j - 1] + 1)
                 .min(prev[j - 1] + cost);
         }
-        std::mem::swap(&mut prev, &mut curr);
+        std::mem::swap(prev, curr);
     }
 
     // Cualquier columna de la última fila representa terminar el needle
@@ -229,4 +267,84 @@ fn strip_diacritics(input: &str) -> String {
             other => other,
         })
         .collect()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(raw: &str) -> SearchQuery {
+        SearchQuery::new(raw)
+    }
+
+    #[test]
+    fn query_vacia_matchea_todo() {
+        assert!(q("").is_empty());
+        assert!(q("   ").is_empty());
+        assert!(q("").matches_any(&["cualquier cosa"]));
+    }
+
+    #[test]
+    fn un_solo_campo() {
+        assert!(q("radioh").matches_any(&["Radiohead"]));
+        assert!(!q("radioh").matches_any(&["Pink Floyd"]));
+        assert!(q("").matches_any(&["lo que sea"]));
+    }
+
+    #[test]
+    fn subcadena_simple_sin_importar_mayusculas() {
+        assert!(q("radioh").matches_any(&["Radiohead"]));
+        assert!(q("RADIOH").matches_any(&["radiohead"]));
+    }
+
+    #[test]
+    fn ignora_acentos_en_ambos_lados() {
+        assert!(q("cancion").matches_any(&["Canción"]));
+        assert!(q("canción").matches_any(&["Cancion"]));
+        assert!(q("nino").matches_any(&["Niño"]));
+    }
+
+    #[test]
+    fn tokens_en_cualquier_orden_y_cruzando_campos() {
+        // "radiohead" en artista y "ok computer" en título.
+        assert!(q("radiohead ok").matches_any(&["OK Computer", "Radiohead"]));
+        assert!(q("ok radiohead").matches_any(&["OK Computer", "Radiohead"]));
+    }
+
+    #[test]
+    fn tolera_un_typo_en_palabra_completa() {
+        assert!(q("radiohaed").matches_any(&["Radiohead"]));
+    }
+
+    #[test]
+    fn tolera_typo_en_busqueda_parcial_por_prefijo() {
+        // Caso del docstring: token más corto que la palabra.
+        assert!(q("Marcupi").matches_any(&["Marsupials"]));
+    }
+
+    #[test]
+    fn palabras_cortas_exigen_coincidencia_exacta() {
+        // <=2 chars no toleran error: "xy" no debe matchear "ab".
+        assert!(!q("xy").matches_any(&["ab"]));
+    }
+
+    #[test]
+    fn no_matchea_lo_que_no_corresponde() {
+        assert!(!q("zzzzzz").matches_any(&["Radiohead", "OK Computer"]));
+        assert!(!q("radiohead pink").matches_any(&["OK Computer", "Radiohead"]));
+    }
+
+    #[test]
+    fn el_scratch_reutilizado_no_contamina_llamadas_sucesivas() {
+        // Los buffers de fuzzy matching son thread_local y se reusan entre
+        // llamadas: alternar largos distintos debe dar siempre lo mismo.
+        let corta = q("abcde");
+        let larga = q("abcdefghijklmnop");
+
+        for _ in 0..3 {
+            assert!(corta.matches_any(&["abcde"]));
+            assert!(larga.matches_any(&["abcdefghijklmnop"]));
+            assert!(!corta.matches_any(&["zzzzz"]));
+            assert!(!larga.matches_any(&["zzzzzzzzzzzzzzzz"]));
+        }
+    }
 }

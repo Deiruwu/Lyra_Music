@@ -8,6 +8,8 @@ pub enum NavId {
     Home,
     Explorer,
     Favorites,
+    Artists,
+    Remix,
     PlaylistsOverview,
 }
 

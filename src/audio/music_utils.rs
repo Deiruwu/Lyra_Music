@@ -2,8 +2,6 @@ use rand::seq::SliceRandom;
 use rand::rng;
 use crate::model::Track;
 
-const BPM_TOLERANCE: i32 = 6;
-
 // ── Shuffle ───────────────────────────────────────────────────────────────────
 
 /// Shuffle random puro y recorte a `take` elementos.

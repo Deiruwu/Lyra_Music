@@ -1,55 +1,58 @@
-/// # CatalogStore — fuente de la verdad del catálogo de tracks
-///
-/// ## Qué es
-/// `CatalogStore` es el único dueño de `Vec<Track>` completo (todo lo que
-/// existe en `music_center`, resuelto vía `MicroserviceClient` en chunks) y
-/// también el dueño de las relaciones locales de playlist/likes, resueltas
-/// vía `PlaylistManager` (SQLite). El servicio de reproducción/descarga es
-/// agnóstico a playlists — todo lo que es "pertenece a X playlist" o
-/// "está likeado" vive aquí, no en el microservicio remoto.
-///
-/// 1. `SidebarFeature` es dueño de UNA instancia de `CatalogStore` y la
-///    construye junto a los demás distritos en `SidebarFeature::new`.
-/// 2. Los mensajes de carga (`CatalogStoreMessage::IdsLoaded`,
-///    `ChunkResolved`, `LikesLoaded`, `PlaylistOrderLoaded`) se rutean desde
-///    `SidebarFeature::update` hacia `catalog_store.update(msg)`, igual que
-///    cualquier otro distrito.
-/// 3. Cualquier vista (Explorer, Favorites, Playlists) YA NO guarda su
-///    propia copia de tracks. En vez de eso, en su `view()`/`update()`
-///    recibe `&CatalogStore` como parámetro extra y pide su slice:
-///
-///    // Todo el catálogo (Explorer aplica su propio filtro/orden encima):
-///    let tracks: &[Track] = store.all_tracks();
-///
-///    // Solo los tracks de una playlist puntual (incluye la de Likes,
-///    // identificada internamente por `PlaylistManager::system_playlist_id`):
-///    let slice: Vec<&Track> = store.tracks_for_playlist(&playlist_id);
-///
-///    // Un track puntual por id (útil para refrescar selección/menú):
-///    if let Some(track) = store.track_by_id(&id) { ... }
-///
-/// ## Sobre `liked`
-/// No se mantiene un `HashSet` aparte: el estado de like vive directamente
-/// en `Track::liked` dentro de `all_tracks`. La vista de Favoritos simplemente
-/// filtra `all_tracks.iter().filter(|t| t.liked)`. Al hacer toggle, se muta
-/// el campo en memoria de forma optimista y se persiste en SQLite en
-/// background vía `PlaylistManager`.
-///
-/// ## Sobre el orden de playlists
-/// `playlist_order` guarda `playlist_id -> Vec<(track_id, position)>` para
-/// las playlists CUSTOM (la SYSTEM/Likes no necesita orden, se resuelve
-/// filtrando `liked`). Se carga de forma eager al arrancar junto con los
-/// tracks, ordenado ascendente por `position`.
+//! # CatalogStore — fuente de la verdad del catálogo de tracks
+//!
+//! ## Qué es
+//! `CatalogStore` es el único dueño de `Vec<Track>` completo (todo lo que
+//! existe en `music_center`, resuelto vía `MicroserviceClient` en chunks) y
+//! también el dueño de las relaciones locales de playlist/likes, resueltas
+//! vía `PlaylistManager` (SQLite). El servicio de reproducción/descarga es
+//! agnóstico a playlists — todo lo que es "pertenece a X playlist" o
+//! "está likeado" vive aquí, no en el microservicio remoto.
+//!
+//! 1. `SidebarFeature` es dueño de UNA instancia de `CatalogStore` y la
+//!    construye junto a los demás distritos en `SidebarFeature::new`.
+//! 2. Los mensajes de carga (`CatalogStoreMessage::IdsLoaded`,
+//!    `ChunkResolved`, `LikesLoaded`, `PlaylistOrderLoaded`) se rutean desde
+//!    `SidebarFeature::update` hacia `catalog_store.update(msg)`, igual que
+//!    cualquier otro distrito.
+//! 3. Cualquier vista (Explorer, Favorites, Playlists) YA NO guarda su
+//!    propia copia de tracks. En vez de eso, en su `view()`/`update()`
+//!    recibe `&CatalogStore` como parámetro extra y pide su slice:
+//!
+//!    // Todo el catálogo (Explorer aplica su propio filtro/orden encima):
+//!    let tracks: &[Track] = store.all_tracks();
+//!
+//!    // Solo los tracks de una playlist puntual (incluye la de Likes,
+//!    // identificada internamente por `PlaylistManager::system_playlist_id`):
+//!    let slice: Vec<&Track> = store.tracks_for_playlist(&playlist_id);
+//!
+//!    // Un track puntual por id (útil para refrescar selección/menú):
+//!    if let Some(track) = store.track_by_id(&id) { ... }
+//!
+//! ## Sobre `liked`
+//! No se mantiene un `HashSet` aparte: el estado de like vive directamente
+//! en `Track::liked` dentro de `all_tracks`. La vista de Favoritos simplemente
+//! filtra `all_tracks.iter().filter(|t| t.liked)`. Al hacer toggle, se muta
+//! el campo en memoria de forma optimista y se persiste en SQLite en
+//! background vía `PlaylistManager`.
+//!
+//! ## Sobre el orden de playlists
+//! `playlist_order` guarda `playlist_id -> Vec<(track_id, position)>` para
+//! las playlists CUSTOM (la SYSTEM/Likes no necesita orden, se resuelve
+//! filtrando `liked`). Se carga de forma eager al arrancar junto con los
+//! tracks, ordenado ascendente por `position`.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use iced::Task;
 
 use crate::db::playlist_manager::PlaylistManager;
+use crate::db::play_history_manager::PlayHistoryManager;
 use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::microservices::client::MicroserviceClient;
-use crate::model::{FollowedArtist, Track};
+use crate::model::{FollowedArtist, Track, TrackPlayCount};
+use crate::ui::widgets::track_context_builder::TrackTool;
 
 const CHUNK_SIZE: usize = 250;
 const FOLLOWED_ARTISTS_LIMIT: i64 = 500;
@@ -109,12 +112,22 @@ pub enum CatalogStoreMessage {
     /// Resultado de persistir un toggle de "seguir artista" en SQLite. Si
     /// falla, se revierte la mutación optimista.
     FollowToggled(String, bool, Result<(), String>),
+    /// Respuesta del track_manager a una herramienta del menú contextual
+    /// (metadatos / análisis / descarga): trae el track actualizado.
+    TrackToolFinished(TrackTool, String, Result<Track, String>),
+    /// Resultado de persistir el renombre de una playlist.
+    PlaylistRenamed(String, String, Result<(), String>),
+    /// Resultado de persistir el nuevo orden de playlists.
+    PlaylistsReordered(Result<(), String>),
+    /// Reproducciones y última vez de cada track según `play_history` (columnas de depuración).
+    PlayStatsLoaded(Result<Vec<TrackPlayCount>, String>),
 }
 
 pub struct CatalogStore {
     client: Arc<MicroserviceClient>,
     playlist_manager: Arc<PlaylistManager>,
     followed_artist_manager: Arc<FollowedArtistManager>,
+    play_history_manager: Arc<PlayHistoryManager>,
 
     all_tracks: Vec<Track>,
     index_by_id: HashMap<String, usize>,
@@ -128,6 +141,8 @@ pub struct CatalogStore {
 
     is_loading: bool,
     last_error: Option<String>,
+    /// Si ya llegó (bien o mal) la carga de Me gusta desde SQLite.
+    likes_loaded: bool,
 
     /// Se bumpea en cualquier mutación que pueda cambiar qué tracks (o en
     /// qué orden) debe ver una vista: altas/bajas del catálogo, likes,
@@ -135,6 +150,19 @@ pub struct CatalogStore {
     /// `TrackViewState::rendered()` para saber si su cache de
     /// filtrado+orden sigue siendo válido, sin comparar tracks uno a uno.
     version: u64,
+
+    /// Cache de `explorer_tracks()`: índices en `all_tracks`, no `Track`.
+    /// Se recalcula solo cuando cambia `version`. Antes se re-filtraba todo
+    /// el catálogo en cada llamada, y se la llama 4-5 veces por ciclo de
+    /// update+view. `RefCell` porque los callers son `&self` (`view()` en
+    /// iced no puede mutar) — todo corre single-threaded en el loop de iced.
+    explorer_cache: RefCell<(u64, Vec<u32>)>,
+
+    /// Cache de `(track_count, total_duration_seconds)` por playlist, para
+    /// la línea secundaria de cada fila del sidebar. Se recalculaba en cada
+    /// frame para TODAS las playlists (un lookup de HashMap por track
+    /// miembro), y solo cambia cuando cambia `version`.
+    playlist_stats_cache: RefCell<(u64, HashMap<String, (usize, i64)>)>,
 }
 
 impl CatalogStore {
@@ -142,11 +170,13 @@ impl CatalogStore {
         client: Arc<MicroserviceClient>,
         playlist_manager: Arc<PlaylistManager>,
         followed_artist_manager: Arc<FollowedArtistManager>,
+        play_history_manager: Arc<PlayHistoryManager>,
     ) -> (Self, Task<CatalogStoreMessage>) {
         let store = Self {
             client: Arc::clone(&client),
             playlist_manager,
             followed_artist_manager,
+            play_history_manager,
             all_tracks: Vec::new(),
             index_by_id: HashMap::new(),
             pending_chunks: HashMap::new(),
@@ -157,7 +187,10 @@ impl CatalogStore {
             followed_artists: HashMap::new(),
             is_loading: true,
             last_error: None,
+            likes_loaded: false,
             version: 0,
+            explorer_cache: RefCell::new((u64::MAX, Vec::new())),
+            playlist_stats_cache: RefCell::new((u64::MAX, HashMap::new())),
         };
 
         let load_ids_task = Task::perform(
@@ -174,6 +207,10 @@ impl CatalogStore {
 
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
+    }
+
+    pub fn likes_loaded(&self) -> bool {
+        self.likes_loaded
     }
 
     fn bump_version(&mut self) {
@@ -195,10 +232,32 @@ impl CatalogStore {
     /// futura descarga): sin bpm, sin camelot_key y sin file_path todavía,
     /// no aportan nada al Explorer y solo lo ensucian.
     pub fn explorer_tracks(&self) -> Vec<&Track> {
-        self.all_tracks()
-            .iter()
-            .filter(|t| t.bpm.is_some() || t.camelot_key.is_some() || t.file_path.is_some())
-            .collect()
+        let mut cache = self.explorer_cache.borrow_mut();
+
+        if cache.0 != self.version {
+            cache.1.clear();
+            cache.1.extend(
+                self.all_tracks()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.bpm.is_some() || t.camelot_key.is_some() || t.file_path.is_some())
+                    .map(|(i, _)| i as u32),
+            );
+            cache.0 = self.version;
+        }
+
+        cache.1.iter().map(|&i| &self.all_tracks[i as usize]).collect()
+    }
+
+    /// Índice de un track en `all_tracks`. Lo usa `TrackViewState::rendered`
+    /// para cachear su lista por índice en vez de por id: resolver la lista
+    /// cacheada pasa de N hashes de UUID a N accesos directos al vector.
+    pub fn index_of(&self, id: &str) -> Option<u32> {
+        self.index_by_id.get(id).map(|&i| i as u32)
+    }
+
+    pub fn track_at(&self, index: u32) -> Option<&Track> {
+        self.all_tracks.get(index as usize)
     }
 
     pub fn track_by_id(&self, id: &str) -> Option<&Track> {
@@ -238,6 +297,27 @@ impl CatalogStore {
             .collect()
     }
 
+    /// `(cantidad de canciones, duración total en segundos)` de una playlist,
+    /// memoizado contra `version()`.
+    pub fn playlist_track_stats(&self, playlist_id: &str) -> (usize, i64) {
+        let mut cache = self.playlist_stats_cache.borrow_mut();
+
+        if cache.0 != self.version {
+            cache.1.clear();
+            cache.0 = self.version;
+        }
+
+        if let Some(&stats) = cache.1.get(playlist_id) {
+            return stats;
+        }
+
+        let stats = crate::ui::utils::playlist_metadata::track_stats(
+            self.tracks_for_playlist(playlist_id),
+        );
+        cache.1.insert(playlist_id.to_string(), stats);
+        stats
+    }
+
     pub fn playlists_containing_track(&self, track_id: &str) -> HashSet<String> {
         let mut result: HashSet<String> = self.playlist_order
             .iter()
@@ -270,6 +350,35 @@ impl CatalogStore {
                 }
             }
         });
+    }
+
+    /// Corre una herramienta del track_manager sobre un track; al terminar,
+    /// `TrackToolFinished` reemplaza el track en el catálogo.
+    pub fn run_track_tool(&self, tool: TrackTool, track_id: &str) -> Task<CatalogStoreMessage> {
+        let client = Arc::clone(&self.client);
+        let id = track_id.to_string();
+
+        Task::perform(
+            async move {
+                let result = match tool {
+                    TrackTool::RefreshMetadata => client.refresh_metadata(&id).await,
+                    TrackTool::RefreshLyrics => client.refresh_lyrics(&id).await,
+                    TrackTool::Reanalyze => client.reanalyze(&id).await,
+                    TrackTool::Redownload => client.redownload(&id).await,
+                };
+                (id, result.map_err(|e| e.to_string()))
+            },
+            move |(id, result)| CatalogStoreMessage::TrackToolFinished(tool, id, result),
+        )
+    }
+
+    /// Relee del historial local las reproducciones y la última vez de cada track.
+    pub fn refresh_play_stats(&self) -> Task<CatalogStoreMessage> {
+        let manager = Arc::clone(&self.play_history_manager);
+        Task::perform(
+            async move { manager.all_plays().await.map_err(|e| e.to_string()) },
+            CatalogStoreMessage::PlayStatsLoaded,
+        )
     }
 
     /// Alterna el like de un track: muta `Track::liked` de forma optimista
@@ -306,8 +415,26 @@ impl CatalogStore {
         )
     }
 
+    /// Estado de like según el catálogo (las copias en cola/DTOs pueden estar desactualizadas).
+    pub fn is_liked(&self, track_id: &str) -> bool {
+        self.track_by_id(track_id).is_some_and(|t| t.liked)
+    }
+
+    /// Como `toggle_like`, pero agrega el track al catálogo si todavía no está.
+    pub fn toggle_like_track(&mut self, track: Track) -> Task<CatalogStoreMessage> {
+        let id = track.id.clone();
+        if !self.index_by_id.contains_key(&id) {
+            self.upsert_track(track);
+        }
+        self.toggle_like(&id)
+    }
+
     pub fn is_artist_followed(&self, artist_id: &str) -> bool {
         self.followed_artists.contains_key(artist_id)
+    }
+
+    pub fn followed_artist(&self, artist_id: &str) -> Option<&FollowedArtist> {
+        self.followed_artists.get(artist_id)
     }
 
     pub fn followed_artists(&self) -> impl Iterator<Item = &FollowedArtist> {
@@ -386,6 +513,52 @@ impl CatalogStore {
                 (id_clone, result.map_err(|e| e.to_string()))
             },
             |(id, result)| CatalogStoreMessage::PlaylistDeleted(id, result),
+        )
+    }
+
+    /// Renombra una playlist CUSTOM de forma optimista; si SQLite falla,
+    /// `PlaylistRenamed` restaura el nombre anterior.
+    pub fn rename_playlist(&mut self, playlist_id: &str, new_name: &str) -> Task<CatalogStoreMessage> {
+        let new_name = new_name.trim();
+        let Some(entry) = self.playlists_metadata.iter_mut().find(|(id, _, _)| id == playlist_id) else {
+            return Task::none();
+        };
+        if new_name.is_empty() || entry.1 == new_name {
+            return Task::none();
+        }
+
+        let previous_name = std::mem::replace(&mut entry.1, new_name.to_string());
+
+        let manager = Arc::clone(&self.playlist_manager);
+        let id_clone = playlist_id.to_string();
+        let name_clone = new_name.to_string();
+
+        Task::perform(
+            async move {
+                let result = manager.rename_playlist(&id_clone, &name_clone).await;
+                (id_clone, previous_name, result.map_err(|e| e.to_string()))
+            },
+            |(id, previous, result)| CatalogStoreMessage::PlaylistRenamed(id, previous, result),
+        )
+    }
+
+    /// Mueve la playlist `from` a la posición `to` (índices sobre
+    /// `playlists_metadata`) y persiste el orden completo.
+    pub fn move_playlist(&mut self, from: usize, to: usize) -> Task<CatalogStoreMessage> {
+        let len = self.playlists_metadata.len();
+        if from >= len || to >= len || from == to {
+            return Task::none();
+        }
+
+        let moved = self.playlists_metadata.remove(from);
+        self.playlists_metadata.insert(to, moved);
+
+        let manager = Arc::clone(&self.playlist_manager);
+        let ordered_ids: Vec<String> = self.playlists_metadata.iter().map(|(id, _, _)| id.clone()).collect();
+
+        Task::perform(
+            async move { manager.reorder_playlists(&ordered_ids).await.map_err(|e| e.to_string()) },
+            CatalogStoreMessage::PlaylistsReordered,
         )
     }
 
@@ -468,7 +641,7 @@ impl CatalogStore {
         Task::perform(
             async move {
                 let result = manager
-                    .remove_tracks(&playlist_id_clone, &[track_id_clone.clone()])
+                    .remove_tracks(&playlist_id_clone, std::slice::from_ref(&track_id_clone))
                     .await;
                 (playlist_id_clone, track_id_clone, result.map_err(|e| e.to_string()))
             },
@@ -496,7 +669,9 @@ impl CatalogStore {
         let manager = Arc::clone(&self.playlist_manager);
         let playlist_id_clone = playlist_id.to_string();
 
-        let task = match compute_new_position(prev, next) {
+        
+
+        match compute_new_position(prev, next) {
             Some(new_position) => {
                 ids.insert(to_idx, (track_id.clone(), new_position));
                 self.bump_version();
@@ -528,9 +703,7 @@ impl CatalogStore {
                     |(pid, res)| CatalogStoreMessage::TrackReordered(pid, res),
                 )
             }
-        };
-
-        task
+        }
     }
 
     // ── CARGA (chunking) ─────────────────────────────────────────────────────
@@ -617,6 +790,7 @@ impl CatalogStore {
             }
 
             CatalogStoreMessage::LikesLoaded(result) => {
+                self.likes_loaded = true;
                 match result {
                     Ok(liked_ids) => {
                         self.liked_order = liked_ids.clone();
@@ -763,17 +937,62 @@ impl CatalogStore {
             }
 
             CatalogStoreMessage::TrackDownloadedAndCached(track) => {
-                match self.index_by_id.get(&track.id) {
-                    // Reemplaza el stub precargado (sin bpm/camelot_key/file_path)
-                    // por el track ya completo.
-                    Some(&idx) => self.all_tracks[idx] = track,
-                    None => {
-                        let next_idx = self.all_tracks.len();
-                        self.index_by_id.insert(track.id.clone(), next_idx);
-                        self.all_tracks.push(track);
+                self.upsert_track(track);
+                Task::none()
+            }
+
+            CatalogStoreMessage::TrackToolFinished(tool, track_id, result) => {
+                match result {
+                    Ok(track) => {
+                        self.upsert_track(track);
+                        self.last_error = None;
+                    }
+                    Err(e) => {
+                        eprintln!("[CatalogStore] No se pudo {} {}: {}", tool.label(), track_id, e);
+                        self.last_error = Some(e);
                     }
                 }
-                self.bump_version();
+                Task::none()
+            }
+
+            CatalogStoreMessage::PlaylistRenamed(playlist_id, previous_name, result) => {
+                if let Err(e) = result {
+                    if let Some(entry) = self.playlists_metadata.iter_mut().find(|(id, _, _)| id == &playlist_id) {
+                        entry.1 = previous_name;
+                    }
+                    self.last_error = Some(e);
+                } else {
+                    self.last_error = None;
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::PlaylistsReordered(result) => {
+                if let Err(e) = result {
+                    self.last_error = Some(e);
+                } else {
+                    self.last_error = None;
+                }
+                Task::none()
+            }
+
+            CatalogStoreMessage::PlayStatsLoaded(result) => {
+                match result {
+                    Ok(stats) => {
+                        for track in self.all_tracks.iter_mut() {
+                            track.play_count = None;
+                            track.last_played_at = None;
+                        }
+                        for stat in stats {
+                            if let Some(&idx) = self.index_by_id.get(&stat.track_id) {
+                                self.all_tracks[idx].play_count = Some(stat.play_count);
+                                self.all_tracks[idx].last_played_at = Some(stat.last_played_at);
+                            }
+                        }
+                        self.bump_version();
+                    }
+                    Err(e) => self.last_error = Some(e),
+                }
                 Task::none()
             }
 
@@ -856,7 +1075,28 @@ impl CatalogStore {
             CatalogStoreMessage::FollowedArtistsLoaded,
         );
 
-        Task::batch(vec![likes_task, order_task, metadata_task, followed_task])
+        Task::batch(vec![likes_task, order_task, metadata_task, followed_task, self.refresh_play_stats()])
+    }
+
+    /// Reemplaza (o agrega) un track con la versión fresca del servidor,
+    /// conservando el `liked` local.
+    fn upsert_track(&mut self, mut track: Track) {
+        match self.index_by_id.get(&track.id) {
+            Some(&idx) => {
+                let previous = &self.all_tracks[idx];
+                track.liked = previous.liked;
+                track.play_count = previous.play_count;
+                track.last_played_at = previous.last_played_at;
+                self.all_tracks[idx] = track;
+            }
+            None => {
+                track.liked = self.liked_order.contains(&track.id);
+                let next_idx = self.all_tracks.len();
+                self.index_by_id.insert(track.id.clone(), next_idx);
+                self.all_tracks.push(track);
+            }
+        }
+        self.bump_version();
     }
 
     fn rebuild_index(&mut self) {

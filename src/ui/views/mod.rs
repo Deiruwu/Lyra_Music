@@ -8,3 +8,8 @@ pub mod states_view;
 pub mod view_coordinator;
 pub mod artist_view;
 pub mod album_view;
+pub mod recommended_mixes;
+pub mod mix_view;
+pub mod artists_view;
+pub mod playlist_adder;
+pub mod remix_view;

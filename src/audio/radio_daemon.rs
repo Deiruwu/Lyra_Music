@@ -1,8 +1,7 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::watch;
 use tokio::task;
 
 use crate::audio::manager::manager::TrackManager;
@@ -22,33 +21,19 @@ const SHUFFLE_TAKE: usize = 15;
 pub struct RadioWorker {
     manager:      Arc<TrackManager>,
     client:       Arc<MicroserviceClient>,
-    enabled:      Arc<AtomicBool>,
     queue_target: Arc<AtomicUsize>,
-    seed_tx:      watch::Sender<String>,
 }
 
 impl RadioWorker {
     pub fn new(manager: Arc<TrackManager>, client: Arc<MicroserviceClient>) -> Self {
-        let (seed_tx, _) = watch::channel(String::new());
-
         Self {
             manager,
             client,
-            enabled: Arc::new(AtomicBool::new(false)),
             queue_target: Arc::new(AtomicUsize::new(DEFAULT_QUEUE_TARGET)),
-            seed_tx,
         }
     }
 
     // ── Controles públicos ────────────────────────────────────────────────────
-
-    pub fn set_enabled(&self, on: bool) {
-        self.enabled.store(on, Ordering::Relaxed);
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Relaxed)
-    }
 
     pub fn set_queue_target(&self, n: usize) {
         self.queue_target.store(n.max(1), Ordering::Relaxed);
@@ -72,7 +57,6 @@ impl RadioWorker {
     async fn run(&self) {
         let mut event_rx = self.manager.event_tx.subscribe();
         let mut queue_rx = self.manager.queue_tx.subscribe();
-        let mut seed_rx = self.seed_tx.subscribe();
 
         loop {
             tokio::select! {
@@ -81,17 +65,9 @@ impl RadioWorker {
                         Ok(TrackEvent::TrackChanged(track)) => {
                             println!("[RADIO] Actualizando current: {}: {}", track.track.title, track.track.id);
 
-                            // send() actualiza el valor de forma atómica; cualquiera
-                            // que lea seed_rx después de esto ve el valor nuevo, sin
-                            // importar el orden en que llegue el próximo QueueChanged.
-                            let _ = self.seed_tx.send(track.track.id.clone());
-
-                            if self.is_enabled() {
+                            if self.manager.is_radio_enabled() {
                                 self.fill_queue().await;
                             }
-                        }
-                        Ok(TrackEvent::Stopped) => {
-                            let _ = self.seed_tx.send(String::new());
                         }
                         Ok(_) => {}
                         Err(RecvError::Closed)   => break,
@@ -101,11 +77,10 @@ impl RadioWorker {
 
                 result = queue_rx.recv() => {
                     match result {
-                        Ok(QueueEvent::QueueChanged) => {
-                            if self.is_enabled() {
+                        Ok(QueueEvent::QueueChanged)
+                            if self.manager.is_radio_enabled() => {
                                 self.fill_queue().await;
                             }
-                        }
                         Err(RecvError::Closed)   => break,
                         Err(RecvError::Lagged(_)) => {}
                         _ => {}
@@ -115,13 +90,17 @@ impl RadioWorker {
         }
 
         eprintln!("[RADIO] Daemon detenido (canal cerrado).");
-        let _ = seed_rx.changed().await; // silencia warning de unused si aplica
     }
 
     // ── Lógica de relleno ─────────────────────────────────────────────────────
 
     async fn fill_queue(&self) {
-        let current_seed = self.seed_tx.borrow().clone();
+        // El track actual se fija antes de emitir eventos, así que siempre es
+        // la semilla correcta sin importar si llega antes QueueChanged o TrackChanged.
+        let current_seed = self.manager
+            .get_current_track()
+            .map(|playable| playable.track.id.clone())
+            .unwrap_or_default();
 
         let target = self.queue_target();
         let queue_snapshot = self.manager.get_queue_snapshot();

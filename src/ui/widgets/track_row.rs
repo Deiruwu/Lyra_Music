@@ -40,7 +40,7 @@ where
 /// clickear la fila descarga/reproduce, no debe haber otro camino de
 /// navegación posible desde adentro).
 pub fn track_info<'a, Message: Clone + 'a>(track: &'a Track, width: Length) -> Element<'a, Message> {
-    let is_downloaded = track.file_path.as_ref().map_or(false, |p| !p.is_empty());
+    let is_downloaded = track.file_path.as_ref().is_some_and(|p| !p.is_empty());
 
     let album_name = track.album.as_ref().map_or("".to_string(), |album| album.name.clone());
 
@@ -165,7 +165,7 @@ where
 {
     let thumb = thumbnail_with_overlay(thumbnail, on_play, row_hovered);
 
-    let is_downloaded = track.file_path.as_ref().map_or(false, |p| !p.is_empty());
+    let is_downloaded = track.file_path.as_ref().is_some_and(|p| !p.is_empty());
     let (title_color, artist_color) = if is_downloaded {
         (theme().content.primary, theme().content.muted)
     } else {

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::audio::manager::manager::RepeatMode;
+use crate::ui::search_feature::search_bar::SearchFilter;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -11,6 +12,13 @@ pub struct AppSettings {
     pub shuffle_enabled: bool,
     pub repeat_mode: RepeatMode,
     pub volume: f32,
+    pub radio_enabled: bool,
+    /// Último filtro elegido en el buscador.
+    pub search_filter: SearchFilter,
+    /// Columnas de depuración (reproducciones / última vez) en el Explorador.
+    pub explorer_play_stats: bool,
+    /// Playlists habilitadas en Remix.
+    pub remix_playlists: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -20,6 +28,10 @@ impl Default for AppSettings {
             shuffle_enabled: false,
             repeat_mode: RepeatMode::Off,
             volume: 1.0,
+            radio_enabled: false,
+            search_filter: SearchFilter::default(),
+            explorer_play_stats: false,
+            remix_playlists: Vec::new(),
         }
     }
 }
@@ -27,7 +39,7 @@ impl Default for AppSettings {
 /// `$XDG_CONFIG_HOME/atelier` si está definido, o `~/.config/atelier` por
 /// defecto. Mismo patrón que `ui::utils::data_dir::data_dir`, pero para
 /// `.config` en vez de `.local/share`.
-fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     if let Some(xdg) = env::var_os("XDG_CONFIG_HOME") {
         return PathBuf::from(xdg).join("atelier");
     }

@@ -1,29 +1,36 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use iced::{Alignment, Element, Length, Padding, Point, Size, Subscription, Task};
 use iced::alignment::{Horizontal, Vertical};
 use iced::Event::Mouse;
-use iced::mouse::Event::CursorMoved;
-use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, space, stack, text, text_input};
 
 use crate::audio::manager::manager::TrackManager;
 use crate::db::playlist_manager::PlaylistManager;
 use crate::db::play_history_manager::PlayHistoryManager;
 use crate::db::followed_artist_manager::FollowedArtistManager;
+use crate::db::artist_tag_manager::ArtistTagManager;
+use crate::db::playlist_color_manager::PlaylistColorManager; // [playlist-color]
 use crate::microservices::client::MicroserviceClient;
+use crate::model::Mix;
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::{self, Icon};
 use crate::ui::styles::button as button_style;
 use crate::ui::utils::cover_manager::CoverVariant;
+use crate::ui::utils::row_animator::RowAnimator;
 use crate::ui::views::view_coordinator::{ActiveRoute, CoordinatorMessage, CoordinatorOutMessage, ViewCoordinator};
 use crate::ui::views::home_view;
 use crate::ui::views::explorer_view_v2;
 use crate::ui::views::favorite_view;
+use crate::ui::views::artists_view;
+use crate::ui::views::remix_view;
 use crate::ui::views::playlist_view::PlaylistMessage;
+use crate::ui::views::artists_view::ArtistsMessage;
 use crate::ui::views::view_data::{NavId, ViewData};
 use crate::ui::widgets::confirm_dialog::ConfirmDialog;
 use crate::ui::widgets::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::ui::widgets::playlist_row::{playlist_row, PlaylistRowData};
-use crate::ui::assets::{spacing, typography};
+use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::theme::theme;
 use crate::ui::styles::text_input as text_input_style;
 use crate::ui::styles::scrollable as scrollable_style;
@@ -33,10 +40,19 @@ const EXPANDED_WIDTH: f32 = 200.0;
 const LERP_FACTOR: f32 = 0.25;
 const SNAP_EPSILON: f32 = 0.5;
 
+/// Distancia vertical entre filas de playlist (igual expandido y colapsado).
+const PLAYLIST_ROW_PITCH: f32 = 54.0;
+/// Movimiento mínimo antes de que un press sobre una fila cuente como arrastre.
+const PLAYLIST_DRAG_THRESHOLD_PX: f32 = 5.0;
+/// Ventana tras soltar un arrastre en la que se ignora el click de selección.
+const PLAYLIST_DRAG_CLICK_GUARD: Duration = Duration::from_millis(300);
+
 const PRIMARY_VIEWS: &[ViewData] = &[
     home_view::VIEW_DATA,
     explorer_view_v2::VIEW_DATA,
     favorite_view::VIEW_DATA,
+    artists_view::VIEW_DATA,
+    remix_view::VIEW_DATA,
 ];
 
 // ─── MENSAJES ────────────────────────────────────────────────────────
@@ -61,8 +77,24 @@ pub enum SidebarMessage {
     ConfirmDeletePlaylist,
     CancelDeletePlaylist,
 
-    GlobalMouseMoved(Point),
+    // ─── Reordenar playlists (drag & drop) ──────────────────────────
+    PlaylistRowHovered(String),
+    PlaylistRowUnhovered(String),
+    GlobalLeftPressed,
+    GlobalLeftReleased,
+    /// Repinta mientras las filas de playlist se deslizan a su lugar.
+    PlaylistAnimationFrame,
+
     GlobalWindowResized(Size),
+}
+
+/// Arrastre de una fila de playlist; `active` cuando superó el umbral.
+#[derive(Debug, Clone)]
+struct PlaylistDrag {
+    source_index: usize,
+    target_index: usize,
+    start_y: f32,
+    active: bool,
 }
 
 /// El menú de fila de playlist es mucho más chico que el de tracks (una
@@ -80,6 +112,7 @@ pub enum SidebarOutMessage {
     Idle,
     RequestOpenArtist(String),
     RequestOpenAlbum(String),
+    RequestOpenMix(Mix),
 }
 
 // ─── ESTADO (EL STRUCT) ──────────────────────────────────────────────
@@ -104,6 +137,14 @@ pub struct SidebarFeatureV2 {
     /// tracks): el menú se cierra al elegir "Eliminar", y este diálogo
     /// centrado pide confirmación antes de llamar al coordinator.
     delete_playlist_dialog: ConfirmDialog<String>,
+
+    // ─── Reordenar playlists ────────────────────────────────────────
+    hovered_playlist: Option<String>,
+    playlist_drag: Option<PlaylistDrag>,
+    playlist_drag_ended_at: Option<Instant>,
+    /// Posición animada de cada fila mientras se reordena (igual que la cola).
+    playlist_animator: RowAnimator,
+    cursor: Point,
 }
 
 impl SidebarFeatureV2 {
@@ -117,6 +158,8 @@ impl SidebarFeatureV2 {
         manager: Arc<TrackManager>,
         play_history_manager: Arc<PlayHistoryManager>,
         followed_artist_manager: Arc<FollowedArtistManager>,
+        artist_tag_manager: Arc<ArtistTagManager>,
+        playlist_colors: Arc<PlaylistColorManager>,
     ) -> (Self, Task<SidebarMessage>) {
         let (coordinator, coordinator_task) = ViewCoordinator::new(
             client,
@@ -124,6 +167,8 @@ impl SidebarFeatureV2 {
             manager,
             play_history_manager,
             followed_artist_manager,
+            artist_tag_manager,
+            playlist_colors,
         );
 
         let sidebar = Self {
@@ -133,9 +178,57 @@ impl SidebarFeatureV2 {
             new_playlist_input: None,
             playlist_context_menu: ContextMenu::new(),
             delete_playlist_dialog: ConfirmDialog::new(),
+            hovered_playlist: None,
+            playlist_drag: None,
+            playlist_drag_ended_at: None,
+            playlist_animator: RowAnimator::new(PLAYLIST_ROW_PITCH),
+            cursor: Point::ORIGIN,
         };
 
         (sidebar, coordinator_task.map(SidebarMessage::Content))
+    }
+
+    /// Ver `ViewCoordinator::set_cursor`. Cubre su propio menú de playlists
+    /// y el de tracks que vive en el coordinator.
+    pub fn set_cursor(&mut self, position: iced::Point) {
+        self.playlist_context_menu.handle(ContextMenuEvent::MouseMoved(position));
+        self.coordinator.set_cursor(position);
+        self.cursor = position;
+
+        let playlist_count = self.coordinator.playlists_metadata().len();
+        let mut order_changed = false;
+        if let Some(drag) = &mut self.playlist_drag {
+            let dy = position.y - drag.start_y;
+            if !drag.active && dy.abs() > PLAYLIST_DRAG_THRESHOLD_PX {
+                drag.active = true;
+                order_changed = true;
+            }
+            if drag.active {
+                let offset = (dy / PLAYLIST_ROW_PITCH).round() as isize;
+                let target = drag.source_index.saturating_add_signed(offset).min(playlist_count.saturating_sub(1));
+                order_changed |= target != drag.target_index;
+                drag.target_index = target;
+            }
+        }
+        if order_changed {
+            self.sync_playlist_animator();
+        }
+    }
+
+    /// Lleva cada fila hacia su posición en el orden que se está pintando.
+    fn sync_playlist_animator(&mut self) {
+        let now = Instant::now();
+        let ids: Vec<String> = self.playlists_in_display_order().iter().map(|(id, _, _)| id.clone()).collect();
+        for (index, id) in ids.iter().enumerate() {
+            self.playlist_animator.sync_target(id, index, now);
+        }
+    }
+
+    /// `true` si el click de selección de playlist viene de un arrastre
+    /// (en curso o recién soltado) y no debe navegar.
+    pub fn is_playlist_drag_click(&self) -> bool {
+        self.playlist_drag.as_ref().is_some_and(|drag| drag.active)
+            || self.playlist_drag_ended_at.is_some_and(|at| at.elapsed() < PLAYLIST_DRAG_CLICK_GUARD)
     }
 
     pub fn subscription(&self) -> Subscription<SidebarMessage> {
@@ -148,21 +241,11 @@ impl SidebarFeatureV2 {
 
         let global_events_sub = iced::event::listen_with(|event, _status, _window| {
             match event {
-                Mouse(CursorMoved { position }) => {
-                    Some(SidebarMessage::GlobalMouseMoved(position))
-                }
-                iced::Event::Window(iced::window::Event::Resized(size)) => {
-                    Some(SidebarMessage::GlobalWindowResized(size))
-                }
                 Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
-                    Some(SidebarMessage::Content(CoordinatorMessage::PlaylistDetail(
-                        PlaylistMessage::GlobalMousePress,
-                    )))
+                    Some(SidebarMessage::GlobalLeftPressed)
                 }
                 Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
-                    Some(SidebarMessage::Content(CoordinatorMessage::PlaylistDetail(
-                        PlaylistMessage::GlobalMouseRelease,
-                    )))
+                    Some(SidebarMessage::GlobalLeftReleased)
                 }
                 iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                     Some(SidebarMessage::Content(CoordinatorMessage::KeybindsChanged(modifiers)))
@@ -172,6 +255,10 @@ impl SidebarFeatureV2 {
         });
 
         let mut subs = vec![animation_sub, global_events_sub];
+
+        if self.playlist_animator.is_animating(Instant::now()) {
+            subs.push(iced::window::frames().map(|_| SidebarMessage::PlaylistAnimationFrame));
+        }
         
         if self.coordinator.playlist_view.as_ref().is_some_and(|v| v.is_dragging()) {
             subs.push(
@@ -191,7 +278,7 @@ impl SidebarFeatureV2 {
             );
         }
 
-        if self.coordinator.home_view.is_loading() {
+        if self.coordinator.home_view.is_animating() {
             subs.push(
                 self.coordinator.home_view.subscription()
                     .map(|inner| SidebarMessage::Content(CoordinatorMessage::Home(inner))),
@@ -222,6 +309,7 @@ impl SidebarFeatureV2 {
                 CoordinatorOutMessage::Idle => SidebarOutMessage::Idle,
                 CoordinatorOutMessage::RequestOpenArtist(id) => SidebarOutMessage::RequestOpenArtist(id),
                 CoordinatorOutMessage::RequestOpenAlbum(id) => SidebarOutMessage::RequestOpenAlbum(id),
+                CoordinatorOutMessage::RequestOpenMix(mix) => SidebarOutMessage::RequestOpenMix(mix),
             };
             (task.map(SidebarMessage::Content), out)
         }
@@ -267,13 +355,12 @@ impl SidebarFeatureV2 {
             }
 
             SidebarMessage::SubmitNewPlaylist => {
-                if let Some(name) = self.new_playlist_input.take() {
-                    if !name.trim().is_empty() {
+                if let Some(name) = self.new_playlist_input.take()
+                    && !name.trim().is_empty() {
                         return from_coordinator(
                             self.coordinator.update(CoordinatorMessage::CreatePlaylist(name)),
                         );
                     }
-                }
                 (Task::none(), SidebarOutMessage::Idle)
             }
 
@@ -304,7 +391,7 @@ impl SidebarFeatureV2 {
                             .unwrap_or_else(|| "esta playlist".to_string());
                         self.delete_playlist_dialog.request(
                             playlist_id,
-                            &format!("¿Eliminar la playlist \"{name}\"?"),
+                            format!("¿Eliminar la playlist \"{name}\"?"),
                         );
                     }
                 }
@@ -327,14 +414,50 @@ impl SidebarFeatureV2 {
                 self.delete_playlist_dialog.cancel();
                 (Task::none(), SidebarOutMessage::Idle)
             },
-            SidebarMessage::GlobalMouseMoved(position) => {
-                self.playlist_context_menu.handle(ContextMenuEvent::MouseMoved(position));
-
-                from_coordinator(self.coordinator.update(CoordinatorMessage::TrackContextMenuEvent(
-                    ContextMenuEvent::MouseMoved(position)
-                )))
+            SidebarMessage::PlaylistRowHovered(id) => {
+                self.hovered_playlist = Some(id);
+                (Task::none(), SidebarOutMessage::Idle)
             }
-
+            SidebarMessage::PlaylistRowUnhovered(id) => {
+                if self.hovered_playlist.as_ref() == Some(&id) {
+                    self.hovered_playlist = None;
+                }
+                (Task::none(), SidebarOutMessage::Idle)
+            }
+            SidebarMessage::GlobalLeftPressed => {
+                self.playlist_drag = self.hovered_playlist.as_ref().and_then(|hovered| {
+                    let index = self.coordinator.playlists_metadata().iter().position(|(id, _, _)| id == hovered)?;
+                    Some(PlaylistDrag { source_index: index, target_index: index, start_y: self.cursor.y, active: false })
+                });
+                let (playlist_task, out) = from_coordinator(self.coordinator.update(CoordinatorMessage::PlaylistDetail(PlaylistMessage::GlobalMousePress)));
+                let (artists_task, _) = from_coordinator(self.coordinator.update(CoordinatorMessage::Artists(ArtistsMessage::GlobalPressed)));
+                (Task::batch([playlist_task, artists_task]), out)
+            }
+            SidebarMessage::PlaylistAnimationFrame => (Task::none(), SidebarOutMessage::Idle),
+            SidebarMessage::GlobalLeftReleased => {
+                let reorder_task = match self.playlist_drag.take() {
+                    Some(drag) if drag.active => {
+                        self.playlist_drag_ended_at = Some(Instant::now());
+                        let dragged_id = self.coordinator.playlists_metadata().get(drag.source_index).map(|(id, _, _)| id.clone());
+                        let task = self.coordinator
+                            .catalog_store
+                            .move_playlist(drag.source_index, drag.target_index)
+                            .map(|m| SidebarMessage::Content(CoordinatorMessage::Catalog(m)));
+                        // La arrastrada aterriza donde se soltó; el resto ya va camino a su lugar.
+                        if let Some(id) = dragged_id {
+                            self.playlist_animator.snap_to_target(&id, drag.target_index);
+                        }
+                        self.sync_playlist_animator();
+                        task
+                    }
+                    _ => Task::none(),
+                };
+                let (task, out) = from_coordinator(
+                    self.coordinator.update(CoordinatorMessage::PlaylistDetail(PlaylistMessage::GlobalMouseRelease)),
+                );
+                let (artists_task, _) = from_coordinator(self.coordinator.update(CoordinatorMessage::Artists(ArtistsMessage::GlobalReleased)));
+                (Task::batch([reorder_task, task, artists_task]), out)
+            }
             SidebarMessage::GlobalWindowResized(size) => {
                 self.playlist_context_menu.handle(ContextMenuEvent::ViewportResized(size));
 
@@ -485,6 +608,19 @@ impl SidebarFeatureV2 {
             layers.push(dialog);
         }
 
+        // ─── Menú y diálogo de la vista de Artistas ────────────────────
+        layers.extend(self.coordinator.view_artists_overlays().into_iter().map(|layer| layer.map(SidebarMessage::Content)));
+
+        // ─── Editor de recorte de portada ──────────────────────────────
+        if let Some(editor) = self.coordinator.view_cover_crop() {
+            layers.push(editor.map(SidebarMessage::Content));
+        }
+
+        // ─── Confirmación de borrado de tracks ─────────────────────────
+        if let Some(dialog) = self.coordinator.view_delete_dialog() {
+            layers.push(dialog.map(SidebarMessage::Content));
+        }
+
         // ─── NUEVO: Extraemos el menú de Pistas del Coordinador ─────────
         if let Some(track_menu) = self.coordinator.view_track_context_menu() {
             layers.push(track_menu.map(SidebarMessage::Content));
@@ -527,65 +663,117 @@ impl SidebarFeatureV2 {
             section = section.push(input_row);
         }
 
-        for (playlist_id, playlist_name, _cover) in self.coordinator.playlists_metadata() {
-            let is_row_active = matches!(
-                &self.coordinator.active_route,
-                ActiveRoute::Playlist(active_id) if active_id == playlist_id
-            );
-
-            let id_for_click = playlist_id.clone();
-            let id_for_right_click = playlist_id.clone();
-            let cover_handle = self.coordinator.cover_handle(playlist_id, CoverVariant::Small);
-            let (track_count, total_duration_seconds) = self.coordinator.playlist_track_stats(playlist_id);
-
-            let row = playlist_row(
-                PlaylistRowData {
-                    name: playlist_name,
-                    is_active: is_row_active,
-                    track_count,
-                    total_duration_seconds,
-                },
-                cover_handle,
-                true,
-                SidebarMessage::SelectPlaylist(id_for_click),
-                SidebarMessage::PlaylistRowRightClicked(id_for_right_click),
-            );
-
-            section = section.push(row);
-        }
+        section = section.push(self.render_playlist_rows(true));
 
         section.into()
     }
 
+    /// Playlists en el orden a pintar: con un arrastre activo, la arrastrada
+    /// ya aparece en su posición de destino.
+    fn playlists_in_display_order(&self) -> Vec<&(String, String, Option<String>)> {
+        let mut playlists: Vec<_> = self.coordinator.playlists_metadata().iter().collect();
+
+        if let Some(drag) = self.playlist_drag.as_ref().filter(|drag| drag.active)
+            && drag.source_index < playlists.len() {
+                let moved = playlists.remove(drag.source_index);
+                playlists.insert(drag.target_index.min(playlists.len()), moved);
+            }
+
+        playlists
+    }
+
+    /// Envuelve una fila de playlist para seguir el hover (inicio de arrastre).
+    fn draggable_playlist_row<'a>(&self, playlist_id: &str, row: Element<'a, SidebarMessage>) -> Element<'a, SidebarMessage> {
+        mouse_area(row)
+            .on_enter(SidebarMessage::PlaylistRowHovered(playlist_id.to_string()))
+            .on_exit(SidebarMessage::PlaylistRowUnhovered(playlist_id.to_string()))
+            .into()
+    }
+
     fn render_collapsed_playlists(&self) -> Element<'_, SidebarMessage> {
-        let mut section = column![].spacing(spacing::SP_6).width(Length::Fill).align_x(Horizontal::Center);
+        self.render_playlist_rows(false)
+    }
 
-        for (playlist_id, playlist_name, _cover) in self.coordinator.playlists_metadata() {
-            let id_for_select = playlist_id.clone();
-            let id_for_right_click = playlist_id.clone();
-            let is_row_active = matches!(
-                &self.coordinator.active_route,
-                ActiveRoute::Playlist(active_id) if active_id == playlist_id
-            );
-            let cover_handle = self.coordinator.cover_handle(playlist_id, CoverVariant::Small);
+    /// Fila de playlist (expandida con nombre y metadata, o colapsada solo con portada).
+    fn playlist_row_for<'a>(&'a self, playlist_id: &'a str, playlist_name: &'a str, expanded: bool) -> Element<'a, SidebarMessage> {
+        let is_row_active = matches!(
+            &self.coordinator.active_route,
+            ActiveRoute::Playlist(active_id) if active_id == playlist_id
+        );
+        let cover_handle = self.coordinator.cover_handle(playlist_id, CoverVariant::Small);
+        let (track_count, total_duration_seconds) = if expanded {
+            self.coordinator.playlist_track_stats(playlist_id)
+        } else {
+            (0, 0)
+        };
 
-            let row = playlist_row(
-                PlaylistRowData {
-                    name: playlist_name,
-                    is_active: is_row_active,
-                    track_count: 0,
-                    total_duration_seconds: 0,
-                },
-                cover_handle,
-                false,
-                SidebarMessage::SelectPlaylist(id_for_select),
-                SidebarMessage::PlaylistRowRightClicked(id_for_right_click),
-            );
+        playlist_row(
+            PlaylistRowData {
+                name: playlist_name,
+                is_active: is_row_active,
+                track_count,
+                total_duration_seconds,
+            },
+            cover_handle,
+            expanded,
+            SidebarMessage::SelectPlaylist(playlist_id.to_string()),
+            SidebarMessage::PlaylistRowRightClicked(playlist_id.to_string()),
+        )
+    }
 
-            section = section.push(row);
+    /// Filas de playlist en columna; mientras se arrastra o se acomodan, cada
+    /// fila va en la posición que le da el animador, con un hueco donde caerá
+    /// la arrastrada y su fantasma siguiendo al cursor (igual que la cola).
+    fn render_playlist_rows(&self, expanded: bool) -> Element<'_, SidebarMessage> {
+        let playlists = self.playlists_in_display_order();
+        let row_spacing = if expanded { spacing::SP_2 } else { spacing::SP_6 };
+        let row_align = if expanded { Horizontal::Left } else { Horizontal::Center };
+        let now = Instant::now();
+        let drag = self.playlist_drag.as_ref().filter(|drag| drag.active);
+
+        if drag.is_none() && !self.playlist_animator.is_animating(now) {
+            let rows = playlists
+                .iter()
+                .map(|(id, name, _)| self.draggable_playlist_row(id, self.playlist_row_for(id, name, expanded)));
+            return column(rows).spacing(row_spacing).width(Length::Fill).align_x(row_align).into();
         }
 
-        section.into()
+        let dragged = drag.and_then(|drag| self.coordinator.playlists_metadata().get(drag.source_index).map(|p| (drag, p)));
+        let mut layers: Vec<Element<'_, SidebarMessage>> = Vec::with_capacity(playlists.len() + 1);
+
+        for (index, (id, name, _)) in playlists.iter().enumerate() {
+            if dragged.is_some_and(|(_, (dragged_id, _, _))| dragged_id == id) {
+                continue;
+            }
+            let y = self.playlist_animator.visual_y_of(id, now, index);
+            layers.push(
+                container(self.draggable_playlist_row(id, self.playlist_row_for(id, name, expanded)))
+                    .width(Length::Fill)
+                    .align_x(row_align)
+                    .padding(Padding::new(0.0).top(y))
+                    .into(),
+            );
+        }
+
+        if let Some((drag, (id, name, _))) = dragged {
+            let max_y = playlists.len().saturating_sub(1) as f32 * PLAYLIST_ROW_PITCH;
+            let y = (drag.source_index as f32 * PLAYLIST_ROW_PITCH + self.cursor.y - drag.start_y).clamp(0.0, max_y);
+            let ghost = container(self.playlist_row_for(id, name, expanded)).style(|_theme| container::Style {
+                background: Some(theme().overlay.hover.into()),
+                border: iced::border::rounded(radii::R_8).color(theme().border.subtle).width(1.0),
+                ..Default::default()
+            });
+            layers.push(
+                container(ghost)
+                    .width(Length::Fill)
+                    .align_x(row_align)
+                    .padding(Padding::new(0.0).top(y))
+                    .into(),
+            );
+        }
+
+        let height = (playlists.len() as f32 * PLAYLIST_ROW_PITCH - row_spacing).max(0.0);
+        stack(layers).width(Length::Fill).height(Length::Fixed(height)).into()
     }
 
     pub fn view_toggle(&self) -> Element<'_, SidebarMessage> {

@@ -147,6 +147,65 @@ impl ScrollTracker {
     pub fn reset(&mut self) {
         self.offset_y = 0.0;
     }
+    /// Filas de `row_pitch` que caben completas en el viewport (mínimo 1).
+    pub fn rows_per_page(&self, row_pitch: f32) -> usize {
+        ((self.viewport_height / row_pitch).floor() as usize).max(1)
+    }
+
+    /// Scrollea lo justo para que la fila `[row_top, row_top + row_height]`
+    /// quede visible en el scrollable `scrollable_id`.
+    pub fn reveal<Message>(&mut self, row_top: f32, row_height: f32, scrollable_id: &'static str) -> iced::Task<Message> {
+        if self.viewport_height <= 0.0 {
+            return iced::Task::none();
+        }
+
+        match self.offset_to_reveal(row_top, row_height) {
+            Some(target_offset) => self.scroll_to(target_offset, scrollable_id),
+            None => iced::Task::none(),
+        }
+    }
+
+    /// Desplaza `shift` px (una página de filas) sin pasarse de `content_height`,
+    /// y después asegura que la fila quede visible.
+    pub fn page_and_reveal<Message>(
+        &mut self,
+        shift: f32,
+        content_height: f32,
+        row_top: f32,
+        row_height: f32,
+        scrollable_id: &'static str,
+    ) -> iced::Task<Message> {
+        if self.viewport_height <= 0.0 {
+            return iced::Task::none();
+        }
+
+        let max_offset = (content_height - self.viewport_height).max(0.0);
+        self.offset_y = (self.offset_y + shift).clamp(0.0, max_offset);
+
+        let target_offset = self.offset_to_reveal(row_top, row_height).unwrap_or(self.offset_y);
+        self.scroll_to(target_offset, scrollable_id)
+    }
+
+    /// Offset necesario para ver la fila, o `None` si ya está visible.
+    fn offset_to_reveal(&self, row_top: f32, row_height: f32) -> Option<f32> {
+        let row_bottom = row_top + row_height;
+        if row_top < self.offset_y {
+            Some(row_top)
+        } else if row_bottom > self.offset_y + self.viewport_height {
+            Some(row_bottom - self.viewport_height)
+        } else {
+            None
+        }
+    }
+
+    fn scroll_to<Message>(&mut self, offset_y: f32, scrollable_id: &'static str) -> iced::Task<Message> {
+        self.offset_y = offset_y;
+        iced::widget::operation::scroll_to(
+            iced::widget::Id::new(scrollable_id),
+            iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: offset_y },
+        )
+    }
+
     /// Llama esto desde tu callback `on_scroll(Viewport)`.
     pub fn update(&mut self, viewport: iced::widget::scrollable::Viewport) {
         let offset = viewport.absolute_offset();

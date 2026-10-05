@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::Sender;
 use tokio::sync::broadcast;
@@ -16,7 +16,7 @@ use crate::audio::manager::error_mananger::ManagerError;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 use crate::audio::queue_shuffle;
 
-const HISTORY_CAP: usize = 100;
+pub(super) const HISTORY_CAP: usize = 100;
 
 // ── Estado consolidado ───────────────────────────────────────────────────────
 
@@ -44,13 +44,15 @@ pub enum RepeatMode {
 }
 
 /// Vista desde la que se originó la reproducción actual.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PlaybackOrigin {
     Explorer,
     Favorites,
     Playlist(String),
     Album(String),
     Artist(String),
+    Mix(String),
+    Remix,
     Home,
 }
 
@@ -221,6 +223,9 @@ pub struct TrackManager {
 
     origin: Mutex<Option<PlaybackOrigin>>,
 
+    /// Si el `RadioWorker` rellena la cola cuando se queda corta.
+    pub(super) radio_enabled: AtomicBool,
+
     pub event_tx: broadcast::Sender<TrackEvent>,
     pub queue_tx: broadcast::Sender<QueueEvent>,
 }
@@ -261,8 +266,8 @@ impl TrackManager {
                         continue;
                     }
 
-                    if ps.repeat_mode == RepeatMode::Track {
-                        if let Some(current) = ps.current_track.clone() {
+                    if ps.repeat_mode == RepeatMode::Track
+                        && let Some(current) = ps.current_track.clone() {
                             drop(ps);
                             let _ = supervisor_tx.send(AudioCommand::Play {
                                 track: current,
@@ -270,7 +275,6 @@ impl TrackManager {
                             });
                             continue;
                         }
-                    }
 
                     if ps.queue.is_empty() && ps.repeat_mode == RepeatMode::Queue && !ps.history.is_empty() {
                         let replay: Vec<QueueSlot> = ps.history.drain(..).map(|t| QueueSlot::new(Arc::new(t))).collect();
@@ -321,6 +325,7 @@ impl TrackManager {
             state,
             playback,
             origin: Mutex::new(None),
+            radio_enabled: AtomicBool::new(false),
             event_tx,
             queue_tx,
         };
@@ -488,6 +493,8 @@ mod tests {
             added_at: None,
             state: Default::default(),
             liked: false,
+            play_count: None,
+            last_played_at: None,
             album: None,
             artists: vec![],
         }

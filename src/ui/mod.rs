@@ -9,3 +9,4 @@ pub mod download_feature;
 pub mod sidebar_feature;
 pub mod views;
 pub mod assets;
+pub mod playlist_color; // [playlist-color]

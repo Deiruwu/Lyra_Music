@@ -6,6 +6,8 @@ use iced::{Alignment, Element, Length, Padding, Theme};
 use crate::model::{Track, TrackState};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::{self, Icon};
+use crate::ui::styles::row as row_style;
+use crate::ui::styles::RowSelectionShape;
 use crate::ui::theme::theme;
 use crate::ui::widgets::artist_links::{album_link, artist_links};
 use crate::ui::widgets::single_line_text::single_line_text;
@@ -56,16 +58,21 @@ const DURATION_WIDTH: Length = Length::Fixed(56.0);
 const CACHE_DOT_SIZE: f32 = 8.0;
 const ROW_THUMBNAIL_SIZE: f32 = 40.0;
 const NUMBERED_INDEX_WIDTH: f32 = 32.0;
+/// Alto fijo de `track_row_numbered`.
+pub const NUMBERED_ROW_HEIGHT: f32 = 58.0;
+/// Alto fijo de `track_row_with_thumbnail`.
+pub const THUMBNAIL_ROW_HEIGHT: f32 = 52.0;
 
 /// Fila de track con número + thumbnail al inicio: Título / Artista /
-/// Álbum / Duración + indicador de caché. Click izquierdo reproduce
+/// Álbum / Duración + indicador de caché. Click izquierdo emite `on_click`
 /// (o pausa/reanuda si ya es la fila que suena), click derecho abre el
 /// menú contextual.
 pub fn track_row_with_thumbnail<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(String) -> Message + 'a>(
     position: usize,
     track: &'a Track,
     thumbnail: Option<Handle>,
-    on_play: Message,
+    is_selected: bool,
+    on_click: Message,
     on_right_click: Message,
     on_artist_click: F,
     on_album_click: G,
@@ -82,7 +89,8 @@ pub fn track_row_with_thumbnail<'a, Message: Clone + 'a, F: Fn(String) -> Messag
         track,
         index,
         thumb,
-        on_play,
+        is_selected,
+        on_click,
         on_right_click,
         on_artist_click,
         on_album_click,
@@ -97,7 +105,8 @@ fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(Strin
     track: &'a Track,
     index: Element<'a, Message>,
     thumbnail: Element<'a, Message>,
-    on_play: Message,
+    is_selected: bool,
+    on_click: Message,
     on_right_click: Message,
     on_artist_click: F,
     on_album_click: G,
@@ -138,9 +147,33 @@ fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(Strin
     let content = row![index, thumbnail, title, artist, album, duration, cache_indicator(cached)]
         .spacing(spacing::SP_18)
         .align_y(Alignment::Center)
-        .padding([spacing::SP_6, spacing::SP_8]);
+        .padding([spacing::SP_0, spacing::SP_8]);
 
-    let btn = button(content)
+    row_shell(
+        content.into(),
+        THUMBNAIL_ROW_HEIGHT,
+        is_selected,
+        if is_playing_row { on_toggle } else { on_click },
+        on_right_click,
+        is_playing_row.then_some((on_hover_enter, on_hover_exit)),
+    )
+}
+
+/// Botón de alto fijo con hover + fondo de selección + click derecho, y
+/// enter/exit opcionales (solo la fila que suena los usa).
+fn row_shell<'a, Message: Clone + 'a>(
+    content: Element<'a, Message>,
+    height: f32,
+    is_selected: bool,
+    on_press: Message,
+    on_right_click: Message,
+    hover: Option<(Message, Message)>,
+) -> Element<'a, Message> {
+    let centered = container(content).height(Length::Fill).align_y(Alignment::Center);
+
+    let btn = button(centered)
+        .width(Length::Fill)
+        .height(Length::Fixed(height))
         .padding(spacing::SP_0)
         .style(|_theme: &Theme, status| {
             let background = match status {
@@ -149,24 +182,27 @@ fn build_row<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a, G: Fn(Strin
             };
             button::Style { background, text_color: theme().content.primary, ..Default::default() }
         })
-        .on_press(if is_playing_row { on_toggle } else { on_play });
+        .on_press(on_press);
 
-    let area = mouse_area(btn).on_right_press(on_right_click);
+    let shape = if is_selected { RowSelectionShape::Solo } else { RowSelectionShape::None };
+    let styled = container(btn).width(Length::Fill).style(row_style::selected(shape));
 
-    if is_playing_row {
-        area.on_enter(on_hover_enter).on_exit(on_hover_exit).into()
-    } else {
-        area.into()
+    let area = mouse_area(styled).on_right_press(on_right_click);
+
+    match hover {
+        Some((on_enter, on_exit)) => area.on_enter(on_enter).on_exit(on_exit).into(),
+        None => area.into(),
     }
 }
 
 /// Fila con número de posición, título/artista apilados, indicador de caché y duración; con hover.
-/// Click izquierdo reproduce (o pausa/reanuda si ya es la fila que
+/// Click izquierdo emite `on_click` (o pausa/reanuda si ya es la fila que
 /// suena), click derecho abre el menú contextual.
 pub fn track_row_numbered<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a>(
     position: usize,
     track: &'a Track,
-    on_play: Message,
+    is_selected: bool,
+    on_click: Message,
     on_right_click: Message,
     on_artist_click: F,
     is_playing_row: bool,
@@ -194,26 +230,16 @@ pub fn track_row_numbered<'a, Message: Clone + 'a, F: Fn(String) -> Message + 'a
     let content = row![index, title_artist, cache_indicator(cached), duration]
         .spacing(spacing::SP_18)
         .align_y(Alignment::Center)
-        .padding(Padding { top: spacing::SP_10, right: spacing::SP_8, bottom: spacing::SP_10, left: spacing::SP_8 });
+        .padding(Padding { top: spacing::SP_0, right: spacing::SP_8, bottom: spacing::SP_0, left: spacing::SP_8 });
 
-    let btn = button(content)
-        .padding(spacing::SP_0)
-        .style(|_theme: &Theme, status| {
-            let background = match status {
-                button::Status::Hovered => Some(theme().overlay.hover.into()),
-                _ => None,
-            };
-            button::Style { background, text_color: theme().content.primary, ..Default::default() }
-        })
-        .on_press(if is_playing_row { on_toggle } else { on_play });
-
-    let area = mouse_area(btn).on_right_press(on_right_click);
-
-    if is_playing_row {
-        area.on_enter(on_hover_enter).on_exit(on_hover_exit).into()
-    } else {
-        area.into()
-    }
+    row_shell(
+        content.into(),
+        NUMBERED_ROW_HEIGHT,
+        is_selected,
+        if is_playing_row { on_toggle } else { on_click },
+        on_right_click,
+        is_playing_row.then_some((on_hover_enter, on_hover_exit)),
+    )
 }
 
 /// Punto circular indicador de "en caché" según `track.state`.

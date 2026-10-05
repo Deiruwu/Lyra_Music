@@ -247,6 +247,14 @@ impl QueuePanel {
     /// `track_list_builder::visible_thumbnail_targets` (Explorer/Playlists),
     /// pero sobre la cola con su propio `ROW_STRIDE`.
     pub fn visible_thumbnail_targets(&self) -> Vec<(String, String)> {
+        // Con el panel cerrado no hay nada que pintar. Sin esto, una vez
+        // abierto el panel `ScrollTracker` conserva su `viewport_height`
+        // (`reset()` solo limpia `offset_y`), así que la ventana seguía
+        // poblada y ~45 miniaturas se descargaban y quedaban residentes.
+        if !self.show {
+            return Vec::new();
+        }
+
         let window = self.scroll.window(ROW_STRIDE, self.merged_total(), BUFFER_ROWS);
         if window.is_empty() {
             return Vec::new();
@@ -414,8 +422,8 @@ impl QueuePanel {
             // play/borrar/links/right-click nunca supera el threshold en
             // CursorMoved, así que nunca llega a promoverse a `self.drag`.
             QueueMessage::GlobalPressed => {
-                if self.drag.is_none() && self.pending_drag.is_none() {
-                    if let Some(origin) = self.hovered_zone {
+                if self.drag.is_none() && self.pending_drag.is_none()
+                    && let Some(origin) = self.hovered_zone {
                         let valid = match origin {
                             DragOrigin::Queue(i) => i < self.queue.len(),
                             DragOrigin::History(sb) => sb >= 1 && sb <= self.history.len(),
@@ -433,7 +441,6 @@ impl QueuePanel {
                             });
                         }
                     }
-                }
                 (Task::none(), QueueOutMessage::Idle)
             }
 
@@ -441,8 +448,8 @@ impl QueuePanel {
                 self.last_cursor_y = cursor_y;
                 let now = Instant::now();
 
-                if let Some(pending) = &self.pending_drag {
-                    if (cursor_y - pending.start_y).abs() > DRAG_THRESHOLD_PX {
+                if let Some(pending) = &self.pending_drag
+                    && (cursor_y - pending.start_y).abs() > DRAG_THRESHOLD_PX {
                         let current_index = match pending.origin {
                             DragOrigin::Queue(i) => i,
                             DragOrigin::History(steps_back) => self.history.len() - steps_back,
@@ -455,7 +462,6 @@ impl QueuePanel {
                         });
                         self.pending_drag = None;
                     }
-                }
 
                 let queue_start = self.row_y(self.queue_start_offset());
 
@@ -612,8 +618,7 @@ impl QueuePanel {
                 continue;
             }
 
-            if index == self.history.len() && self.current_track.is_some() {
-                let track = self.current_track.as_ref().unwrap();
+            if let Some(track) = self.current_track.as_ref().filter(|_| index == self.history.len()) {
                 let thumbnail = thumbnails.get(&thumb_key(track)).cloned();
                 let row = queue_static_row(
                     index + 1,

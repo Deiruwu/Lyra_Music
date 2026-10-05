@@ -59,15 +59,19 @@ impl TrackManager {
         self.enqueue_internal(tracks, false);
     }
 
+    /// Como `enqueue_many`, pero al frente de la cola conservando el orden de `tracks`.
+    pub fn enqueue_front_many(&self, tracks: Vec<Track>) {
+        self.enqueue_internal(tracks, true);
+    }
+
     pub fn enqueue_deduplicated(&self, track: Track) -> bool {
         {
             let ps = self.playback.lock().unwrap();
 
-            if let Some(current) = ps.current_track.as_ref() {
-                if current.track.id == track.id {
+            if let Some(current) = ps.current_track.as_ref()
+                && current.track.id == track.id {
                     return false;
                 }
-            }
 
             if ps.queue.iter().any(|slot| slot.track.id == track.id) {
                 return false;

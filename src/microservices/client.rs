@@ -1,4 +1,4 @@
-use crate::model::{AlbumDto, ArtistDto, ArtistProfileDto, DownloadEvent, Track};
+use crate::model::{AlbumDto, ArtistDto, ArtistProfileDto, DownloadEvent, SearchItem, Track};
 use musichub_client::{MicroserviceClient as HubClient, Request};
 pub use musichub_client::MicroserviceError;
 
@@ -13,20 +13,33 @@ impl MicroserviceClient {
         Self { inner: HubClient::new(host, port) }
     }
 
-    pub async fn search(&self, query: &str, limit: Option<usize>, filter: Option<&str>) -> Result<Vec<Track>, MicroserviceError> {
-        self.inner.search(query, limit, filter).await
+    /// `filter`: songs | videos | albums | artists | all.
+    pub async fn search_items(&self, query: &str, limit: Option<usize>, filter: &str) -> Result<Vec<SearchItem>, MicroserviceError> {
+        self.inner.search_items(query, limit, filter).await
     }
 
     pub async fn download(&self, query: &str) -> Result<Track, MicroserviceError> {
         self.inner.download(query).await
     }
 
-    pub async fn subscribe_downloads(&self) -> Result<tokio::sync::mpsc::UnboundedReceiver<DownloadEvent>, MicroserviceError> {
-        self.inner.subscribe_downloads().await
+    pub async fn redownload(&self, track_id: &str) -> Result<Track, MicroserviceError> {
+        self.inner.redownload(track_id).await
     }
 
-    pub async fn resolve(&self, query: &str) -> Result<Track, MicroserviceError> {
-        self.inner.resolve(query).await
+    pub async fn refresh_metadata(&self, track_id: &str) -> Result<Track, MicroserviceError> {
+        self.inner.refresh_metadata(track_id).await
+    }
+
+    pub async fn refresh_lyrics(&self, track_id: &str) -> Result<Track, MicroserviceError> {
+        self.inner.refresh_lyrics(track_id).await
+    }
+
+    pub async fn reanalyze(&self, track_id: &str) -> Result<Track, MicroserviceError> {
+        self.inner.reanalyze(track_id).await
+    }
+
+    pub async fn subscribe_downloads(&self) -> Result<tokio::sync::mpsc::UnboundedReceiver<DownloadEvent>, MicroserviceError> {
+        self.inner.subscribe_downloads().await
     }
 
     pub async fn delete(&self, query: &str) -> Result<(), MicroserviceError>{

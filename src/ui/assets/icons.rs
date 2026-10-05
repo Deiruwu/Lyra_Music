@@ -64,6 +64,38 @@ pub enum Icon {
     #[strum(serialize = "")]
     Copiar,
 
+    #[strum(serialize = "\u{f0337}")]
+    Link,
+
+    // Track manager
+    #[strum(serialize = "\u{f0ad}")]
+    Tools,
+
+    #[strum(serialize = "\u{f1254}")]
+    EditMetadata,
+
+    #[strum(serialize = "\u{f07da}")]
+    Analyze,
+
+    #[strum(serialize = "\u{f036c}")]
+    Lyrics,
+
+    #[strum(serialize = "\u{f01da}")]
+    Download,
+
+    // Artistas y etiquetas
+    #[strum(serialize = "\u{f0803}")]
+    Artists,
+
+    #[strum(serialize = "\u{f04f9}")]
+    Tag,
+
+    #[strum(serialize = "\u{f03eb}")]
+    Rename,
+
+    #[strum(serialize = "\u{f0415}")]
+    Add,
+
     // Favorites
     #[strum(serialize = "")]
     HeartFull,

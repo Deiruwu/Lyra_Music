@@ -20,7 +20,12 @@ impl MprisServer {
         std::thread::Builder::new()
             .name("mpris_tokio".into())
             .spawn(move || {
-                let rt = tokio::runtime::Runtime::new()
+                // Loop de eventos casi siempre inactivo: no necesita un
+                // runtime multi-thread (levantaba num_cpus workers + pool
+                // de blocking, por cada uno de estos tres servicios).
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
                     .expect("Fallo al crear runtime de Tokio para MPRIS");
                 rt.block_on(async move {
                     if let Err(e) = run_server(manager).await {
@@ -39,6 +44,12 @@ async fn run_server(manager: Arc<TrackManager>) -> Result<(), Box<dyn std::error
 
     let mut event_rx = manager.event_tx.subscribe();
     let mut last_pos: u64 = 0;
+    // Shuffle/LoopStatus/Volume cambian desde la UI o vía MPRIS sin evento
+    // propio: se sondean en el tick y se notifica PropertiesChanged, si no
+    // los clientes (Quickshell, playerctl -F) se quedan con el valor viejo.
+    let mut last_shuffle = manager.is_shuffled();
+    let mut last_repeat = manager.repeat_mode();
+    let mut last_volume = manager.state.get_volume();
 
     loop {
         tokio::select! {
@@ -83,6 +94,26 @@ async fn run_server(manager: Arc<TrackManager>) -> Result<(), Box<dyn std::error
                     }).await;
                 }
                 last_pos = pos_ms;
+
+                let mut changed = Vec::new();
+                let shuffle = manager.is_shuffled();
+                if shuffle != last_shuffle {
+                    last_shuffle = shuffle;
+                    changed.push(Property::Shuffle(shuffle));
+                }
+                let repeat = manager.repeat_mode();
+                if repeat != last_repeat {
+                    last_repeat = repeat;
+                    changed.push(Property::LoopStatus(map_repeat(repeat)));
+                }
+                let volume = manager.state.get_volume();
+                if (volume - last_volume).abs() > 0.001 {
+                    last_volume = volume;
+                    changed.push(Property::Volume(volume as f64));
+                }
+                if !changed.is_empty() {
+                    let _ = server.properties_changed(changed).await;
+                }
             }
         }
     }
@@ -123,6 +154,10 @@ impl PlayerInterface for MprisPlayer {
     }
 
     async fn previous(&self) -> fdo::Result<()> {
+        // Sin historial no hay a dónde volver: reinicia la canción actual.
+        if self.manager.skip_prev().is_err() {
+            self.manager.seek(Duration::ZERO);
+        }
         Ok(())
     }
 
@@ -174,11 +209,7 @@ impl PlayerInterface for MprisPlayer {
     }
 
     async fn loop_status(&self) -> fdo::Result<LoopStatus> {
-        Ok(match self.manager.repeat_mode() {
-            RepeatMode::Off   => LoopStatus::None,
-            RepeatMode::Queue => LoopStatus::Playlist,
-            RepeatMode::Track => LoopStatus::Track,
-        })
+        Ok(map_repeat(self.manager.repeat_mode()))
     }
 
     async fn set_loop_status(&self, status: LoopStatus) -> zbus::Result<()> {
@@ -225,11 +256,19 @@ impl PlayerInterface for MprisPlayer {
     async fn maximum_rate(&self) -> fdo::Result<PlaybackRate> { Ok(1.0) }
 
     async fn can_go_next(&self)     -> fdo::Result<bool> { Ok(true)  }
-    async fn can_go_previous(&self) -> fdo::Result<bool> { Ok(false) }
+    async fn can_go_previous(&self) -> fdo::Result<bool> { Ok(true)  }
     async fn can_play(&self)        -> fdo::Result<bool> { Ok(true)  }
     async fn can_pause(&self)       -> fdo::Result<bool> { Ok(true)  }
     async fn can_seek(&self)        -> fdo::Result<bool> { Ok(true)  }
     async fn can_control(&self)     -> fdo::Result<bool> { Ok(true)  }
+}
+
+fn map_repeat(mode: RepeatMode) -> LoopStatus {
+    match mode {
+        RepeatMode::Off   => LoopStatus::None,
+        RepeatMode::Queue => LoopStatus::Playlist,
+        RepeatMode::Track => LoopStatus::Track,
+    }
 }
 
 fn map_status(status: u8) -> PlaybackStatus {

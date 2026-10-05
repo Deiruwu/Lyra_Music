@@ -169,14 +169,6 @@ impl LyricsPanel {
         self.anims.iter().any(|a| a.weight.is_animating(now))
     }
 
-    pub fn has_lyrics(&self) -> bool {
-        matches!(self.status, LyricsStatus::Synced(_))
-    }
-
-    pub fn status(&self) -> &LyricsStatus {
-        &self.status
-    }
-
     pub fn view(&self) -> Element<'_, LyricsMessage> {
         let content: Element<'_, LyricsMessage> = match &self.status {
             LyricsStatus::NoTrack => status_message("Sin reproducción activa"),

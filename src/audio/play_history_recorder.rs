@@ -30,7 +30,10 @@ impl PlayHistoryRecorder {
         std::thread::Builder::new()
             .name("play_history_recorder".into())
             .spawn(move || {
-                let rt = tokio::runtime::Runtime::new()
+                // Ver comentario en mpris.rs: current_thread alcanza.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
                     .expect("Fallo al crear runtime de Tokio para play_history_recorder");
 
                 rt.block_on(async move {

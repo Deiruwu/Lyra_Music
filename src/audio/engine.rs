@@ -162,6 +162,28 @@ fn run_worker_loop(
                         }
                     }
                 }
+                AudioCommand::Load { track, mode, position } => {
+                    state.status.store(0, Ordering::Relaxed);
+
+                    state.flush_flag.store(true, Ordering::Release);
+                    while state.flush_flag.load(Ordering::Acquire) {
+                        thread::yield_now();
+                    }
+
+                    let Some(path) = track.track.file_path.as_deref() else {
+                        eprintln!("[WORKER] Track sin file_path");
+                        continue;
+                    };
+                    match SymphoniaDecoder::open(path, mode) {
+                        Ok(mut dec) => {
+                            let start = if dec.seek(position).is_ok() { position } else { std::time::Duration::ZERO };
+                            current_decoder = Some(dec);
+                            state.set_position_anchor(start.as_millis() as u32);
+                            state.status.store(2, Ordering::Relaxed);
+                        }
+                        Err(e) => eprintln!("[WORKER] Falla al abrir archivo: {}", e),
+                    }
+                }
                 AudioCommand::Pause => {
                     state.status.store(2, Ordering::Relaxed);
                 }
@@ -199,8 +221,8 @@ fn run_worker_loop(
         }
 
         // EXTRACCIÓN Y LLENADO DEL BUFFER
-        if state.status.load(Ordering::Relaxed) == 1 {
-            if let Some(decoder) = &mut current_decoder {
+        if state.status.load(Ordering::Relaxed) == 1
+            && let Some(decoder) = &mut current_decoder {
                 // Esperamos a tener suficiente espacio libre en el ring buffer.
                 // 16384 es holgado para cualquier chunk de salida del resampler (max ~2048 frames * 2 canales * 2x margen).
                 if producer.slots() >= 16384 {
@@ -236,6 +258,5 @@ fn run_worker_loop(
                     thread::sleep(std::time::Duration::from_millis(5));
                 }
             }
-        }
     }
 }

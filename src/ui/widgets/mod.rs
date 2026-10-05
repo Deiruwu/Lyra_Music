@@ -2,7 +2,6 @@ pub mod track_row;
 pub mod track_row_simple;
 pub mod single_line_text;
 pub mod artist_links;
-pub mod icon_toggle;
 pub mod async_thumbnail;
 pub mod context_menu;
 pub mod confirm_dialog;
@@ -15,3 +14,5 @@ pub mod track_list_builder;
 pub mod track_context_builder;
 pub mod track_list_out_message;
 pub mod download_pill;
+pub mod cover_crop_editor;
+pub mod color_picker; // [playlist-color]

@@ -1,3 +1,4 @@
+use tokio::sync::broadcast;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -55,7 +56,12 @@ impl DiscordPresence {
                             let _ = client.clear_activity();
                         }
 
-                        Err(_) => break,
+                        // Lagged solo significa que se perdieron eventos por
+                        // un pico: reengancharse. Solo Closed termina el loop
+                        // — antes cualquier error mataba la presencia para
+                        // siempre.
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
             })

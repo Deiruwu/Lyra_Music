@@ -1,8 +1,8 @@
-use iced::{Element, Subscription, Task};
+use iced::{Element, Task};
 use crate::microservices::client::MicroserviceClient;
 use crate::model::audio_tech::PlayableTrack;
-use crate::model::{Track, TrackState};
-use crate::ui::search_feature::search_bar::{SearchFilter, SearchInput, SearchMessage, SearchOutMessage};
+use crate::model::{SearchItem, TrackState};
+use crate::ui::search_feature::search_bar::{album_thumb_key, artist_thumb_key, SearchFilter, SearchInput, SearchMessage, SearchOutMessage};
 use crate::ui::utils::thumbnail_cache::{thumb_key, ThumbnailCache};
 
 /// Epoch fijo para este feature. La búsqueda no tiene noción de
@@ -16,7 +16,7 @@ const EPOCH: u64 = 0;
 #[derive(Debug, Clone)]
 pub enum SearchFeatureMessage {
     Ui(SearchMessage),
-    SearchCompleted(Result<Vec<Track>, String>),
+    SearchCompleted(Result<Vec<SearchItem>, String>),
     ThumbnailColorLoaded { key: String, bytes: Vec<u8>, epoch: u64 },
     ThumbnailGrayLoaded  { track_id: String, bytes: Vec<u8>, epoch: u64 },
     DownloadFinished(Result<PlayableTrack, String>),
@@ -26,12 +26,14 @@ pub enum SearchFeatureMessage {
 pub enum SearchFeatureOutMessage {
     Idle,
     TrackReadyToPlay(PlayableTrack),
+    OpenAlbum(String),
+    OpenArtist(String),
 }
 
 pub struct SearchFeature {
     micro_service: MicroserviceClient,
     pub input: SearchInput,
-    pub results: Vec<Track>,
+    pub results: Vec<SearchItem>,
     pub is_searching: bool,
 }
 
@@ -51,15 +53,6 @@ impl SearchFeature {
         }
     }
 
-    pub fn subscription(&self) -> Subscription<SearchFeatureMessage> {
-        let target = if self.input.filter == SearchFilter::Videos { 32.0 } else { 0.0 };
-        if (self.input.thumb_offset - target).abs() > 0.5 {
-            iced::window::frames().map(|_| SearchFeatureMessage::Ui(SearchMessage::Tick))
-        } else {
-            Subscription::none()
-        }
-    }
-
     pub fn update(
         &mut self,
         msg: SearchFeatureMessage,
@@ -69,6 +62,7 @@ impl SearchFeature {
             SearchFeatureMessage::Ui(ui_msg) => {
                 let (task, out_msg) = self.input.update(ui_msg);
                 let mut extra_task = Task::none();
+                let mut feature_out = SearchFeatureOutMessage::Idle;
 
                 match out_msg {
                     SearchOutMessage::RequestSearch(query, filter) => {
@@ -80,14 +74,11 @@ impl SearchFeature {
                             self.results.clear();
 
                             let client = self.micro_service.clone();
-                            let filter_str = match filter {
-                                SearchFilter::Songs  => Some("songs"),
-                                SearchFilter::Videos => Some("videos"),
-                            };
+                            let limit = if filter == SearchFilter::All { 8 } else { 5 };
 
                             extra_task = Task::perform(
                                 async move {
-                                    client.search(&query, Some(5), filter_str).await.map_err(|e| e.to_string())
+                                    client.search_items(&query, Some(limit), filter.as_param()).await.map_err(|e| e.to_string())
                                 },
                                 SearchFeatureMessage::SearchCompleted,
                             );
@@ -119,20 +110,37 @@ impl SearchFeature {
                         );
                     }
 
+                    SearchOutMessage::RequestOpenAlbum(album_id) => feature_out = SearchFeatureOutMessage::OpenAlbum(album_id),
+                    SearchOutMessage::RequestOpenArtist(artist_id) => feature_out = SearchFeatureOutMessage::OpenArtist(artist_id),
+
                     SearchOutMessage::Idle => {}
                 }
 
-                (Task::batch(vec![task.map(SearchFeatureMessage::Ui), extra_task]), SearchFeatureOutMessage::Idle)
+                (Task::batch(vec![task.map(SearchFeatureMessage::Ui), extra_task]), feature_out)
             }
 
             // ── Resultados de búsqueda ────────────────────────────────────────
 
-            SearchFeatureMessage::SearchCompleted(Ok(tracks)) => {
+            SearchFeatureMessage::SearchCompleted(Ok(items)) => {
                 self.is_searching = false;
-                self.results = tracks.clone();
+                self.results = items.clone();
 
-                // Cada track recibe gris si es Partial, color si ya está Cached.
-                let tasks: Vec<Task<_>> = tracks.into_iter().filter_map(|t| {
+                let color_message = |key, bytes, epoch| SearchFeatureMessage::ThumbnailColorLoaded { key, bytes, epoch };
+
+                // Cada track recibe gris si es Partial, color si ya está Cached;
+                // álbumes y artistas siempre a color.
+                let tasks: Vec<Task<_>> = items.into_iter().filter_map(|item| {
+                    let t = match item {
+                        SearchItem::Track(track) => track,
+                        SearchItem::Album(album) => {
+                            let url = album.thumbnail_small?;
+                            return thumbnails.request_color(album_thumb_key(&album.id), url, EPOCH, color_message);
+                        }
+                        SearchItem::Artist(artist) => {
+                            let url = artist.thumbnail_small?;
+                            return thumbnails.request_color(artist_thumb_key(&artist.id), url, EPOCH, color_message);
+                        }
+                    };
                     match t.state {
                         TrackState::Partial => {
                             let url = t.thumbnail_small.clone()?;

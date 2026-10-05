@@ -171,7 +171,7 @@ pub fn playlist_row<'a, Message: Clone + 'a>(
             .padding(Padding { top: spacing::SP_4, bottom: spacing::SP_4, left: spacing::SP_0, right: spacing::SP_0 });
 
         mouse_area(clickable)
-            .on_press(on_select)
+            .on_release(on_select)
             .on_right_press(on_right_click)
             .into()
     }

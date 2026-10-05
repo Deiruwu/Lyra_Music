@@ -1,5 +1,5 @@
 use crate::model::{Album, Artist, TrackState};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +21,12 @@ pub struct Track {
 
     #[serde(default)]
     pub liked: bool, // verificación para saber si se encuentra en favoritos
+
+    /// Reproducciones y última reproducción según el historial local (`play_history`).
+    #[serde(default)]
+    pub play_count: Option<i64>,
+    #[serde(default)]
+    pub last_played_at: Option<NaiveDateTime>,
 
     // ── Relaciones resueltas ──────────────────────────────────────────────────
     pub album: Option<Album>, // JOIN albums ON album_id

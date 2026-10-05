@@ -28,21 +28,13 @@ pub enum TheaterOutMessage {
     Idle,
 }
 
+#[derive(Default)]
 pub struct TheaterPanel {
     lyrics: LyricsPanel,
     current_title: Option<String>,
     current_artists: Vec<Artist>,
 }
 
-impl Default for TheaterPanel {
-    fn default() -> Self {
-        Self {
-            lyrics: LyricsPanel::default(),
-            current_title: None,
-            current_artists: Vec::new(),
-        }
-    }
-}
 
 impl TheaterPanel {
     pub fn update(&mut self, msg: TheaterMessage) -> (Task<TheaterMessage>, TheaterOutMessage) {

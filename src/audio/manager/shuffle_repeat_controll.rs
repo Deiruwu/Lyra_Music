@@ -1,5 +1,7 @@
+use std::sync::atomic::Ordering;
 use crate::audio::manager::manager::{RepeatMode, TrackManager};
 use crate::audio::queue_shuffle;
+use crate::model::Track;
 use uuid::Uuid;
 
 impl TrackManager {
@@ -39,5 +41,23 @@ impl TrackManager {
     /// todavía está vacía.
     pub fn set_shuffle_enabled(&self, enabled: bool) {
         self.playback.lock().unwrap().shuffle_enabled = enabled;
+    }
+
+    pub fn is_radio_enabled(&self) -> bool {
+        self.radio_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Activa/desactiva la radio; al activarla avisa al `RadioWorker` para que rellene ya.
+    pub fn set_radio_enabled(&self, enabled: bool) {
+        self.radio_enabled.store(enabled, Ordering::Relaxed);
+        if enabled {
+            self.broadcast_queue_update();
+        }
+    }
+
+    /// Reproduce `track` sola y activa la radio para que la cola se llene a partir de ella.
+    pub fn start_radio(&self, track: Track) {
+        self.radio_enabled.store(true, Ordering::Relaxed);
+        self.play_context(vec![track], 0);
     }
 }

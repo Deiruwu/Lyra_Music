@@ -11,3 +11,4 @@ pub mod cover_picker;
 pub mod playlist_metadata;
 pub mod row_animator;
 pub mod color;
+pub mod image_fetch;

@@ -38,6 +38,7 @@ pub enum PlayerMessage {
     UiToggleLike(String),
     UiToggleShuffle,
     UiCycleRepeat,
+    UiToggleRadio,
     OpenTrackLink(TrackLink),
     RightClicked,
 }
@@ -52,10 +53,12 @@ pub enum PlayerOutMessage {
     RequestToggleLike(String),
     RequestToggleShuffle,
     RequestCycleRepeat,
+    RequestToggleRadio,
     RequestOpenTrackLink(TrackLink),
     RequestContextMenu,
 }
 
+#[derive(Default)]
 pub struct Player {
     pub current_track: Option<Arc<PlayableTrack>>,
     /// Valor en curso mientras se arrastra el seek bar — la vista usa
@@ -65,11 +68,6 @@ pub struct Player {
     seek_preview: Option<f32>,
 }
 
-impl Default for Player {
-    fn default() -> Self {
-        Self { current_track: None, seek_preview: None }
-    }
-}
 
 impl Player {
     pub fn update(&mut self, msg: PlayerMessage) -> (Task<PlayerMessage>, PlayerOutMessage) {
@@ -99,6 +97,7 @@ impl Player {
             PlayerMessage::UiToggleLike(track_id) => (Task::none(), PlayerOutMessage::RequestToggleLike(track_id)),
             PlayerMessage::UiToggleShuffle   => (Task::none(), PlayerOutMessage::RequestToggleShuffle),
             PlayerMessage::UiCycleRepeat     => (Task::none(), PlayerOutMessage::RequestCycleRepeat),
+            PlayerMessage::UiToggleRadio     => (Task::none(), PlayerOutMessage::RequestToggleRadio),
             PlayerMessage::OpenTrackLink(link) => (Task::none(), PlayerOutMessage::RequestOpenTrackLink(link)),
             PlayerMessage::RightClicked => (Task::none(), PlayerOutMessage::RequestContextMenu),
         }
@@ -111,6 +110,7 @@ impl Player {
         has_history: bool,
         is_shuffled: bool,
         repeat_mode: RepeatMode,
+        is_radio: bool,
     ) -> Element<'_, PlayerMessage> {
         let play_icon = if is_playing {
             icons::icon(Icon::Pause, typography::TEXT_16)
@@ -162,7 +162,17 @@ impl Player {
                 .on_press(PlayerMessage::UiCycleRepeat)
         };
 
-        row![shuffle_button, prev_button, play_button, next_button, repeat_button]
+        let radio_button = {
+            let color = if is_radio { active_color } else { inactive_color };
+            let b = button(
+                icons::icon(Icon::Radio, typography::TEXT_16)
+                    .style(move |_: &Theme| text::Style { color: Some(color) }),
+            )
+                .style(button_style::minimal);
+            if has_track { b.on_press(PlayerMessage::UiToggleRadio) } else { b }
+        };
+
+        row![shuffle_button, prev_button, play_button, next_button, repeat_button, radio_button]
             .spacing(spacing::SP_15)
             .align_y(Alignment::Center)
             .into()
