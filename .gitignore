@@ -11,3 +11,5 @@
 # SQLx
 .sqlx/
 EOF
+# Overrides locales de cargo
+.cargo/
