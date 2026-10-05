@@ -1,15 +1,18 @@
-//! Ajustes (se abre con la tuerca de la barra superior): color de acento y la
-//! transición entre canciones.
+//! Ajustes (se abre con la tuerca de la barra superior): color de acento, la
+//! transición entre canciones y el servidor de música.
 
 use iced::border::rounded;
-use iced::widget::{column, container, row, scrollable, slider, space, text, toggler};
+use iced::widget::{column, container, row, scrollable, slider, space, text, text_input, toggler};
 use iced::{Alignment, Element, Length, Padding, Theme};
 
+use crate::local_server::{self, ServerState};
+use crate::settings::{ServerMode, ServerSettings};
 use crate::ui::accent_picker::{AccentMessage, AccentPicker};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::styles::scrollable as scrollable_style;
 use crate::ui::styles::slider as slider_style;
+use crate::ui::styles::text_input as text_input_style;
 use crate::ui::theme::theme;
 
 const CROSSFADE_MIN_SECONDS: f32 = 1.0;
@@ -17,12 +20,17 @@ const CROSSFADE_MAX_SECONDS: f32 = 12.0;
 const CONTENT_MAX_WIDTH: f32 = 760.0;
 const SLIDER_WIDTH: f32 = 260.0;
 const DESCRIPTION_WIDTH: f32 = 360.0;
+const SERVER_DETAIL_HEIGHT: f32 = 34.0;
+const PORT_INPUT_WIDTH: f32 = 90.0;
 
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
     Accent(AccentMessage),
     CrossfadeToggled(bool),
     CrossfadeSecondsChanged(f32),
+    RemoteServerToggled(bool),
+    ServerHostChanged(String),
+    ServerPortChanged(String),
 }
 
 pub struct SettingsView {
@@ -30,14 +38,19 @@ pub struct SettingsView {
     crossfade_enabled: bool,
     /// Se recuerda aunque la transición esté apagada.
     crossfade_seconds: f32,
+    server: ServerSettings,
+    /// Texto del campo de puerto, que puede no ser un número válido mientras se escribe.
+    port_input: String,
 }
 
 impl SettingsView {
-    pub fn new(crossfade_enabled: bool, crossfade_seconds: f32) -> Self {
+    pub fn new(crossfade_enabled: bool, crossfade_seconds: f32, server: ServerSettings) -> Self {
         Self {
             accent: AccentPicker::default(),
             crossfade_enabled,
             crossfade_seconds: crossfade_seconds.clamp(CROSSFADE_MIN_SECONDS, CROSSFADE_MAX_SECONDS),
+            port_input: server.port.to_string(),
+            server,
         }
     }
 
@@ -61,7 +74,26 @@ impl SettingsView {
                 self.crossfade_seconds = seconds;
                 Some(self.effective_crossfade())
             }
+            SettingsMessage::RemoteServerToggled(remote) => {
+                self.server.mode = if remote { ServerMode::Remote } else { ServerMode::Local };
+                None
+            }
+            SettingsMessage::ServerHostChanged(host) => {
+                self.server.host = host.trim().to_string();
+                None
+            }
+            SettingsMessage::ServerPortChanged(port) => {
+                if let Ok(parsed) = port.parse() {
+                    self.server.port = parsed;
+                }
+                self.port_input = port;
+                None
+            }
         }
+    }
+
+    pub fn server(&self) -> &ServerSettings {
+        &self.server
     }
 
     pub fn crossfade_enabled(&self) -> bool {
@@ -132,10 +164,35 @@ impl SettingsView {
                 .into(),
         );
 
+        let remote = self.server.mode == ServerMode::Remote;
+        let server = section(
+            "Servidor",
+            column![
+                row![
+                    setting_label(
+                        "Servidor remoto",
+                        "Conecta con un track_manager ya desplegado en vez de iniciar uno local. Se aplica al reiniciar atelier.",
+                    ),
+                    space().width(Length::Fill),
+                    toggler(remote)
+                        .on_toggle(SettingsMessage::RemoteServerToggled)
+                        .size(22.0)
+                        .style(switch_style),
+                ]
+                    .align_y(Alignment::Center),
+                container(if remote { self.view_remote_address() } else { view_local_status() })
+                    .height(Length::Fixed(SERVER_DETAIL_HEIGHT))
+                    .align_y(Alignment::Center),
+            ]
+                .spacing(spacing::SP_16)
+                .into(),
+        );
+
         let content = column![
             text("Ajustes").font(SF_PRO).size(typography::TEXT_28).color(theme().content.primary),
             appearance,
             playback,
+            server,
         ]
             .spacing(spacing::SP_24)
             .max_width(CONTENT_MAX_WIDTH);
@@ -145,6 +202,48 @@ impl SettingsView {
             .style(scrollable_style::discreet)
             .into()
     }
+}
+
+impl SettingsView {
+    /// Campos de host y puerto del servidor remoto.
+    fn view_remote_address(&self) -> Element<'_, SettingsMessage> {
+        row![
+            text_input("192.168.1.10", &self.server.host)
+                .on_input(SettingsMessage::ServerHostChanged)
+                .font(SF_PRO)
+                .size(typography::TEXT_13)
+                .padding(Padding { top: spacing::SP_6, bottom: spacing::SP_6, left: spacing::SP_10, right: spacing::SP_10 })
+                .style(text_input_style::field)
+                .width(Length::Fill),
+            text_input("7878", &self.port_input)
+                .on_input(SettingsMessage::ServerPortChanged)
+                .font(SF_PRO)
+                .size(typography::TEXT_13)
+                .padding(Padding { top: spacing::SP_6, bottom: spacing::SP_6, left: spacing::SP_10, right: spacing::SP_10 })
+                .style(text_input_style::field)
+                .width(Length::Fixed(PORT_INPUT_WIDTH)),
+        ]
+            .spacing(spacing::SP_10)
+            .align_y(Alignment::Center)
+            .into()
+    }
+}
+
+/// Estado del track_manager local: instalación y arranque.
+fn view_local_status<'a>() -> Element<'a, SettingsMessage> {
+    let (message, color) = match local_server::state() {
+        ServerState::Starting => ("Iniciando servidor local…".to_string(), theme().content.muted),
+        ServerState::Failed(reason) => (reason, theme().status.error),
+        ServerState::Ready if local_server::is_installed() => (
+            format!("Servidor local activo · {}", local_server::server_root().display()),
+            theme().content.secondary,
+        ),
+        ServerState::Ready => (
+            "Servidor local no instalado: corre scripts/setup-local-server.sh".to_string(),
+            theme().content.muted,
+        ),
+    };
+    text(message).font(SF_PRO).size(typography::TEXT_12).color(color).into()
 }
 
 /// Título de sección y su tarjeta.

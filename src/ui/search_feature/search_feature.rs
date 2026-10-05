@@ -48,15 +48,9 @@ pub struct SearchFeature {
 }
 
 impl SearchFeature {
-    pub fn new() -> Self {
-        let host = std::env::var("TRACK_MANAGER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let port: u16 = std::env::var("TRACK_MANAGER_PORT")
-            .unwrap_or_else(|_| "7878".to_string())
-            .parse()
-            .expect("TRACK_MANAGER_PORT debe ser un número válido");
-
+    pub fn new(micro_service: MicroserviceClient) -> Self {
         Self {
-            micro_service: MicroserviceClient::new(&host, port),
+            micro_service,
             input: SearchInput::default(),
             results: Vec::new(),
             is_searching: false,

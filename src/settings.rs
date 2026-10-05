@@ -25,6 +25,35 @@ pub struct AppSettings {
     pub crossfade_enabled: bool,
     /// Duración de la transición, en segundos (se recuerda aunque esté apagada).
     pub crossfade_seconds: f32,
+    /// Dónde corre track_manager (se aplica al reiniciar).
+    pub server: ServerSettings,
+}
+
+/// Local: atelier lanza su propio track_manager. Remote: se conecta a uno ya desplegado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ServerMode {
+    Local,
+    Remote,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerSettings {
+    pub mode: ServerMode,
+    /// Host y puerto del servidor remoto.
+    pub host: String,
+    pub port: u16,
+}
+
+impl Default for ServerSettings {
+    /// Remoto si el `.env` define `TRACK_MANAGER_HOST`; si no, local.
+    fn default() -> Self {
+        let port = env::var("TRACK_MANAGER_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(7878);
+        match env::var("TRACK_MANAGER_HOST") {
+            Ok(host) if !host.is_empty() => Self { mode: ServerMode::Remote, host, port },
+            _ => Self { mode: ServerMode::Local, host: String::new(), port },
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -41,6 +70,7 @@ impl Default for AppSettings {
             accent_color: None,
             crossfade_enabled: false,
             crossfade_seconds: 6.0,
+            server: ServerSettings::default(),
         }
     }
 }

@@ -1,6 +1,7 @@
 use iced::{Color, Element, Padding, Task};
 use iced::widget::image::Handle;
 use iced::widget::{button, text, Id};
+use crate::local_server::{self, ServerState};
 use crate::model::Track;
 use crate::ui::assets::icons::Icon;
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
@@ -169,7 +170,12 @@ impl ExplorerView {
         let band = cover_palette::band_tint(base_color);
 
         if rendered_tracks.is_empty() {
-            return empty_page(header, toolbar, "No se encontraron pistas que coincidan con tu búsqueda.", band);
+            let message = match local_server::state() {
+                ServerState::Starting => "Iniciando servidor local…".to_string(),
+                ServerState::Failed(reason) => reason,
+                ServerState::Ready => "No se encontraron pistas que coincidan con tu búsqueda.".to_string(),
+            };
+            return empty_page(header, toolbar, message, band);
         }
 
         TrackBuilder::new(

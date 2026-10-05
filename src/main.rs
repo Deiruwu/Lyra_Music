@@ -7,6 +7,7 @@ pub mod db;
 pub mod utils;
 mod settings;
 mod session;
+mod local_server;
 
 use std::sync::{Arc, LazyLock, OnceLock};
 use futures::SinkExt;
@@ -28,7 +29,7 @@ use crate::db::followed_artist_manager::FollowedArtistManager;
 use crate::db::artist_tag_manager::ArtistTagManager;
 use crate::audio::play_history_recorder::PlayHistoryRecorder;
 use crate::microservices::client::MicroserviceClient;
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, ServerMode};
 use crate::session::PlaybackSession;
 use crate::model::Mix;
 use crate::audio::track_event::TrackEvent;
@@ -160,13 +161,10 @@ impl App {
         let tray_flags = tray::spawn_tray(Arc::clone(&manager));
         TRAY_FLAGS.set(Arc::clone(&tray_flags)).ok();
 
-        let client = Arc::new(MicroserviceClient::new(
-            &std::env::var("TRACK_MANAGER_HOST").unwrap_or("127.0.0.1".into()),
-            std::env::var("TRACK_MANAGER_PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(7878),
-        ));
+        let client = Arc::new(match settings.server.mode {
+            ServerMode::Local => MicroserviceClient::new("127.0.0.1", local_server::LOCAL_PORT),
+            ServerMode::Remote => MicroserviceClient::new(&settings.server.host, settings.server.port),
+        });
 
         MprisServer::spawn(Arc::clone(&manager));
         DiscordPresence::spawn(Arc::clone(&manager));
@@ -178,6 +176,7 @@ impl App {
         let library_browser_client = client.as_ref().clone();
         let library_browser_manager = Arc::clone(&manager);
         let download_feature = DownloadFeature::new(Arc::clone(&client));
+        let client_for_search = client.as_ref().clone();
 
         let radio = RadioWorker::new(Arc::clone(&manager), client).spawn();
         radio.set_queue_target(15);
@@ -235,14 +234,14 @@ impl App {
             crate::ui::theme::set_accent(accent);
         }
 
-        let mut search_feature = SearchFeature::new();
+        let mut search_feature = SearchFeature::new(client_for_search);
         search_feature.input.filter = settings.search_filter;
 
         let mut app = Self {
             _engine: engine,
             search_feature,
             settings_open: false,
-            settings_view: SettingsView::new(settings.crossfade_enabled, settings.crossfade_seconds),
+            settings_view: SettingsView::new(settings.crossfade_enabled, settings.crossfade_seconds, settings.server.clone()),
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
             download_feature,
             sidebar_feature,
@@ -366,6 +365,7 @@ impl App {
             AppMessage::Quit => {
                 let _ = self.current_settings().save();
                 let _ = self.current_session().save();
+                local_server::shutdown();
                 iced::exit()
             }
 
@@ -780,6 +780,7 @@ impl App {
             remix_playlists: self.sidebar_feature.coordinator.remix_view.enabled.clone(),
             crossfade_enabled: self.settings_view.crossfade_enabled(),
             crossfade_seconds: self.settings_view.crossfade_seconds(),
+            server: self.settings_view.server().clone(),
             accent_color: {
                 let accent = theme().accent.primary;
                 (accent != crate::ui::theme::default_accent()).then(|| crate::ui::theme::to_hex(accent))
@@ -1251,6 +1252,10 @@ fn main() -> iced::Result {
     }
 
     let _ = dotenvy::dotenv();
+
+    if AppSettings::load().server.mode == ServerMode::Local {
+        local_server::start();
+    }
 
     iced::daemon(App::init, App::update, App::view)
         .subscription(App::subscription)

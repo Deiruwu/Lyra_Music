@@ -101,7 +101,7 @@ pub fn filter_input<'a, Message: Clone + 'a>(
 pub fn empty_page<'a, Message: 'a>(
     header: Element<'a, Message>,
     toolbar: Element<'a, Message>,
-    message: &'a str,
+    message: impl Into<String>,
     band: Color,
 ) -> Element<'a, Message> {
     let below = column![
