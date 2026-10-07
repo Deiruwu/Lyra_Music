@@ -73,6 +73,9 @@ pub enum Icon {
     #[strum(serialize = "\u{f013}")]
     Settings,
 
+    #[strum(serialize = "\u{f0004}")]
+    Account,
+
     // Track manager
     #[strum(serialize = "\u{f0ad}")]
     Tools,

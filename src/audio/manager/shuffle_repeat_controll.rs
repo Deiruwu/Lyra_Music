@@ -8,7 +8,10 @@ impl TrackManager {
     pub fn toggle_shuffle(&self) {
         let mut ps = self.playback.lock().unwrap();
 
-        if ps.shuffle_enabled {
+        if ps.shuffle_enabled && ps.link.is_some() && !ps.link_suspended() {
+            ps.shuffle_enabled = false;
+            ps.reconcile_link(true);
+        } else if ps.shuffle_enabled {
             let current = std::mem::take(&mut ps.queue);
             let order: Vec<Uuid> = ps.original_order.iter().cloned().collect();
             ps.queue = queue_shuffle::restore_order(current, &order);

@@ -7,8 +7,13 @@ use std::path::PathBuf;
 /// Vive como util suelta (no dentro de CoverManager ni de la UI) porque es
 /// I/O de sistema puro: no sabe nada de playlists, DB ni iced.
 pub async fn pick_cover_image() -> Option<PathBuf> {
+    pick_image("Elegir portada de playlist").await
+}
+
+/// Diálogo nativo para elegir una imagen, con `title` en la ventana.
+pub async fn pick_image(title: &str) -> Option<PathBuf> {
     rfd::AsyncFileDialog::new()
-        .set_title("Elegir portada de playlist")
+        .set_title(title)
         .add_filter("Imágenes", &["png", "jpg", "jpeg", "webp", "bmp", "gif"])
         .pick_file()
         .await

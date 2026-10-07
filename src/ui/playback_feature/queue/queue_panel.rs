@@ -117,6 +117,10 @@ pub enum QueueOutMessage {
     RequestRemoveHistory(usize),
     RequestMoveToHistory(usize),
     RequestMoveToQueue(usize),
+    /// Soltada sobre la que suena: la de la cola pasa a sonar y la actual queda siguiente.
+    RequestPlayQueuedOverCurrent(usize),
+    /// Igual, desde el historial (`steps_back`).
+    RequestPlayHistoryOverCurrent(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -244,6 +248,17 @@ impl QueuePanel {
         } else {
             0.0
         }
+    }
+
+    /// El arrastre está sobre la fila de la que suena.
+    fn drag_over_current(&self) -> bool {
+        let Some(drag) = &self.drag else { return false };
+        if self.current_track.is_none() {
+            return false;
+        }
+        let top = self.row_y(self.history.len());
+        let queue_start = self.row_y(self.queue_start_offset());
+        drag.cursor_y >= top && drag.cursor_y < queue_start
     }
 
     fn row_y(&self, merged_index: usize) -> f32 {
@@ -420,6 +435,7 @@ impl QueuePanel {
                     local_y,
                     AUTOSCROLL_ZONE_PX,
                     AUTOSCROLL_MAX_SPEED_PX,
+                    0.0,
                 ) else {
                     return (Task::none(), QueueOutMessage::Idle);
                 };
@@ -534,6 +550,7 @@ impl QueuePanel {
             QueueMessage::DragReleased => {
                 self.pending_drag = None;
 
+                let over_current = self.drag_over_current();
                 let Some(drag) = self.drag.take() else {
                     return (Task::none(), QueueOutMessage::Idle);
                 };
@@ -547,18 +564,22 @@ impl QueuePanel {
                             let id = Self::slot_id_of(slot);
                             self.animator.snap_to_target(&id, drag.current_index);
                         }
-                        if crossed_into_queue {
+                        if over_current {
+                            (Task::none(), QueueOutMessage::RequestPlayQueuedOverCurrent(source_index))
+                        } else if crossed_into_queue {
                             if source_index == drag.current_index {
                                 (Task::none(), QueueOutMessage::Idle)
                             } else {
                                 (Task::none(), QueueOutMessage::RequestMove(source_index, drag.current_index))
                             }
                         } else {
-                            (Task::none(), QueueOutMessage::RequestMoveToHistory(drag.current_index))
+                            (Task::none(), QueueOutMessage::RequestMoveToHistory(source_index))
                         }
                     }
                     DragOrigin::History(steps_back) => {
-                        if crossed_into_queue {
+                        if over_current {
+                            (Task::none(), QueueOutMessage::RequestPlayHistoryOverCurrent(steps_back))
+                        } else if crossed_into_queue {
                             (Task::none(), QueueOutMessage::RequestMoveToQueue(steps_back))
                         } else {
                             (Task::none(), QueueOutMessage::Idle)
@@ -665,6 +686,17 @@ impl QueuePanel {
                 );
                 let y = self.row_y(index);
                 layers.push(container(row).width(Length::Fill).padding(Padding::new(0.0).top(y)).into());
+
+                if self.drag_over_current() {
+                    let target = container(space())
+                        .width(Length::Fill)
+                        .height(Length::Fixed(ROW_HEIGHT))
+                        .style(|_theme: &Theme| container::Style {
+                            border: iced::border::rounded(radii::R_6).color(theme().accent.primary).width(1.5),
+                            ..Default::default()
+                        });
+                    layers.push(container(target).width(Length::Fill).padding(Padding::new(0.0).top(y)).into());
+                }
 
                 // Separador fino arriba del actual (solo si hay historial
                 // arriba de él) — la única distinción extra que lleva,

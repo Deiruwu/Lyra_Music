@@ -334,12 +334,20 @@ impl CatalogStore {
 
     pub fn delete_track(&mut self, track_id: &str) {
         self.all_tracks.retain(|t| t.id != track_id);
+        for ids in self.playlist_order.values_mut() {
+            ids.retain(|(id, _)| id != track_id);
+        }
+        self.liked_order.retain(|id| id != track_id);
         self.rebuild_index();
 
         let client = Arc::clone(&self.client);
+        let playlist_manager = Arc::clone(&self.playlist_manager);
         let id_clone = track_id.to_string();
 
         tokio::spawn(async move {
+            if let Err(e) = playlist_manager.remove_track_everywhere(&id_clone).await {
+                eprintln!("[CatalogStore] ERROR: No se pudo sacar {} de las playlists: {}", id_clone, e);
+            }
             match client.delete(&id_clone).await {
                 Ok(_) => {
                     println!("[CatalogStore] Pista {} eliminada de la BD remota.", id_clone);
@@ -1125,6 +1133,7 @@ impl CatalogStore {
                 track.liked = previous.liked;
                 track.play_count = previous.play_count;
                 track.last_played_at = previous.last_played_at;
+                keep_known_fields(&mut track, previous);
                 self.all_tracks[idx] = track;
             }
             None => {
@@ -1145,6 +1154,26 @@ impl CatalogStore {
             .map(|(idx, t)| (t.id.clone(), idx))
             .collect();
         self.bump_version();
+    }
+}
+
+/// Completa con `previous` los campos que `track` trae vacíos.
+fn keep_known_fields(track: &mut Track, previous: &Track) {
+    fn keep<T: Clone>(field: &mut Option<T>, previous: &Option<T>) {
+        if field.is_none() {
+            field.clone_from(previous);
+        }
+    }
+
+    keep(&mut track.added_at, &previous.added_at);
+    keep(&mut track.bpm, &previous.bpm);
+    keep(&mut track.camelot_key, &previous.camelot_key);
+    keep(&mut track.file_path, &previous.file_path);
+    keep(&mut track.thumbnail_small, &previous.thumbnail_small);
+    keep(&mut track.thumbnail_large, &previous.thumbnail_large);
+    keep(&mut track.album, &previous.album);
+    if track.artists.is_empty() {
+        track.artists.clone_from(&previous.artists);
     }
 }
 

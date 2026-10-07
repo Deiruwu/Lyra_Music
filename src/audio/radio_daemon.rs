@@ -95,6 +95,11 @@ impl RadioWorker {
     // ── Lógica de relleno ─────────────────────────────────────────────────────
 
     async fn fill_queue(&self) {
+        // La playlist ligada es la que llena la cola mientras le queden canciones.
+        if self.manager.has_linked_pending() {
+            return;
+        }
+
         // El track actual se fija antes de emitir eventos, así que siempre es
         // la semilla correcta sin importar si llega antes QueueChanged o TrackChanged.
         let current_seed = self.manager

@@ -182,6 +182,15 @@ impl PlaylistManager {
         Ok(())
     }
 
+    /// Saca un track de todas las playlists, incluida la de favoritos.
+    pub async fn remove_track_everywhere(&self, track_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM playlist_track WHERE track_id = ?")
+            .bind(track_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Actualiza la posición de un track.
     pub async fn update_position(&self, playlist_id: &str, track_id: &str, new_position: f64) -> Result<(), sqlx::Error> {
         sqlx::query!(

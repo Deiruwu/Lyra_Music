@@ -15,6 +15,7 @@ use crate::audio::engine::AudioEngine;
 use crate::audio::manager::error_mananger::ManagerError;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
 use crate::audio::queue_shuffle;
+use crate::audio::manager::playlist_link::PlaylistLink;
 
 pub(super) const HISTORY_CAP: usize = 100;
 
@@ -27,11 +28,18 @@ pub(super) const HISTORY_CAP: usize = 100;
 pub struct QueueSlot {
     pub id: Uuid,
     pub track: Arc<Track>,
+    /// Encolada a mano (no viene del contexto que se está reproduciendo).
+    pub manual: bool,
 }
 
 impl QueueSlot {
     pub fn new(track: Arc<Track>) -> Self {
-        Self { id: Uuid::new_v4(), track }
+        Self { id: Uuid::new_v4(), track, manual: false }
+    }
+
+    /// Slot encolado a mano por el usuario.
+    pub fn manual(track: Arc<Track>) -> Self {
+        Self { id: Uuid::new_v4(), track, manual: true }
     }
 }
 
@@ -69,10 +77,12 @@ pub(super) struct PlaybackState {
     pub(super) repeat_mode: RepeatMode,
     pub(super) shuffle_enabled: bool,
     pub(super) original_order: VecDeque<Uuid>,
+    /// Playlist a la que está ligada la cola, si hay.
+    pub(super) link: Option<PlaylistLink>,
 }
 
 impl PlaybackState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             current_track: None,
             queue: VecDeque::new(),
@@ -81,6 +91,7 @@ impl PlaybackState {
             repeat_mode: RepeatMode::Off,
             shuffle_enabled: false,
             original_order: VecDeque::new(),
+            link: None,
         }
     }
 
@@ -175,6 +186,19 @@ impl PlaybackState {
             push_to_history_inner(&mut self.history, current.track.clone());
         }
         self.auto_advance = true;
+    }
+
+    /// Slot para un track que vuelve a la cola: manual si no es de la playlist ligada.
+    pub(super) fn returning_slot(&self, track: Arc<Track>) -> QueueSlot {
+        let manual = self.link.as_ref().is_some_and(|link| !link.contains(&track.id));
+        QueueSlot { id: Uuid::new_v4(), track, manual }
+    }
+
+    /// Devuelve la que suena al frente de la cola, sin archivarla.
+    pub(super) fn requeue_current_front(&mut self) {
+        let Some(current) = self.current_track.take() else { return };
+        let slot = self.returning_slot(Arc::new(current.track.clone()));
+        self.queue_push(slot, true);
     }
 
     pub(super) fn clear_current_to_history(&mut self) {
@@ -282,8 +306,9 @@ impl TrackManager {
                         if let Some(playable) = prepared.take() {
                             {
                                 let mut ps = supervisor_playback.lock().unwrap();
-                                ps.take_queued(&playable.track.id);
+                                let manual = ps.take_queued(&playable.track.id).is_some_and(|slot| slot.manual);
                                 ps.advance_to(Arc::clone(&playable));
+                                ps.track_started(&playable.track.id, manual);
                             }
                             if let Some(position_ms) = position_ms {
                                 supervisor_state.set_position_anchor(position_ms);
@@ -334,10 +359,7 @@ impl TrackManager {
                             continue;
                         }
 
-                    if ps.queue.is_empty() && ps.repeat_mode == RepeatMode::Queue && !ps.history.is_empty() {
-                        let replay: Vec<QueueSlot> = ps.history.drain(..).map(|t| QueueSlot::new(Arc::new(t))).collect();
-                        ps.refill_queue(replay);
-                    }
+                    ps.refill_for_repeat();
 
                     let Some(next_slot) = ps.pop_front_tracked() else {
                         ps.clear_current_to_history();
@@ -366,6 +388,7 @@ impl TrackManager {
                     };
 
                     ps.advance_to(Arc::clone(&playable));
+                    ps.track_started(&next_slot.track.id, next_slot.manual);
                     drop(ps);
 
                     let _ = event_tx_supervisor.send(TrackEvent::TrackChanged(Arc::clone(&playable)));
@@ -407,7 +430,7 @@ impl TrackManager {
         I: IntoIterator<Item = Track>,
         I::IntoIter: DoubleEndedIterator,
     {
-        let slots_iter = tracks.into_iter().map(|t| QueueSlot::new(Arc::new(t)));
+        let slots_iter = tracks.into_iter().map(|t| QueueSlot::manual(Arc::new(t)));
         let mut added_any = false;
 
         {
@@ -459,11 +482,7 @@ impl TrackManager {
                 }
             }
 
-            if ps.queue.is_empty() && ps.repeat_mode == RepeatMode::Queue && !ps.history.is_empty() {
-                let replay: Vec<QueueSlot> = ps.history.drain(..).map(|t| QueueSlot::new(Arc::new(t))).collect();
-                ps.refill_queue(replay);
-            }
-
+            ps.refill_for_repeat();
             ps.pop_front_tracked()
         };
 
@@ -492,6 +511,7 @@ impl TrackManager {
         {
             let mut ps = self.playback.lock().unwrap();
             ps.advance_to(Arc::clone(&playable));
+            ps.track_started(&next_slot.track.id, next_slot.manual);
         }
 
         let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&playable)));

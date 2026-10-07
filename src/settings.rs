@@ -27,6 +27,8 @@ pub struct AppSettings {
     pub crossfade_seconds: f32,
     /// Dónde corre track_manager (se aplica al reiniciar).
     pub server: ServerSettings,
+    /// Nombre del perfil (la foto vive aparte, en `ui::profile::photo_path`).
+    pub profile_name: Option<String>,
 }
 
 /// Local: atelier lanza su propio track_manager. Remote: se conecta a uno ya desplegado.
@@ -71,6 +73,7 @@ impl Default for AppSettings {
             crossfade_enabled: false,
             crossfade_seconds: 6.0,
             server: ServerSettings::default(),
+            profile_name: None,
         }
     }
 }

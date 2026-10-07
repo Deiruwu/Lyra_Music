@@ -7,7 +7,7 @@ use crate::ui::views::playlist_adder::{AdderMessage, AdderOutMessage, PlaylistAd
 use crate::ui::views::catalog_store::CatalogStore;
 use crate::ui::views::states_view::{ListAction, TrackViewState};
 use crate::ui::widgets::playlist_header::{play_button, playlist_header, HeaderCover, PlaylistHeaderData, TitleEdit, EDGE_HEADER_HEIGHT, RENAME_INPUT_ID};
-use crate::ui::widgets::track_list_builder::{TrackBuilder, TrackEvent};
+use crate::ui::widgets::track_list_builder::{TrackBuilder, TrackEvent, COLUMN_HEADER_HEIGHT};
 use crate::ui::utils::async_thumbnail::AsyncThumbnail;
 use crate::ui::utils::row_animator::RowAnimator;
 use crate::ui::cover_palette;
@@ -232,6 +232,11 @@ impl PlaylistView {
                     self.sync_row_animator(rendered_tracks, Instant::now());
                 }
 
+                // Arrastrando, salir de la tabla (p. ej. por los títulos fijos) conserva la última posición.
+                if matches!(event, TrackEvent::ViewportExited) && self.drag_state.is_some() {
+                    return (task, out);
+                }
+
                 let action = self.list.process_event(event.clone(), rendered_tracks);
 
                 out = match action {
@@ -419,7 +424,7 @@ impl PlaylistView {
             PlaylistMessage::AutoScrollTick => {
                 if self.drag_state.is_some()
                     && let Some(pos) = self.list.mouse_position
-                        && let Some(delta_y) = self.list.scroll.autoscroll_delta(pos.y, 50.0, 18.0) {
+                        && let Some(delta_y) = self.list.scroll.autoscroll_delta(pos.y, 50.0, 18.0, self.pinned_titles_height()) {
 
                             let max_offset = (self.list.rows_offset + rendered_tracks.len() as f32 * DRAG_ROW_HEIGHT
                                 - self.list.scroll.viewport_height)
@@ -559,6 +564,12 @@ impl PlaylistView {
         };
 
         main
+    }
+
+    /// Alto de los títulos de columna cuando quedan fijos arriba de la tabla.
+    fn pinned_titles_height(&self) -> f32 {
+        let pinned_from = self.list.rows_offset - COLUMN_HEADER_HEIGHT;
+        if self.list.scroll.offset_y >= pinned_from { COLUMN_HEADER_HEIGHT } else { 0.0 }
     }
 
     pub fn is_adder_open(&self) -> bool {

@@ -1,13 +1,21 @@
-//! Ajustes (se abre con la tuerca de la barra superior): color de acento, la
-//! transición entre canciones y el servidor de música.
+//! Ajustes (se abre con el avatar de la barra superior): perfil, color de
+//! acento, la transición entre canciones y el servidor de música.
+
+use std::path::PathBuf;
 
 use iced::border::rounded;
-use iced::widget::{column, container, row, scrollable, slider, space, text, text_input, toggler};
-use iced::{Alignment, Element, Length, Padding, Theme};
+use iced::widget::image::Handle;
+use iced::widget::{button, column, container, row, scrollable, slider, space, text, text_input, toggler};
+use iced::{Alignment, Element, Length, Padding, Task, Theme};
 
 use crate::local_server::{self, ServerState};
 use crate::settings::{ServerMode, ServerSettings};
 use crate::ui::accent_picker::{AccentMessage, AccentPicker};
+use crate::ui::profile;
+use crate::ui::styles::button as button_style;
+use crate::ui::utils::cover_picker::pick_image;
+use crate::ui::utils::image::load_crop_preview;
+use crate::ui::widgets::cover_crop_editor::{CoverCropEditor, CropEditorMessage, CropEditorOutcome};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::styles::scrollable as scrollable_style;
@@ -22,6 +30,9 @@ const SLIDER_WIDTH: f32 = 260.0;
 const DESCRIPTION_WIDTH: f32 = 360.0;
 const SERVER_DETAIL_HEIGHT: f32 = 34.0;
 const PORT_INPUT_WIDTH: f32 = 90.0;
+const PROFILE_AVATAR_SIZE: f32 = 88.0;
+const NAME_INPUT_WIDTH: f32 = 260.0;
+const CROP_PREVIEW_MAX_SIDE: u32 = 1024;
 
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
@@ -31,6 +42,13 @@ pub enum SettingsMessage {
     RemoteServerToggled(bool),
     ServerHostChanged(String),
     ServerPortChanged(String),
+    ProfileNameChanged(String),
+    PickPhoto,
+    PhotoPicked(Option<PathBuf>),
+    PhotoPreviewLoaded(PathBuf, Result<(Vec<u8>, u32, u32), String>),
+    PhotoCrop(CropEditorMessage),
+    PhotoSaved(Result<Vec<u8>, String>),
+    RemovePhoto,
 }
 
 pub struct SettingsView {
@@ -41,16 +59,22 @@ pub struct SettingsView {
     server: ServerSettings,
     /// Texto del campo de puerto, que puede no ser un número válido mientras se escribe.
     port_input: String,
+    profile_name: String,
+    photo: Option<Handle>,
+    photo_crop: Option<CoverCropEditor>,
 }
 
 impl SettingsView {
-    pub fn new(crossfade_enabled: bool, crossfade_seconds: f32, server: ServerSettings) -> Self {
+    pub fn new(crossfade_enabled: bool, crossfade_seconds: f32, server: ServerSettings, profile_name: Option<String>) -> Self {
         Self {
             accent: AccentPicker::default(),
             crossfade_enabled,
             crossfade_seconds: crossfade_seconds.clamp(CROSSFADE_MIN_SECONDS, CROSSFADE_MAX_SECONDS),
             port_input: server.port.to_string(),
             server,
+            profile_name: profile_name.unwrap_or_default(),
+            photo: profile::load_photo(),
+            photo_crop: None,
         }
     }
 
@@ -59,37 +83,112 @@ impl SettingsView {
         self.accent.sync_with_theme();
     }
 
-    /// Aplica el mensaje; si cambió la transición, devuelve su duración efectiva (0 = apagada).
-    pub fn update(&mut self, message: SettingsMessage) -> Option<f32> {
+    /// Aplica el mensaje; si cambió la transición, devuelve también su duración efectiva (0 = apagada).
+    pub fn update(&mut self, message: SettingsMessage) -> (Task<SettingsMessage>, Option<f32>) {
         match message {
-            SettingsMessage::Accent(message) => {
-                self.accent.update(message);
-                None
-            }
             SettingsMessage::CrossfadeToggled(enabled) => {
                 self.crossfade_enabled = enabled;
-                Some(self.effective_crossfade())
+                (Task::none(), Some(self.effective_crossfade()))
             }
             SettingsMessage::CrossfadeSecondsChanged(seconds) => {
                 self.crossfade_seconds = seconds;
-                Some(self.effective_crossfade())
+                (Task::none(), Some(self.effective_crossfade()))
             }
+            other => (self.update_other(other), None),
+        }
+    }
+
+    fn update_other(&mut self, message: SettingsMessage) -> Task<SettingsMessage> {
+        match message {
+            SettingsMessage::Accent(message) => {
+                self.accent.update(message);
+            }
+            SettingsMessage::CrossfadeToggled(_) | SettingsMessage::CrossfadeSecondsChanged(_) => {}
+            SettingsMessage::ProfileNameChanged(name) => self.profile_name = name,
+            SettingsMessage::PickPhoto => {
+                return Task::perform(pick_image("Elegir foto de perfil"), SettingsMessage::PhotoPicked);
+            }
+            SettingsMessage::PhotoPicked(Some(path)) => {
+                return Task::perform(
+                    {
+                        let path = path.clone();
+                        async move {
+                            tokio::task::spawn_blocking(move || load_crop_preview(&path, CROP_PREVIEW_MAX_SIDE))
+                                .await
+                                .unwrap_or_else(|e| Err(e.to_string()))
+                        }
+                    },
+                    move |result| SettingsMessage::PhotoPreviewLoaded(path.clone(), result),
+                );
+            }
+            SettingsMessage::PhotoPicked(None) => {}
+            SettingsMessage::PhotoPreviewLoaded(path, Ok((preview, width, height))) => {
+                self.photo_crop = Some(
+                    CoverCropEditor::new("profile".to_string(), path, preview, width, height).with_title("Recortar foto de perfil"),
+                );
+            }
+            SettingsMessage::PhotoPreviewLoaded(path, Err(e)) => {
+                eprintln!("No se pudo abrir la foto {}: {e}", path.display());
+            }
+            SettingsMessage::PhotoCrop(message) => {
+                let Some(editor) = &mut self.photo_crop else { return Task::none() };
+                match editor.update(message) {
+                    CropEditorOutcome::Editing => {}
+                    CropEditorOutcome::Cancel => self.photo_crop = None,
+                    CropEditorOutcome::Save { source_path, region, .. } => {
+                        self.photo_crop = None;
+                        return Task::perform(
+                            async move {
+                                tokio::task::spawn_blocking(move || profile::save_photo(&source_path, region))
+                                    .await
+                                    .unwrap_or_else(|e| Err(e.to_string()))
+                            },
+                            SettingsMessage::PhotoSaved,
+                        );
+                    }
+                }
+            }
+            SettingsMessage::PhotoSaved(Ok(bytes)) => self.photo = Some(Handle::from_bytes(bytes)),
+            SettingsMessage::PhotoSaved(Err(e)) => eprintln!("No se pudo guardar la foto de perfil: {e}"),
+            SettingsMessage::RemovePhoto => match profile::remove_photo() {
+                Ok(()) => self.photo = None,
+                Err(e) => eprintln!("No se pudo quitar la foto de perfil: {e}"),
+            },
             SettingsMessage::RemoteServerToggled(remote) => {
                 self.server.mode = if remote { ServerMode::Remote } else { ServerMode::Local };
-                None
             }
             SettingsMessage::ServerHostChanged(host) => {
                 self.server.host = host.trim().to_string();
-                None
             }
             SettingsMessage::ServerPortChanged(port) => {
                 if let Ok(parsed) = port.parse() {
                     self.server.port = parsed;
                 }
                 self.port_input = port;
-                None
             }
         }
+        Task::none()
+    }
+
+    /// Nombre de perfil (`None` si está vacío).
+    pub fn profile_name(&self) -> Option<String> {
+        let name = self.profile_name.trim();
+        (!name.is_empty()).then(|| name.to_string())
+    }
+
+    /// Avatar de la barra superior.
+    pub fn avatar<'a, Message: 'a>(&self, size: f32) -> Element<'a, Message> {
+        profile::avatar(self.photo.as_ref(), &self.profile_name, size)
+    }
+
+    /// Editor de recorte de la foto, si está abierto.
+    pub fn view_photo_crop(&self) -> Option<Element<'_, SettingsMessage>> {
+        self.photo_crop.as_ref().map(|editor| editor.view().map(SettingsMessage::PhotoCrop))
+    }
+
+    /// Cierra el editor de recorte; `true` si estaba abierto.
+    pub fn cancel_photo_crop(&mut self) -> bool {
+        self.photo_crop.take().is_some()
     }
 
     pub fn server(&self) -> &ServerSettings {
@@ -110,6 +209,8 @@ impl SettingsView {
     }
 
     pub fn view(&self) -> Element<'_, SettingsMessage> {
+        let profile = section("Perfil", self.view_profile());
+
         let appearance = section(
             "Apariencia",
             row![
@@ -190,6 +291,7 @@ impl SettingsView {
 
         let content = column![
             text("Ajustes").font(SF_PRO).size(typography::TEXT_28).color(theme().content.primary),
+            profile,
             appearance,
             playback,
             server,
@@ -205,6 +307,37 @@ impl SettingsView {
 }
 
 impl SettingsView {
+    /// Foto grande, nombre y botones para cambiar o quitar la foto.
+    fn view_profile(&self) -> Element<'_, SettingsMessage> {
+        let action = |label: &'static str, message| {
+            button(text(label).font(SF_PRO).size(typography::TEXT_13).color(theme().content.primary))
+                .style(button_style::context_menu_item)
+                .padding(Padding { top: spacing::SP_6, bottom: spacing::SP_6, left: spacing::SP_12, right: spacing::SP_12 })
+                .on_press(message)
+        };
+        let change_label = if self.photo.is_some() { "Cambiar foto" } else { "Elegir foto" };
+        let mut actions = row![action(change_label, SettingsMessage::PickPhoto)].spacing(spacing::SP_8);
+        if self.photo.is_some() {
+            actions = actions.push(action("Quitar foto", SettingsMessage::RemovePhoto));
+        }
+
+        let name = text_input("Tu nombre", &self.profile_name)
+            .on_input(SettingsMessage::ProfileNameChanged)
+            .font(SF_PRO)
+            .size(typography::TEXT_16)
+            .padding(Padding { top: spacing::SP_6, bottom: spacing::SP_6, left: spacing::SP_10, right: spacing::SP_10 })
+            .style(text_input_style::field)
+            .width(Length::Fixed(NAME_INPUT_WIDTH));
+
+        row![
+            profile::avatar(self.photo.as_ref(), &self.profile_name, PROFILE_AVATAR_SIZE),
+            column![name, actions].spacing(spacing::SP_12),
+        ]
+            .spacing(spacing::SP_20)
+            .align_y(Alignment::Center)
+            .into()
+    }
+
     /// Campos de host y puerto del servidor remoto.
     fn view_remote_address(&self) -> Element<'_, SettingsMessage> {
         row![

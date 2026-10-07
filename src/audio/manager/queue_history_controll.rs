@@ -31,7 +31,7 @@ impl TrackManager {
         }
         let index = ps.history.len() - steps_back;
         let track = ps.history.remove(index).unwrap();
-        ps.queue_push(QueueSlot::new(Arc::new(track)), to_front);
+        ps.queue_push(QueueSlot::manual(Arc::new(track)), to_front);
         drop(ps);
         self.broadcast_queue_update();
         Ok(())

@@ -4,6 +4,18 @@ use musichub_client::{MicroserviceClient as HubClient, Request};
 pub use musichub_client::MicroserviceError;
 
 
+/// Mensaje para mostrar en pantalla; `not_found` cuando el servidor no encontró lo pedido.
+pub fn user_message(error: &MicroserviceError, not_found: &str) -> String {
+    eprintln!("[CLIENT] {error}");
+    match error {
+        MicroserviceError::ServiceError(_) => not_found.to_string(),
+        MicroserviceError::ConnectionFailed(_) | MicroserviceError::IoError(_) => {
+            "No se pudo conectar con el servidor de música".to_string()
+        }
+        MicroserviceError::InvalidResponse(_) => "El servidor respondió algo que no se pudo leer".to_string(),
+    }
+}
+
 #[derive(Clone)]
 pub struct MicroserviceClient {
     inner: HubClient,

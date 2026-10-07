@@ -329,6 +329,16 @@ impl PlaybackFeature {
                             eprintln!("Error: {}", e);
                         }
                     }
+                    QueueOutMessage::RequestPlayQueuedOverCurrent(index) => {
+                        if let Err(e) = self.manager.play_queued_over_current(index) {
+                            eprintln!("Error: {}", e);
+                        }
+                    }
+                    QueueOutMessage::RequestPlayHistoryOverCurrent(steps_back) => {
+                        if let Err(e) = self.manager.play_history_over_current(steps_back) {
+                            eprintln!("Error: {}", e);
+                        }
+                    }
                     QueueOutMessage::Idle                  => {}
                 }
 

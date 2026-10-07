@@ -1,5 +1,6 @@
 pub mod accent_picker;
 pub mod settings_view;
+pub mod profile;
 pub mod styles;
 pub mod theme;
 pub mod utils;

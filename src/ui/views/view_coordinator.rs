@@ -182,6 +182,8 @@ pub struct ViewCoordinator {
     content_visible: bool,
     /// Canciones bajo el cursor en lo que tapa la vista activa (artista, álbum, mezcla).
     external_drag_candidate: Option<Vec<Track>>,
+    /// Playlist y versión del catálogo con las que se sincronizó la cola ligada.
+    link_synced: Option<(String, u64)>,
 }
 
 /// Resultado de agregar canciones a una playlist, para el letrero de confirmación.
@@ -252,6 +254,7 @@ impl ViewCoordinator {
             cursor: iced::Point::ORIGIN,
             content_visible: true,
             external_drag_candidate: None,
+            link_synced: None,
             client,
         };
 
@@ -290,16 +293,26 @@ impl ViewCoordinator {
         }
     }
 
-    /// Agrega `track_id` al final de la cola si no está sonando ni ya en ella.
-    fn enqueue_if_missing(&self, track_id: &str) {
-        let is_current = self.manager.get_current_track().is_some_and(|current| current.track.id == track_id);
-        let is_queued = self.manager.get_queue_snapshot().iter().any(|slot| slot.track.id == track_id);
-        if is_current || is_queued {
+    /// La cola ligada sigue la versión vigente de su playlist.
+    pub fn sync_playback_link(&mut self) {
+        let Some(playlist_id) = self.manager.linked_playlist() else {
+            self.link_synced = None;
+            return;
+        };
+        let version = self.catalog_store.version();
+        if self.link_synced.as_ref().is_some_and(|(id, synced)| *id == playlist_id && *synced == version) {
             return;
         }
-        if let Some(track) = self.catalog_store.track_by_id(track_id) {
-            self.manager.enqueue(track.clone());
-        }
+        let tracks = self.catalog_store.tracks_for_playlist(&playlist_id).into_iter().cloned().collect();
+        self.manager.sync_link(&playlist_id, tracks);
+        self.link_synced = Some((playlist_id, version));
+    }
+
+    /// Si la playlist abierta se ve en su propio orden (sin columna ni filtro), su id para ligar la cola.
+    fn linkable_playlist(&self, origin: &PlaybackOrigin) -> Option<String> {
+        let PlaybackOrigin::Playlist(id) = origin else { return None };
+        let view = self.playlist_view.as_ref().filter(|view| &view.playlist_id == id)?;
+        (view.list.active_sort_key.is_none() && view.list.search_filter.trim().is_empty()).then(|| id.clone())
     }
 
     /// El servidor encontró la letra de `track_id`.
@@ -699,18 +712,14 @@ impl ViewCoordinator {
             }
 
             CoordinatorMessage::Catalog(inner) => {
-                // Una canción agregada a la playlist que suena entra también al final de la cola.
-                let added_to_playing = match &inner {
-                    CatalogStoreMessage::TrackAddedToPlaylist(playlist_id, track_id, Ok(()))
-                        if self.playing_playlist().is_some_and(|(id, _)| &id == playlist_id) =>
-                    {
-                        Some(track_id.clone())
-                    }
+                let refreshed = match &inner {
+                    CatalogStoreMessage::TrackDownloadedAndCached(track)
+                    | CatalogStoreMessage::TrackToolFinished(_, _, Ok(track)) => Some(track.id.clone()),
                     _ => None,
                 };
                 let task = self.catalog_store.update(inner).map(CoordinatorMessage::Catalog);
-                if let Some(track_id) = added_to_playing {
-                    self.enqueue_if_missing(&track_id);
+                if let Some(track) = refreshed.and_then(|id| self.catalog_store.track_by_id(&id)) {
+                    self.manager.refresh_track(track);
                 }
                 (task, CoordinatorOutMessage::Idle)
             }
@@ -791,6 +800,7 @@ impl ViewCoordinator {
             }
             CoordinatorMessage::ConfirmDeleteTracks => {
                 if let Some(ids) = self.delete_tracks_dialog.take_confirmed() {
+                    self.manager.forget_tracks(&ids);
                     for id in ids {
                         self.catalog_store.delete_track(&id);
                     }
@@ -877,7 +887,7 @@ impl ViewCoordinator {
                         self.cover_crop = None;
                         Task::none()
                     }
-                    CropEditorOutcome::Save { playlist_id, source_path, region } => {
+                    CropEditorOutcome::Save { target: playlist_id, source_path, region } => {
                         self.cover_crop = None;
                         match self.covers.import_cover(&playlist_id, &source_path, region) {
                             // Persiste en DB y actualiza playlists_metadata para que sidebar/header lo reflejen ya.
@@ -928,6 +938,14 @@ impl ViewCoordinator {
             TrackListOutMessage::RequestOpenAlbum(_) => Task::none(),
 
             TrackListOutMessage::RequestPlayContext { start_track_id } => {
+                if let Some(playlist_id) = self.linkable_playlist(&origin) {
+                    let tracks: Vec<Track> = self.catalog_store.tracks_for_playlist(&playlist_id).into_iter().cloned().collect();
+                    if let Some(start_index) = tracks.iter().position(|t| t.id == start_track_id) {
+                        self.manager.set_playback_origin(origin);
+                        self.manager.play_playlist(&playlist_id, tracks, start_index);
+                    }
+                    return (Task::none(), coordinator_out);
+                }
                 let context = play_context(self);
                 if let Some(start_index) = context.iter().position(|t| t.id == start_track_id) {
                     self.manager.set_playback_origin(origin);
@@ -936,6 +954,12 @@ impl ViewCoordinator {
                 Task::none()
             }
             TrackListOutMessage::RequestPlayAll => {
+                if let Some(playlist_id) = self.linkable_playlist(&origin) {
+                    let tracks = self.catalog_store.tracks_for_playlist(&playlist_id).into_iter().cloned().collect();
+                    self.manager.set_playback_origin(origin);
+                    self.manager.play_playlist_shuffled(&playlist_id, tracks);
+                    return (Task::none(), coordinator_out);
+                }
                 let context = play_context(self);
                 self.manager.set_playback_origin(origin);
                 self.manager.play_context_shuffled(context);
@@ -1522,6 +1546,15 @@ impl ViewCoordinator {
         };
 
         let context: Vec<Track> = rendered.iter().map(|t| (*t).clone()).collect();
+        if let Some(playlist_id) = self.linkable_playlist(&origin) {
+            let start_id = context[start_index].id.clone();
+            let tracks: Vec<Track> = self.catalog_store.tracks_for_playlist(&playlist_id).into_iter().cloned().collect();
+            if let Some(start_index) = tracks.iter().position(|t| t.id == start_id) {
+                self.manager.set_playback_origin(origin);
+                self.manager.play_playlist(&playlist_id, tracks, start_index);
+            }
+            return;
+        }
         self.manager.set_playback_origin(origin);
         self.manager.play_context(context, start_index);
     }

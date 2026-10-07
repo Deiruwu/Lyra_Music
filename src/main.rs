@@ -19,7 +19,7 @@ use iced::widget::{column, container, row, space, stack};
 use crate::audio::discord::DiscordPresence;
 use crate::audio::download_daemon::DownloadWorker;
 use crate::audio::engine::AudioEngine;
-use audio::manager::manager::TrackManager;
+use audio::manager::manager::{PlaybackOrigin, TrackManager};
 use crate::audio::mpris::MprisServer;
 use crate::audio::radio_daemon::RadioWorker;
 use crate::db::db::init_db;
@@ -126,6 +126,9 @@ enum NavEntry {
 }
 
 const MAX_NAV_HISTORY: usize = 3;
+/// Lado del avatar de la barra superior y grosor de su anillo.
+const AVATAR_SIZE: f32 = 26.0;
+const AVATAR_RING_WIDTH: f32 = 1.5;
 
 fn push_capped(stack: &mut Vec<NavEntry>, entry: NavEntry) {
     stack.push(entry);
@@ -149,6 +152,10 @@ impl App {
         manager.set_crossfade(if settings.crossfade_enabled { settings.crossfade_seconds } else { 0.0 });
 
         let session = PlaybackSession::load();
+        let restored_playlist = match &session.origin {
+            Some(PlaybackOrigin::Playlist(id)) => Some(id.clone()),
+            _ => None,
+        };
         if let Some(origin) = session.origin {
             manager.set_playback_origin(origin);
         }
@@ -158,6 +165,9 @@ impl App {
             session.queue,
             session.history,
         );
+        if let Some(playlist_id) = restored_playlist {
+            manager.relink_playlist(&playlist_id);
+        }
         let tray_flags = tray::spawn_tray(Arc::clone(&manager));
         TRAY_FLAGS.set(Arc::clone(&tray_flags)).ok();
 
@@ -241,7 +251,7 @@ impl App {
             _engine: engine,
             search_feature,
             settings_open: false,
-            settings_view: SettingsView::new(settings.crossfade_enabled, settings.crossfade_seconds, settings.server.clone()),
+            settings_view: SettingsView::new(settings.crossfade_enabled, settings.crossfade_seconds, settings.server.clone(), settings.profile_name.clone()),
             playback_feature: PlaybackFeature::new(Arc::clone(&manager)),
             download_feature,
             sidebar_feature,
@@ -278,6 +288,12 @@ impl App {
     }
 
     pub fn update(&mut self, message: AppMessage) -> iced::Task<AppMessage> {
+        let task = self.apply(message);
+        self.sidebar_feature.coordinator.sync_playback_link();
+        task
+    }
+
+    fn apply(&mut self, message: AppMessage) -> iced::Task<AppMessage> {
         // Ctrl/Shift también cuentan para la selección múltiple de artista, álbum y mezcla.
         if let AppMessage::SidebarFeature(SidebarFeatureMessage::Content(CoordinatorMessage::KeybindsChanged(modifiers))) = &message {
             self.library_browser.set_modifiers(*modifiers);
@@ -695,10 +711,11 @@ impl App {
             }
 
             AppMessage::Settings(msg) => {
-                if let Some(seconds) = self.settings_view.update(msg) {
+                let (task, crossfade) = self.settings_view.update(msg);
+                if let Some(seconds) = crossfade {
                     self.manager.set_crossfade(seconds);
                 }
-                iced::Task::none()
+                task.map(AppMessage::Settings)
             }
 
             AppMessage::FindPressed => {
@@ -715,7 +732,8 @@ impl App {
             }
 
             AppMessage::EscapePressed => {
-                if self.sidebar_feature.coordinator.cancel_delete_dialog()
+                if self.settings_view.cancel_photo_crop()
+                    || self.sidebar_feature.coordinator.cancel_delete_dialog()
                     || self.sidebar_feature.coordinator.cancel_cover_crop()
                     || self.sidebar_feature.coordinator.cancel_artists_edit()
                 {
@@ -781,6 +799,7 @@ impl App {
             crossfade_enabled: self.settings_view.crossfade_enabled(),
             crossfade_seconds: self.settings_view.crossfade_seconds(),
             server: self.settings_view.server().clone(),
+            profile_name: self.settings_view.profile_name(),
             accent_color: {
                 let accent = theme().accent.primary;
                 (accent != crate::ui::theme::default_accent()).then(|| crate::ui::theme::to_hex(accent))
@@ -920,12 +939,18 @@ impl App {
         iced::Task::none()
     }
 
-    /// Tuerca de la barra superior, resaltada mientras Ajustes está abierto.
+    /// Avatar de la barra superior (abre Ajustes), con un anillo de acento mientras está abierto.
     fn view_settings_toggle(&self) -> Element<'_, AppMessage> {
-        let color = if self.settings_open { theme().accent.primary } else { theme().content.primary };
-        iced::widget::button(crate::ui::assets::icons::icon(crate::ui::assets::icons::Icon::Settings, crate::ui::assets::typography::TEXT_18).color(color))
+        let ring = if self.settings_open { theme().accent.primary } else { iced::Color::TRANSPARENT };
+        let avatar = container(self.settings_view.avatar(AVATAR_SIZE))
+            .padding(AVATAR_RING_WIDTH)
+            .style(move |_| container::Style {
+                border: border::rounded(AVATAR_SIZE).color(ring).width(AVATAR_RING_WIDTH),
+                ..Default::default()
+            });
+        iced::widget::button(avatar)
             .style(crate::ui::styles::button::minimal)
-            .padding(spacing::SP_8)
+            .padding(spacing::SP_4)
             .on_press(AppMessage::ToggleSettings)
             .into()
     }
@@ -1093,6 +1118,10 @@ impl App {
 
         if let Some(menu) = self.playback_feature.view_track_context_menu() {
             absolute_root_layers.push(menu.map(AppMessage::PlaybackFeature));
+        }
+
+        if let Some(editor) = self.settings_view.view_photo_crop() {
+            absolute_root_layers.push(editor.map(AppMessage::Settings));
         }
 
         stack(absolute_root_layers).into()

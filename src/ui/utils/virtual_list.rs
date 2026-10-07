@@ -259,14 +259,16 @@ impl ScrollTracker {
     /// `zone_px`: alto de la franja sensible desde cada borde.
     /// `max_speed_px_per_tick`: velocidad máxima de scroll por tick,
     /// alcanzada cuando el mouse está pegado al borde extremo.
-    pub fn autoscroll_delta(&self, local_y: f32, zone_px: f32, max_speed_px_per_tick: f32) -> Option<f32> {
+    /// `top_inset`: alto de lo que tapa el borde superior (títulos fijos); la zona empieza debajo.
+    pub fn autoscroll_delta(&self, local_y: f32, zone_px: f32, max_speed_px_per_tick: f32, top_inset: f32) -> Option<f32> {
         if self.viewport_height <= 0.0 || zone_px <= 0.0 {
             return None;
         }
 
-        if local_y < zone_px {
+        let top_y = local_y - top_inset;
+        if top_y < zone_px {
             // Cerca del borde superior: entre más pegado a y=0, más rápido.
-            let intensity = ((zone_px - local_y) / zone_px).clamp(0.0, 1.0);
+            let intensity = ((zone_px - top_y) / zone_px).clamp(0.0, 1.0);
             Some(-max_speed_px_per_tick * intensity)
         } else if local_y > self.viewport_height - zone_px {
             let intensity = ((local_y - (self.viewport_height - zone_px)) / zone_px).clamp(0.0, 1.0);

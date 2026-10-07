@@ -7,7 +7,7 @@ use iced::widget::{button, column, container, image, mouse_area, responsive, row
 use iced::{Alignment, ContentFit, Element, Length, Padding, Task, Theme};
 
 use crate::db::followed_artist_manager::FollowedArtistManager;
-use crate::microservices::client::MicroserviceClient;
+use crate::microservices::client::{user_message, MicroserviceClient};
 use crate::model::{AlbumSummary, AlbumType, ArtistDto, ArtistProfileDto, Track};
 use crate::ui::styles::RowSelectionShape;
 use crate::ui::styles::button as button_style;
@@ -25,6 +25,7 @@ use crate::ui::assets::{radii, spacing, typography};
 use crate::ui::theme::theme;
 use crate::ui::styles::scrollable as scrollable_style;
 
+const ARTIST_NOT_FOUND: &str = "No existe un canal de música para este artista";
 const TOP_SONGS_COUNT: usize = 5;
 const CARD_THUMBNAIL_SIZE: f32 = 176.0;
 const CARD_HOVER_PADDING: f32 = CARD_THUMBNAIL_SIZE * 0.06;
@@ -162,7 +163,13 @@ impl ArtistView {
         };
 
         let load_task = Task::perform(
-            async move { client.artist(&artist_id, Some(TOP_SONGS_COUNT)).await.map_err(|e| e.to_string()) },
+            async move {
+                match client.artist(&artist_id, Some(TOP_SONGS_COUNT)).await {
+                    Ok(dto) if dto.songs.is_empty() && dto.albums.is_empty() => Err(ARTIST_NOT_FOUND.to_string()),
+                    Ok(dto) => Ok(dto),
+                    Err(e) => Err(user_message(&e, ARTIST_NOT_FOUND)),
+                }
+            },
             ArtistMessage::Loaded,
         );
 

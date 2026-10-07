@@ -5,7 +5,7 @@ use iced::widget::scrollable::Viewport;
 use iced::widget::{button, column, container, image, mouse_area, row, scrollable, space, text, Id};
 use iced::{Alignment, ContentFit, Element, Length, Padding, Task, Theme};
 
-use crate::microservices::client::MicroserviceClient;
+use crate::microservices::client::{user_message, MicroserviceClient};
 use crate::model::{AlbumDto, Artist, Track};
 use crate::ui::assets::fonts::SF_PRO;
 use crate::ui::assets::icons::{self, Icon};
@@ -104,7 +104,7 @@ impl AlbumView {
         };
 
         let task = Task::perform(
-            async move { client.album(&album_id).await.map_err(|e| e.to_string()) },
+            async move { client.album(&album_id).await.map_err(|e| user_message(&e, "Este álbum no existe o ya no está disponible")) },
             AlbumMessage::Loaded,
         );
 

@@ -43,12 +43,14 @@ pub enum CropEditorMessage {
 /// Resultado de procesar un mensaje del editor.
 pub enum CropEditorOutcome {
     Editing,
-    Save { playlist_id: String, source_path: PathBuf, region: CropRegion },
+    /// `target`: a qué pertenece el recorte (id de playlist, perfil…).
+    Save { target: String, source_path: PathBuf, region: CropRegion },
     Cancel,
 }
 
 pub struct CoverCropEditor {
-    playlist_id: String,
+    target: String,
+    title: &'static str,
     source_path: PathBuf,
     preview: Handle,
     /// Tamaño de la imagen original (la previsualización puede estar reducida).
@@ -60,19 +62,25 @@ pub struct CoverCropEditor {
 
 impl CoverCropEditor {
     /// Abre el editor con el recuadro más grande posible, centrado (el recorte de siempre).
-    pub fn new(playlist_id: String, source_path: PathBuf, preview_bytes: Vec<u8>, width: u32, height: u32) -> Self {
+    pub fn new(target: String, source_path: PathBuf, preview_bytes: Vec<u8>, width: u32, height: u32) -> Self {
         let image_size = Size::new(width.max(1) as f32, height.max(1) as f32);
         let side = image_size.width.min(image_size.height);
         let origin = Point::new((image_size.width - side) / 2.0, (image_size.height - side) / 2.0);
 
         Self {
-            playlist_id,
+            target,
+            title: "Recortar portada",
             source_path,
             preview: Handle::from_bytes(preview_bytes),
             image_size,
             origin,
             side,
         }
+    }
+
+    pub fn with_title(mut self, title: &'static str) -> Self {
+        self.title = title;
+        self
     }
 
     pub fn update(&mut self, message: CropEditorMessage) -> CropEditorOutcome {
@@ -82,7 +90,7 @@ impl CoverCropEditor {
             CropEditorMessage::SizeChanged(fraction) => self.resize(fraction * self.max_side()),
             CropEditorMessage::Save => {
                 return CropEditorOutcome::Save {
-                    playlist_id: self.playlist_id.clone(),
+                    target: self.target.clone(),
                     source_path: self.source_path.clone(),
                     region: CropRegion {
                         x: self.origin.x.round() as u32,
@@ -97,7 +105,7 @@ impl CoverCropEditor {
     }
 
     pub fn view(&self) -> Element<'_, CropEditorMessage> {
-        let title = text("Recortar portada").font(SF_PRO).size(typography::TEXT_16).color(theme().content.primary);
+        let title = text(self.title).font(SF_PRO).size(typography::TEXT_16).color(theme().content.primary);
         let hint = text("Arrastra el recuadro; la rueda o el slider cambian su tamaño.")
             .font(SF_PRO)
             .size(typography::TEXT_12)

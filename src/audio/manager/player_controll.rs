@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use crate::audio::engine_state::AudioCommand;
 use crate::audio::manager::manager::{probe_track, QueueSlot, TrackManager};
+use crate::audio::manager::playlist_link::PlaylistLink;
 use crate::audio::manager::error_mananger::ManagerError;
 use crate::audio::queue_shuffle;
 use crate::audio::track_event::{QueueEvent, TrackEvent};
@@ -19,9 +20,19 @@ impl TrackManager {
     /// sorteo junto con el resto de la vista (`refill_queue` ya baraja
     /// `remaining` cuando `shuffle_enabled`).
     pub fn play_context(&self, context_tracks: Vec<Track>, start_index: usize) {
+        self.play_context_inner(context_tracks, start_index, None);
+    }
+
+    /// `play_context` que, con `link_to`, deja la cola ligada a esa playlist.
+    pub(super) fn play_context_inner(&self, context_tracks: Vec<Track>, start_index: usize, link_to: Option<String>) {
         if start_index >= context_tracks.len() { return; }
 
         let shuffle_enabled = self.playback.lock().unwrap().shuffle_enabled;
+
+        let link = link_to.map(|playlist_id| {
+            let anchor = if shuffle_enabled { None } else { start_index.checked_sub(1).map(|i| context_tracks[i].id.clone()) };
+            PlaylistLink::new(playlist_id, context_tracks.iter().cloned().map(Arc::new).collect(), anchor)
+        });
 
         let (before, first, remaining_tracks): (Vec<Track>, Track, Vec<Track>) = if shuffle_enabled {
             let mut tracks = context_tracks;
@@ -40,6 +51,7 @@ impl TrackManager {
         {
             let mut ps = self.playback.lock().unwrap();
             ps.reset_with_context(before, remaining);
+            ps.link = link;
             ps.auto_advance = true;
         }
 
@@ -62,6 +74,7 @@ impl TrackManager {
                 {
                     let mut ps = self.playback.lock().unwrap();
                     ps.advance_to(Arc::clone(&playable));
+                    ps.track_started(&playable.track.id, false);
                 }
                 let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&playable)));
                 self.broadcast_queue_update();
@@ -134,6 +147,7 @@ impl TrackManager {
             // duplicado en cola+historial y "anterior" repetido se traba
             // alternando entre las mismas dos canciones.
             ps.set_current_track(Arc::clone(&playable));
+            ps.track_started(&playable.track.id, false);
         }
 
         let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&playable)));
@@ -176,6 +190,7 @@ impl TrackManager {
                 ps.queue_push(QueueSlot::new(Arc::new(track)), true);
             }
             ps.set_current_track(Arc::clone(&playable));
+            ps.track_started(&playable.track.id, false);
         }
 
         let _ = self.event_tx.send(TrackEvent::TrackChanged(Arc::clone(&playable)));

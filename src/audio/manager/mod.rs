@@ -6,3 +6,4 @@ pub mod queue_history_controll;
 pub mod download_bridge;
 pub mod shuffle_repeat_controll;
 pub mod session_controll;
+pub mod playlist_link;

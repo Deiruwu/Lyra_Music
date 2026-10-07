@@ -35,6 +35,7 @@ impl TrackManager {
             ps.queue = slots.into();
             ps.history = history.into_iter().rev().take(HISTORY_CAP).rev().collect();
             ps.current_track = playable.clone();
+            ps.link = None;
             ps.auto_advance = true;
         }
 
