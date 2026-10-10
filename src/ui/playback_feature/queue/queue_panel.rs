@@ -43,11 +43,6 @@ const BUFFER_ROWS: usize = 15;
 const AUTOSCROLL_ZONE_PX: f32 = 50.0;
 /// Velocidad máxima de auto-scroll por tick, en píxeles.
 const AUTOSCROLL_MAX_SPEED_PX: f32 = 18.0;
-/// Cuántas canciones ya reproducidas mostrar arriba del track actual.
-/// El motor cachea hasta 100 (`PlaybackState::HISTORY_CAP`), pero acá
-/// solo mostramos las últimas para no volver la lista fusionada
-/// interminable hacia arriba.
-const HISTORY_VISIBLE_CAP: usize = 20;
 
 // ── FEAT FUTURO: canción en descarga visible en la cola ──────────────────
 // Hoy la cola presume que todo track ya está descargado. Para mostrar una
@@ -154,8 +149,8 @@ pub struct QueuePanel {
     pub queue_width: f32,
     pub target_width: f32,
     queue: Vec<QueueSlot>,
-    /// Últimas `HISTORY_VISIBLE_CAP` canciones ya reproducidas (oldest→newest),
-    /// recortadas del snapshot de `TrackManager::get_history_snapshot()`.
+    /// Canciones ya reproducidas (oldest→newest), snapshot de
+    /// `TrackManager::get_history_snapshot()`.
     history: Vec<Track>,
     /// Track sonando ahora mismo (`TrackManager::get_current_track()`), si hay.
     current_track: Option<Track>,
@@ -355,9 +350,7 @@ impl QueuePanel {
                 self.show = !self.show;
                 self.refresh_target_width();
 
-                // Al abrir el panel (no en cada toggle), saltar al track
-                // actual — de ahí en más el seguimiento es condicional
-                // (ver `sync_playback`/`is_row_visible`).
+                // Al abrir el panel, saltar al track actual.
                 let task = if self.show && !was_shown {
                     self.scroll_to_current()
                 } else {
@@ -885,12 +878,9 @@ impl QueuePanel {
         self.hovered_delete_history = None;
 
         let track_changed = self.current_track.as_ref().map(|t| &t.id) != current_track.as_ref().map(|t| &t.id);
-        // Posición (antes de sobreescribir) de la fila que ERA la actual —
-        // para decidir si seguir el avance o no (ver más abajo).
-        let was_visible_before = self.show && self.is_row_visible(self.row_y(self.history.len()));
+        let previous_row_y = self.row_y(self.history.len());
 
-        let start = history.len().saturating_sub(HISTORY_VISIBLE_CAP);
-        self.history = history[start..].to_vec();
+        self.history = history;
         self.current_track = current_track;
         self.queue = queue;
 
@@ -921,26 +911,12 @@ impl QueuePanel {
         let max_offset = (self.merged_total() as f32 * ROW_STRIDE + self.extra_gap() - self.scroll.viewport_height).max(0.0);
         self.scroll.offset_y = self.scroll.offset_y.min(max_offset);
 
-        // Seguir el avance solo si el track que ERA actual estaba
-        // efectivamente visible (el usuario "iba siguiendo" la cola) — si
-        // se había scrolleado a otra parte (historial viejo, cola lejana),
-        // no lo interrumpimos. La primera vez que se abre el panel siempre
-        // salta al actual (ver `QueueMessage::Toggle`), sin pasar por acá.
-        if track_changed && was_visible_before {
+        // Seguimiento fijo: recentra el track actual si cambió o se movió su fila.
+        if track_changed || self.row_y(self.history.len()) != previous_row_y {
             self.scroll_to_current()
         } else {
             Task::none()
         }
-    }
-
-    /// `true` si la fila que empieza en `row_px` (alto `ROW_STRIDE`) cae,
-    /// aunque sea parcialmente, dentro del viewport visible actual.
-    fn is_row_visible(&self, row_px: f32) -> bool {
-        if self.scroll.viewport_height <= 0.0 {
-            return false;
-        }
-        let viewport_bottom = self.scroll.offset_y + self.scroll.viewport_height;
-        row_px + ROW_STRIDE > self.scroll.offset_y && row_px < viewport_bottom
     }
 
     /// Auto-scrollea para dejar el track actual centrado en el panel

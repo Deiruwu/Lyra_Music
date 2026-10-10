@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use crate::audio::decoder::ChannelMode;
 use crate::audio::engine_state::AudioCommand;
-use crate::audio::manager::manager::{probe_track, QueueSlot, TrackManager, HISTORY_CAP};
+use crate::audio::manager::manager::{probe_track, QueueSlot, TrackManager};
 use crate::model::audio_tech::PlayableTrack;
 use crate::model::Track;
 
@@ -33,7 +33,7 @@ impl TrackManager {
 
             ps.original_order = slots.iter().map(|s| s.id).collect();
             ps.queue = slots.into();
-            ps.history = history.into_iter().rev().take(HISTORY_CAP).rev().collect();
+            ps.history = history.into();
             ps.current_track = playable.clone();
             ps.link = None;
             ps.auto_advance = true;

@@ -17,8 +17,6 @@ use crate::audio::track_event::{QueueEvent, TrackEvent};
 use crate::audio::queue_shuffle;
 use crate::audio::manager::playlist_link::PlaylistLink;
 
-pub(super) const HISTORY_CAP: usize = 100;
-
 // ── Estado consolidado ───────────────────────────────────────────────────────
 
 /// Entrada de la cola: identidad de slot (`id`) separada del `track.id`,
@@ -218,9 +216,6 @@ impl PlaybackState {
 }
 
 pub(super) fn push_to_history_inner(h: &mut VecDeque<Track>, track: Track) {
-    if h.len() >= HISTORY_CAP {
-        h.pop_front();
-    }
     h.push_back(track);
 }
 
